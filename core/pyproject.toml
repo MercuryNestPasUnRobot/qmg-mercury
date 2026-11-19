@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qmg-core"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Headless token-position rules and deterministic simulation core"
+
+[tool.setuptools]
+packages = ["qmg_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,746 @@
+{
+  "ruleset_version": "architecture-fixture-v1",
+  "verified": false,
+  "description": "Synthetic mechanism coverage only. Not the WW2 Second Edition content pack.",
+  "turn_order": [
+    "germany",
+    "united-kingdom",
+    "japan",
+    "soviet-union",
+    "italy",
+    "united-states"
+  ],
+  "countries": [
+    {
+      "id": "germany",
+      "team": "axis"
+    },
+    {
+      "id": "united-kingdom",
+      "team": "allies"
+    },
+    {
+      "id": "japan",
+      "team": "axis"
+    },
+    {
+      "id": "soviet-union",
+      "team": "allies"
+    },
+    {
+      "id": "italy",
+      "team": "axis"
+    },
+    {
+      "id": "united-states",
+      "team": "allies"
+    }
+  ],
+  "regions": [
+    {
+      "id": "A",
+      "name": "Fixture A",
+      "type": "LAND",
+      "home_country": "germany",
+      "supply_source_for": "germany"
+    },
+    {
+      "id": "E",
+      "name": "Fixture E",
+      "type": "LAND",
+      "home_country": "united-kingdom",
+      "supply_source_for": "united-kingdom"
+    },
+    {
+      "id": "F",
+      "name": "Fixture F",
+      "type": "LAND",
+      "home_country": "japan",
+      "supply_source_for": "japan"
+    },
+    {
+      "id": "G",
+      "name": "Fixture G",
+      "type": "LAND",
+      "home_country": "soviet-union",
+      "supply_source_for": "soviet-union"
+    },
+    {
+      "id": "H",
+      "name": "Fixture H",
+      "type": "LAND",
+      "home_country": "italy",
+      "supply_source_for": "italy"
+    },
+    {
+      "id": "I",
+      "name": "Fixture I",
+      "type": "LAND",
+      "home_country": "united-states",
+      "supply_source_for": "united-states"
+    },
+    {
+      "id": "B",
+      "name": "Fixture B",
+      "type": "LAND"
+    },
+    {
+      "id": "C",
+      "name": "Fixture C",
+      "type": "LAND"
+    },
+    {
+      "id": "D",
+      "name": "Fixture D",
+      "type": "LAND"
+    },
+    {
+      "id": "S",
+      "name": "Fixture sea S",
+      "type": "SEA"
+    },
+    {
+      "id": "T",
+      "name": "Fixture sea T",
+      "type": "SEA"
+    }
+  ],
+  "connections": [
+    {
+      "id": "edge-0",
+      "a": "A",
+      "b": "B"
+    },
+    {
+      "id": "edge-1",
+      "a": "B",
+      "b": "C"
+    },
+    {
+      "id": "edge-2",
+      "a": "C",
+      "b": "D"
+    },
+    {
+      "id": "edge-3",
+      "a": "B",
+      "b": "E"
+    },
+    {
+      "id": "edge-4",
+      "a": "A",
+      "b": "S"
+    },
+    {
+      "id": "edge-5",
+      "a": "S",
+      "b": "T"
+    },
+    {
+      "id": "edge-6",
+      "a": "T",
+      "b": "E"
+    }
+  ],
+  "units": [
+    {
+      "id": "army",
+      "kind": "ARMY"
+    },
+    {
+      "id": "navy",
+      "kind": "NAVY"
+    }
+  ],
+  "cards": [
+    {
+      "id": "g-build",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "CHOOSE",
+          "operation": {
+            "type": "BUILD_ARMY",
+            "target": "$choice"
+          }
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-chain",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "GAIN_VP",
+          "amount": 1
+        },
+        {
+          "type": "CHOOSE",
+          "operation": {
+            "type": "BUILD_ARMY",
+            "target": "$choice"
+          }
+        },
+        {
+          "type": "GAIN_VP",
+          "amount": 2
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-battle",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "CHOOSE",
+          "operation": {
+            "type": "LAND_BATTLE",
+            "target": "$choice"
+          }
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-recruit",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "CHOOSE",
+          "operation": {
+            "type": "RECRUIT",
+            "target": "$choice"
+          }
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-transport",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "REDEPLOY"
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-draw",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "DRAW",
+          "count": 1
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-vp",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "GAIN_VP",
+          "amount": 100
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-status",
+      "country": "germany",
+      "type": "STATUS",
+      "effects": [],
+      "abilities": [
+        "g-extra"
+      ],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-noop",
+      "country": "germany",
+      "type": "EVENT",
+      "effects": [],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "uk-guard",
+      "country": "united-kingdom",
+      "type": "STATUS",
+      "effects": [],
+      "abilities": [
+        "uk-prevent"
+      ],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "uk-secret",
+      "country": "united-kingdom",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "GAIN_VP",
+          "amount": 500
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "uk-other",
+      "country": "united-kingdom",
+      "type": "EVENT",
+      "effects": [
+        {
+          "type": "DRAW",
+          "count": 3
+        }
+      ],
+      "abilities": [],
+      "failure_policy": "stop",
+      "printed_reference": "SYNTHETIC ARCHITECTURE FIXTURE — not an official QMG card",
+      "ruleset_version": "architecture-fixture-v1"
+    }
+  ],
+  "abilities": [
+    {
+      "id": "g-extra",
+      "trigger": {
+        "operation_type": "LAND_BATTLE",
+        "actor": "self"
+      },
+      "activation_mode": "OPTIONAL",
+      "reset_policy": "TURN_END",
+      "priority": 10,
+      "discard_cost": 1,
+      "effects": [
+        {
+          "type": "GAIN_VP",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "uk-prevent",
+      "trigger": {
+        "operation_type": "ANNOUNCE",
+        "announced_type": "ELIMINATE",
+        "target_owner": "self",
+        "actor": "enemy"
+      },
+      "activation_mode": "AUTO",
+      "reset_policy": "CHECKPOINT",
+      "priority": 20,
+      "discard_cost": 0,
+      "effects": [
+        {
+          "type": "CANCEL",
+          "announcement_id": "$event.announcement_id"
+        }
+      ]
+    }
+  ],
+  "score_sites": [
+    {
+      "id": "factory",
+      "region": "C",
+      "vp": 2,
+      "countries": [
+        "germany",
+        "united-kingdom",
+        "japan",
+        "soviet-union",
+        "italy",
+        "united-states"
+      ],
+      "requires_supply": true
+    },
+    {
+      "id": "g-home",
+      "region": "A",
+      "vp": 1,
+      "countries": [
+        "germany"
+      ],
+      "requires_supply": true
+    },
+    {
+      "id": "dynamic-site",
+      "region": "D",
+      "vp": 3,
+      "countries": [
+        "germany"
+      ],
+      "requires_supply": true,
+      "dynamic": true
+    }
+  ],
+  "settings": {
+    "hand_limit": 7,
+    "initial_hand": 0,
+    "setup_discard": 0,
+    "plays_per_turn": 1,
+    "max_rounds": 2,
+    "victory_margin": 1000,
+    "max_atomic_steps": 300,
+    "allied_supply": false,
+    "deck_exhaustion_vp": 0
+  },
+  "initial_tokens": [
+    {
+      "token_id": "g-build",
+      "definition_id": "g-build",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-chain",
+      "definition_id": "g-chain",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-battle",
+      "definition_id": "g-battle",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-recruit",
+      "definition_id": "g-recruit",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-transport",
+      "definition_id": "g-transport",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-draw",
+      "definition_id": "g-draw",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-vp",
+      "definition_id": "g-vp",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-status",
+      "definition_id": "g-status",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-copy",
+      "definition_id": "g-build",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-deck-1",
+      "definition_id": "g-vp",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:DECK"
+    },
+    {
+      "token_id": "g-deck-2",
+      "definition_id": "g-noop",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:DECK"
+    },
+    {
+      "token_id": "uk-hidden",
+      "definition_id": "uk-secret",
+      "token_type": "CARD",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:HAND"
+    },
+    {
+      "token_id": "uk-deck",
+      "definition_id": "uk-other",
+      "token_type": "CARD",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:DECK"
+    },
+    {
+      "token_id": "uk-status",
+      "definition_id": "uk-guard",
+      "token_type": "CARD",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:STATUS"
+    },
+    {
+      "token_id": "germany-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "germany",
+      "position_id": "A"
+    },
+    {
+      "token_id": "germany-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "germany",
+      "position_id": "germany:RESERVE_ARMY"
+    },
+    {
+      "token_id": "germany-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "germany",
+      "position_id": "germany:RESERVE_ARMY"
+    },
+    {
+      "token_id": "germany-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "germany",
+      "position_id": "S"
+    },
+    {
+      "token_id": "germany-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "germany",
+      "position_id": "germany:RESERVE_NAVY"
+    },
+    {
+      "token_id": "united-kingdom-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-kingdom",
+      "position_id": "E"
+    },
+    {
+      "token_id": "united-kingdom-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:RESERVE_ARMY"
+    },
+    {
+      "token_id": "united-kingdom-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:RESERVE_ARMY"
+    },
+    {
+      "token_id": "united-kingdom-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:RESERVE_NAVY"
+    },
+    {
+      "token_id": "united-kingdom-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "united-kingdom",
+      "position_id": "united-kingdom:RESERVE_NAVY"
+    },
+    {
+      "token_id": "japan-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "japan",
+      "position_id": "F"
+    },
+    {
+      "token_id": "japan-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "japan",
+      "position_id": "japan:RESERVE_ARMY"
+    },
+    {
+      "token_id": "japan-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "japan",
+      "position_id": "japan:RESERVE_ARMY"
+    },
+    {
+      "token_id": "japan-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "japan",
+      "position_id": "japan:RESERVE_NAVY"
+    },
+    {
+      "token_id": "japan-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "japan",
+      "position_id": "japan:RESERVE_NAVY"
+    },
+    {
+      "token_id": "soviet-union-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "soviet-union",
+      "position_id": "G"
+    },
+    {
+      "token_id": "soviet-union-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "soviet-union",
+      "position_id": "soviet-union:RESERVE_ARMY"
+    },
+    {
+      "token_id": "soviet-union-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "soviet-union",
+      "position_id": "soviet-union:RESERVE_ARMY"
+    },
+    {
+      "token_id": "soviet-union-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "soviet-union",
+      "position_id": "soviet-union:RESERVE_NAVY"
+    },
+    {
+      "token_id": "soviet-union-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "soviet-union",
+      "position_id": "soviet-union:RESERVE_NAVY"
+    },
+    {
+      "token_id": "italy-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "italy",
+      "position_id": "H"
+    },
+    {
+      "token_id": "italy-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "italy",
+      "position_id": "italy:RESERVE_ARMY"
+    },
+    {
+      "token_id": "italy-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "italy",
+      "position_id": "italy:RESERVE_ARMY"
+    },
+    {
+      "token_id": "italy-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "italy",
+      "position_id": "italy:RESERVE_NAVY"
+    },
+    {
+      "token_id": "italy-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "italy",
+      "position_id": "italy:RESERVE_NAVY"
+    },
+    {
+      "token_id": "united-states-army-0",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-states",
+      "position_id": "I"
+    },
+    {
+      "token_id": "united-states-army-1",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-states",
+      "position_id": "united-states:RESERVE_ARMY"
+    },
+    {
+      "token_id": "united-states-army-2",
+      "definition_id": "army",
+      "token_type": "UNIT",
+      "owner_country": "united-states",
+      "position_id": "united-states:RESERVE_ARMY"
+    },
+    {
+      "token_id": "united-states-navy-0",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "united-states",
+      "position_id": "united-states:RESERVE_NAVY"
+    },
+    {
+      "token_id": "united-states-navy-1",
+      "definition_id": "navy",
+      "token_type": "UNIT",
+      "owner_country": "united-states",
+      "position_id": "united-states:RESERVE_NAVY"
+    },
+    {
+      "token_id": "dynamic-source",
+      "definition_id": "dynamic-site",
+      "token_type": "SCORE_SOURCE",
+      "owner_country": "germany",
+      "position_id": "germany:SCORE_DORMANT"
+    }
+  ]
+}

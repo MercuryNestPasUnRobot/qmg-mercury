@@ -6,6 +6,9 @@
   "type": "module",
   "engines": { "node": ">=24.12.0 <25", "npm": ">=11 <12" },
   "scripts": {
+    "core:setup": "node tools/core.mjs setup",
+    "core:test": "node tools/core.mjs test",
+    "core:demo": "node tools/core.mjs demo",
     "dev": "node --watch src/server.ts",
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.build.json",
@@ -15,7 +18,7 @@
     "legacy:verify": "node tools/verify-legacy.mjs",
     "refs:download": "node tools/references.mjs download",
     "refs:verify": "node tools/references.mjs verify",
-    "check": "npm run typecheck && npm run build && npm test && node tools/check-boundaries.mjs && node tools/verify-legacy.mjs --allow-missing && node tools/references.mjs verify --allow-missing"
+    "check": "npm run typecheck && npm run build && npm test && npm run core:test && node tools/check-boundaries.mjs && node tools/verify-legacy.mjs --allow-missing && node tools/references.mjs verify --allow-missing"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

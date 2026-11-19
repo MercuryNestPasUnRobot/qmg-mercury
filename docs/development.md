@@ -2,6 +2,8 @@
 
 ## 环境
 
+当前已进入 Python Core 阶段：先准备 Python 3.11+ 并运行 `npm run core:setup`。`npm run check` 现在还包括 Core 的 pytest 检查；`npm run core:demo` 提供无 GUI 的结算/重放/单步模拟演示。具体接口及正式规则边界见 [Core 实现说明](core/implementation-v0.1.md)。下文 Node 启动页说明仍适用。
+
 本机使用 Node.js 24.12.0、npm 11.6.2。新项目只安装 TypeScript 5.9.3、`@types/node` 24.10.1 和其类型依赖，不读取旧 `node_modules` 或旧 Python 环境。`.npmrc` 指向官方 npm 注册表，缓存放在新 `.cache/npm/`。
 
 ```powershell
