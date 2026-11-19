@@ -17,8 +17,8 @@
 | Forge 参考 | 259 / 259 文件校验通过，4,023,499 字节 |
 | TripleA 参考 | 88 / 88 文件校验通过，1,176,399 字节 |
 | Git 本地 | 保留旧分支/worktree/归档标签；新建独立历史分支 `codex/reboot-2026-11-19`；origin 指向指定新库 |
-| GitHub 发布 | 新公开仓库已由用户创建；首次写入返回 403 `Resource not accessible by integration`，本机也无命令行凭据；待用户完成连接器仓库授权或本机 Git 登录 |
-| 远程 CI | 已提供 Windows/Ubuntu 工作流；尚未发布和运行，不声称通过 |
+| GitHub 发布 | 已通过系统现有 Git Credential Manager 凭据推送到 `main`，保留用户初始化提交；远程核对 33 文件，只有 main 分支，没有旧分支/标签及被排除目录 |
+| 远程 CI | 首次发布基线 `8a8b66e` 的 Windows 与 Ubuntu 两项均成功，见 [运行记录](https://github.com/MercuryNestPasUnRobot/qmg-mercury/actions/runs/44543896047)；后续提交状态以 GitHub Actions 为准 |
 
 初次下载因本机可用物理内存低于 512 MiB 暂停，保留了当时已下载的两个文件。后续内存恢复后完整下载，全部按锁定提交的体积及 Git blob 校验通过；没有放宽保护阈值。下载与环境的机器报告在 `.cache/`，不进入公开仓库。
 

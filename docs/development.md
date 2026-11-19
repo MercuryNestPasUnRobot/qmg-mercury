@@ -34,7 +34,7 @@ git commit -m "说明实际完成的改动"
 
 不得使用 `git add -f legacy`、`git push --all`、`git push --mirror` 或推送旧归档标签。公开库只接收新代码、说明和索引；不要上传旧卡图、规则 PDF、存档、模型、训练资料、缓存和第三方源码快照。
 
-GitHub 连接器有仓库读写权限，本机命令行尚无 GitHub 凭据。通过连接器完成的远程提交可用公开 `git fetch` 同步；若将来使用命令行 `git push`，需要用户自行登录 Git Credential Manager 或 GitHub CLI，不把令牌写进远程 URL、仓库或日志。
+本机已通过系统现有 Git Credential Manager 凭据成功推送。当前 GitHub 连接器的内容写入仍返回 403，后续发布使用系统 Git；不要把令牌写进远程 URL、仓库或日志。当前本地 `codex/reboot-2026-11-19` 跟踪 `origin/main`，推送当前基线使用 `git push origin HEAD:main`。后续新功能建议从新基线建立独立分支并通过 PR 合并。
 
 ## 本机归档与参考库
 

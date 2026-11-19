@@ -1,18 +1,15 @@
-# GitHub 发布交接
+# GitHub 版本管理
 
-目标仓库为 [MercuryNestPasUnRobot/qmg-mercury](https://github.com/MercuryNestPasUnRobot/qmg-mercury)，用户已创建公开空仓库。origin 已设置，新项目已形成独立本地提交。
+公开仓库：[MercuryNestPasUnRobot/qmg-mercury](https://github.com/MercuryNestPasUnRobot/qmg-mercury)。新项目已通过系统 Git 成功推送到 `main`，保留了用户创建仓库时的初始化提交；本机旧分支、归档标签和其他 worktree 没有上传。
 
-首次通过 GitHub 连接器创建 README 的请求返回 `403 Resource not accessible by integration`，没有写入成功。连接器列出的可用 GitHub App 安装为空；这不等于用户账号没有仓库权限，而是当前连接不能完成该写入。本机 Git Credential Manager 也没有可用的 GitHub 凭据。
-
-继续方法任选其一：
-
-1. 在 [GitHub 应用安装设置](https://github.com/settings/installations) 为 Codex/ChatGPT 所用的 GitHub 应用授权此仓库；如未安装，在 Codex 的 GitHub 连接入口完成配置，然后让助手继续同步。
-2. 由用户在本机完成 Git Credential Manager 登录，随后只推送当前新分支：
+当前本地分支 `codex/reboot-2026-11-19` 跟踪 `origin/main`。向这个基线推送使用：
 
 ```powershell
-git push -u origin HEAD:main
+git push origin HEAD:main
 ```
 
-不要使用 `--all`、`--mirror` 或推送旧标签。当前分支的提交只含新代码、文档、哈希清单和上游来源索引；旧素材、存档、训练资料与源码快照被排除。`.githooks/pre-push` 也会拒绝包含旧 HEAD 的历史。
+后续功能建立 `codex/` 前缀的独立分支，通过 PR 合并。提交前执行 `npm run check` 并检查暂存内容；发布后核对远程分支 HEAD 和 [GitHub Actions](https://github.com/MercuryNestPasUnRobot/qmg-mercury/actions)。
 
-推送后必须核验远程树、分支 HEAD 与 GitHub Actions 状态。连接成功或设置 origin 本身不代表已经发布，也不代表远程 CI 已通过。
+公开提交只含新代码、文档、哈希清单和上游来源索引。旧素材、存档、训练资料、运行依赖与下载的参考源码均被排除。不要使用 `--all`、`--mirror` 或推送旧标签；`.githooks/pre-push` 会拒绝旧任务分支、归档标签及包含旧 HEAD 的历史。
+
+当前 GitHub 连接器的内容写入返回 403，改用本机系统 Git 与已有 Git Credential Manager 凭据后成功。后续优先使用这条已验证的发布路径，不把令牌写进 URL、仓库、脚本或日志。若凭据失效，由用户在官方认证流程中重新登录。
