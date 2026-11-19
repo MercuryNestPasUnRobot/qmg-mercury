@@ -549,3 +549,28 @@ def test_already_collected_vp_is_not_a_future_scoring_opportunity(data, weights)
     after = ScoreEvaluator(p.rules, weights).evaluate(p, 'germany')
     assert after.actual_vp == 1
     assert next(s for s in after.score_points if s['site'] == 'g-home')['baseline_vp'] == 0
+
+
+def test_existing_journal_cannot_be_reused_by_new_game(tmp_path, data):
+    journal = tmp_path / 'shared.jsonl'
+    first = make(data, game_id='first', logger=OperationLogger(journal))
+    play(first, 'g-chain')
+    size = journal.stat().st_size
+    second = make(data, game_id='second', logger=OperationLogger(journal))
+    before = second.state.to_dict()
+    with pytest.raises(CoreError, match='mix journal'):
+        play(second, 'g-chain')
+    assert second.state.to_dict() == before and second.records == []
+    assert journal.stat().st_size == size
+
+
+def test_external_journal_write_is_detected_before_state_publication(tmp_path, data):
+    journal = tmp_path / 'owned.jsonl'
+    p = make(data, logger=OperationLogger(journal))
+    play(p, 'g-chain', auto_resolve=False)
+    before = p.state.to_dict()
+    with journal.open('ab') as stream:
+        stream.write(b'\n')
+    with pytest.raises(CoreError, match='outside its single writer'):
+        p.step()
+    assert p.state.to_dict() == before

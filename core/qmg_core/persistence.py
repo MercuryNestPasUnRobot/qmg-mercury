@@ -12,19 +12,37 @@ class OperationLogger:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._last = None
+        self._size = None
 
     def append(self, record):
         data = (canonical(record) + "\n").encode("utf-8")
         with self.path.open("a+b") as stream:
             stream.seek(0, 2)
             offset = stream.tell()
+            if self._size is not None and offset != self._size:
+                raise CoreError("Journal changed outside its single writer")
             if offset:
                 stream.seek(-1, 2)
                 if stream.read(1) != b"\n":
                     raise CoreError("Refusing to append after an incomplete journal tail")
+                if self._size is None:
+                    stream.seek(0)
+                    last_line = b""
+                    for last_line in stream:
+                        pass
+                    try:
+                        self._last = json.loads(last_line)
+                    except ValueError as e:
+                        raise CoreError("Invalid existing journal tail") from e
+                    if digest({k: v for k, v in self._last.items() if k != "record_digest"}) != self._last.get("record_digest"):
+                        raise CoreError("Existing journal tail checksum mismatch")
                 stream.seek(0, 2)
+            if self._last is not None and (record["previous_record"] != self._last["record_digest"] or record["sequence_id"] != self._last["sequence_id"] + 1 or record["game_id"] != self._last["game_id"] or record["rules_digest"] != self._last["rules_digest"]):
+                raise CoreError("Refusing to mix journal chains, games or rulesets")
             try:
-                stream.write(data)
+                if stream.write(data) != len(data):
+                    raise OSError("Incomplete journal write")
                 stream.flush()
                 os.fsync(stream.fileno())
             except BaseException:
@@ -32,6 +50,8 @@ class OperationLogger:
                 stream.truncate()
                 stream.flush()
                 raise
+            self._last = {k: record[k] for k in ("record_digest", "sequence_id", "game_id", "rules_digest")}
+            self._size = offset + len(data)
 
 
 class SaveRepository:
