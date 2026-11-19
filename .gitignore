@@ -1,0 +1,16 @@
+# Frozen local history, assets, saves and original runtime installations
+/legacy/
+# Third-party reference code stays local; provenance and indices are versioned
+/resources/upstream/
+/node_modules/
+/dist/
+/.cache/
+/coverage/
+*.log
+.env
+.env.*
+!.env.example
+__pycache__/
+.venv/
+.DS_Store
+Thumbs.db

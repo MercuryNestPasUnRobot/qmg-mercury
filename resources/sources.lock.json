@@ -1,0 +1,1769 @@
+{
+  "schemaVersion": 1,
+  "retrievedAt": "2026-11-19",
+  "policy": {
+    "maxProjectBytes": 26214400,
+    "maxTotalBytes": 52428800,
+    "maxFileBytes": 2097152,
+    "concurrency": 2,
+    "minFreeMemoryBytes": 536870912,
+    "minFreeDiskBytes": 32212254720
+  },
+  "projects": [
+    {
+      "id": "forge",
+      "name": "Forge",
+      "repository": "Card-Forge/forge",
+      "commit": "9748ef2c96d18bcb55271e20e63c32bdee3e991c",
+      "license": "GPL-3.0 (see upstream LICENSE)",
+      "repositorySizeKiB": 1095163,
+      "files": [
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AIOption.java",
+          "bytes": 95,
+          "gitBlob": "f141f3cf170409acec2adcb084c90063768e20c7"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiAbilityDecision.java",
+          "bytes": 1568,
+          "gitBlob": "b62de980674354c4d32685c1e0cea2546c769b8a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiAttackController.java",
+          "bytes": 112755,
+          "gitBlob": "439c52ce229e5292648c50204f4ed72c60682bf8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiBlockController.java",
+          "bytes": 73326,
+          "gitBlob": "4dfcdd59a7e50a33606aae897472bdeb13cbb397"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiCache.java",
+          "bytes": 1900,
+          "gitBlob": "b98f7defca016177b8d7a071612f136c9998c680"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiCardMemory.java",
+          "bytes": 11111,
+          "gitBlob": "ea08de6a96d6b60f980aae601026182086157aa5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiController.java",
+          "bytes": 191424,
+          "gitBlob": "66f1f5cffdd8008a028c6fd4ef615e98f96af8d8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiCostDecision.java",
+          "bytes": 35106,
+          "gitBlob": "5e0b3e731317aca78f02013c21bf078e848e882d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiDeckStatistics.java",
+          "bytes": 5035,
+          "gitBlob": "d69e64c3959ff6facc3d135ea3931b6e9c62a798"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiPlayDecision.java",
+          "bytes": 1226,
+          "gitBlob": "e069d8aab22c13f6f9794c5dd25e8d3f601312d6"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiPlayerPredicates.java",
+          "bytes": 1475,
+          "gitBlob": "dee3d00797e2ba83fa093660543849cf536da732"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiProfileUtil.java",
+          "bytes": 8426,
+          "gitBlob": "4762c32e42fd0dd28429d62078425408d20e7cd7"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AiProps.java",
+          "bytes": 9782,
+          "gitBlob": "6ede1a98b3f2d5d538437885eb90a9893b5831d8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/AvailableActions.java",
+          "bytes": 5051,
+          "gitBlob": "ecf09ec136ec46fe1746c54c18446f7c879fec70"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtil.java",
+          "bytes": 160146,
+          "gitBlob": "1b46f79d51cd9d242477984eba380ec4b85e869a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtilAbility.java",
+          "bytes": 24973,
+          "gitBlob": "04b9176ccfc981e4fe3477851e2eb1631df08fce"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtilCard.java",
+          "bytes": 108082,
+          "gitBlob": "e3fc61ea074f9297213901e57c8ab6ddbc26e1b3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtilCombat.java",
+          "bytes": 107508,
+          "gitBlob": "475bee87e7d3db76bb29bb9116a5766eac3d0b71"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtilCost.java",
+          "bytes": 36102,
+          "gitBlob": "55c13feef4e765981afbd876be114a36014b484d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ComputerUtilMana.java",
+          "bytes": 123804,
+          "gitBlob": "25def183979dad085e69b421af009baf4a9705fc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/CopyTargets.java",
+          "bytes": 4157,
+          "gitBlob": "fcc5cf0efd552df19315c0680c4fb0507b913fcb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/CreatureEvaluator.java",
+          "bytes": 14122,
+          "gitBlob": "76808da5e9427a81da1ef9f726b2e36747ffdc61"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/GuardedAbilities.java",
+          "bytes": 12296,
+          "gitBlob": "bcc781c8bc0aa53b2a804e63e0733758363eff2f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/LandPlanner.java",
+          "bytes": 21589,
+          "gitBlob": "6afa774cdfc9e7ce3fe4d2a083ed0fd06c588eff"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/LobbyPlayerAi.java",
+          "bytes": 1815,
+          "gitBlob": "09d9ad01ad2b70d2775f87aad27785cba439361b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ManaDenial.java",
+          "bytes": 12114,
+          "gitBlob": "aaaa01c4124c38d3e51480fcac68730c96204ce2"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ManaSacrifice.java",
+          "bytes": 11368,
+          "gitBlob": "5936b6ef9e3be6675b03b474e7707320b90be502"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/NamedDiscard.java",
+          "bytes": 9873,
+          "gitBlob": "fa747bbaec41795c8d068155822d971a88a211e6"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/NumberChoice.java",
+          "bytes": 3973,
+          "gitBlob": "f1b4cd8c3ce11cfc93ad7d73eb5b3ec83b48c1d0"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/PlaceholderTargetAi.java",
+          "bytes": 8975,
+          "gitBlob": "56be6e104d5f79b00d6b5dfaf23ea7e8c4c25f2f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/PlayerControllerAi.java",
+          "bytes": 95984,
+          "gitBlob": "9d100743e2fc8ce2efc28e730720a3d1ed75cbca"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ProwessTiming.java",
+          "bytes": 1574,
+          "gitBlob": "220e55dd0a3f478fae19a4bba7028a88baab7882"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/RunawayLoop.java",
+          "bytes": 2925,
+          "gitBlob": "98b636cd029d3017e259cb985096123459f8cb02"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/SideboardAdvisor.java",
+          "bytes": 21079,
+          "gitBlob": "08c15e26e33329274f07c7da9b64c4dd282b3613"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/SpecialAiLogic.java",
+          "bytes": 21570,
+          "gitBlob": "de8e383cd9426983f3761c546dbb1c26f51b2568"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/SpecialCardAi.java",
+          "bytes": 105853,
+          "gitBlob": "7c039d60224b91c5a75c596341675cff4b7c4d44"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/SpellAbilityAi.java",
+          "bytes": 22982,
+          "gitBlob": "b349aded174cea5685b87b3278bc1cc8d9029471"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/SpellApiToAi.java",
+          "bytes": 12857,
+          "gitBlob": "e4401498fc1b19f1d6202fb950b9697f0fa9aa2f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ActivateAbilityAi.java",
+          "bytes": 3293,
+          "gitBlob": "2b960dc05df2257ddfcd8297958afc59a7a173cf"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AddPhaseAi.java",
+          "bytes": 472,
+          "gitBlob": "358e626f2d0510d1c89b001c0bbc6d7641a6017d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AddTurnAi.java",
+          "bytes": 3416,
+          "gitBlob": "6526f10b7a8ad6795b3b23290247f218ccd7929a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AdvanceCrankAi.java",
+          "bytes": 799,
+          "gitBlob": "de67940bcdb4636b4c3b397451875cc27b2e8658"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AirbendAi.java",
+          "bytes": 3587,
+          "gitBlob": "c4396022e9393d79a75bf76c0f763c8605eb64eb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AlterAttributeAi.java",
+          "bytes": 7228,
+          "gitBlob": "d858ae7a748a4bdf060963572b5b02fd8ad0a24b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AlwaysPlayAi.java",
+          "bytes": 847,
+          "gitBlob": "938d6e3f579ff2e1f7c4260deb73c63795e6b8b4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AmassAi.java",
+          "bytes": 4286,
+          "gitBlob": "2cc4cbbef73689667736267a335beb7d79f8ee21"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AnimateAi.java",
+          "bytes": 39147,
+          "gitBlob": "8335a18fe5854d24b70f0d6bd4126eba779ae18c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AnimateAllAi.java",
+          "bytes": 1390,
+          "gitBlob": "1a0399445c70294ba2539812d96d01f2d97362c2"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AssembleContraptionAi.java",
+          "bytes": 2546,
+          "gitBlob": "ddffe609294ce9cf2a75dd266ab2bfe017aafac5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AssignGroupAi.java",
+          "bytes": 1211,
+          "gitBlob": "11d63aab09ff3d4de1fe61c292964e44c6efc5c7"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AssimilateAi.java",
+          "bytes": 1985,
+          "gitBlob": "2417d2299a6884b155baf4adbde3e47d1d9b4f6f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/AttachAi.java",
+          "bytes": 74088,
+          "gitBlob": "60a19966d0da899d5c6cdb0c7e42c11b178b42ef"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BalanceAi.java",
+          "bytes": 2478,
+          "gitBlob": "495d3a9bc3f0a6b7f95bb49f551d1a0a5639530b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BecomeMonarchAi.java",
+          "bytes": 2003,
+          "gitBlob": "976f6d6a7016d2056ac4e1285fbf159051cddf74"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BecomesBlockedAi.java",
+          "bytes": 2400,
+          "gitBlob": "94458e13c87e30009d2a3017dbf28bdce86ea0f8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BidLifeAi.java",
+          "bytes": 2259,
+          "gitBlob": "6595f5a5723a217d705a78536245275cc469aaa4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BlightAi.java",
+          "bytes": 3536,
+          "gitBlob": "052b4cf39827d91abc4c39a0ed8b1e32473bef5d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BondAi.java",
+          "bytes": 2963,
+          "gitBlob": "e025bc761679851e3882220277a0f35e402889de"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/BranchAi.java",
+          "bytes": 3218,
+          "gitBlob": "c450cc49573e54fafdc2cc10ed7e211c9beff7e4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CannotPlayAi.java",
+          "bytes": 931,
+          "gitBlob": "e17c3249524a6cac3fc15603bb2d691140474c9b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChangeCombatantsAi.java",
+          "bytes": 2723,
+          "gitBlob": "1d6358d4a457598ab8cb3c61efd17a07b4f1f288"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChangeTargetsAi.java",
+          "bytes": 5492,
+          "gitBlob": "211e23c0c0210d1f37660912411b9757de69df2a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChangeZoneAi.java",
+          "bytes": 104888,
+          "gitBlob": "377f9f16714681d75bddbb7af3dc7bd80a3ac23b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChangeZoneAllAi.java",
+          "bytes": 23250,
+          "gitBlob": "8fe3dbb66b786e981792ccc97b0f20b4f4eaaac7"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CharmAi.java",
+          "bytes": 15961,
+          "gitBlob": "6b36e381390d2a1b250e9b5b822c3844c38de0de"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseCardAi.java",
+          "bytes": 13630,
+          "gitBlob": "551a974dfd7079226016432caf630296a3670b10"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseCardNameAi.java",
+          "bytes": 5390,
+          "gitBlob": "f0a528c9be219a39c736682d12c55ef1fd8396c9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseColorAi.java",
+          "bytes": 4085,
+          "gitBlob": "9947b2ab4d053ef9e9913b776d14d7029fc77fd5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseCompanionAi.java",
+          "bytes": 926,
+          "gitBlob": "5452ac9368bc1751b65ac67c8460455e01ecf444"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseDirectionAi.java",
+          "bytes": 2415,
+          "gitBlob": "5413ee13a67cccfca3e604bb3e207cca04bfd2fa"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseEvenOddAi.java",
+          "bytes": 1203,
+          "gitBlob": "877986cb13975189dd55c01d6face02003303e66"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseGenericAi.java",
+          "bytes": 12368,
+          "gitBlob": "b2bdc38f0972635d11e318f5acf8a2cebcbdc9c6"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseNumberAi.java",
+          "bytes": 3274,
+          "gitBlob": "c1347db4de3a52d63d752fd662c771ca46bd884d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChoosePlayerAi.java",
+          "bytes": 3378,
+          "gitBlob": "ebd821c815b9283e09cc7bf39d6ff36a58c3d6d5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseSourceAi.java",
+          "bytes": 9404,
+          "gitBlob": "d953dd78a02d22abaef66a5d8ef7c83b438c9bf2"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ChooseTypeAi.java",
+          "bytes": 8051,
+          "gitBlob": "b098187424063f70db6b95be4d361ea2851401fd"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ClashAi.java",
+          "bytes": 4098,
+          "gitBlob": "66f9da8dac18ed5e354ebe72b04ef4a55eb28933"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ClassLevelUpAi.java",
+          "bytes": 1616,
+          "gitBlob": "f46b9198615be4631df0b3107ca8f32c1d681d73"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CloakAi.java",
+          "bytes": 1422,
+          "gitBlob": "bbf5c289d26b1d1da032a4f2a31572629a560e2f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CloneAi.java",
+          "bytes": 15224,
+          "gitBlob": "f19d67f00c9c8668c78524e7a99ecc250a09fb70"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ConniveAi.java",
+          "bytes": 5369,
+          "gitBlob": "33ba466aaa14d9aedcd0b26437dcf34b9cd624b8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ControlExchangeAi.java",
+          "bytes": 7010,
+          "gitBlob": "b5218a609624c0acf170da74801fa89967d2e631"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ControlGainAi.java",
+          "bytes": 13944,
+          "gitBlob": "63e5d4764d06ab00544a3539415b31c976a239f3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ControlGainVariantAi.java",
+          "bytes": 2680,
+          "gitBlob": "80d428319b8d84c65fd86f9a503a187a6cd7c016"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CopyPermanentAi.java",
+          "bytes": 13241,
+          "gitBlob": "c03f8a17f7177fd8033606fa8cbd8101b245cd0b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CopySpellAbilityAi.java",
+          "bytes": 10991,
+          "gitBlob": "e22b1063083ee346679ea2d5a8e49aa1d5b1c07c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CounterAi.java",
+          "bytes": 17780,
+          "gitBlob": "8597aaa6e10b7803873e361c92e7b5a81dfe7e1c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersAi.java",
+          "bytes": 5620,
+          "gitBlob": "d8ddb35a32af472ffd810d90c8e005d97798aeff"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersMoveAi.java",
+          "bytes": 20375,
+          "gitBlob": "71591ddb706dab0268476f8a9d9eff0794e8e5f4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersMultiplyAi.java",
+          "bytes": 7266,
+          "gitBlob": "546a15d677ebb5a9df9444f2a4d87260885f5fa1"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersProliferateAi.java",
+          "bytes": 8190,
+          "gitBlob": "b93ae2fd4047e1fe6a5d27a3b2ee4a93d2c85ca6"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersPutAi.java",
+          "bytes": 60310,
+          "gitBlob": "a1491c6b707f7668c205f6bc4f0e90e1c93f1340"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersPutAllAi.java",
+          "bytes": 6935,
+          "gitBlob": "7e0007807d3cee2ba52b3d0c02e40c3e78ef4445"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersPutOrRemoveAi.java",
+          "bytes": 12157,
+          "gitBlob": "c40b33a67a8a49f4318a63945534328364eed28a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/CountersRemoveAi.java",
+          "bytes": 22170,
+          "gitBlob": "c6af38c1062c57cc292a48f7f79d5ca3bf03a89e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DamageAiBase.java",
+          "bytes": 8456,
+          "gitBlob": "9a4b85b61db06608313fbee023872aa0e4771a0f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DamageAllAi.java",
+          "bytes": 13586,
+          "gitBlob": "d44f0de50521115d769c981f8b5ff1c4cce4978a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DamageDealAi.java",
+          "bytes": 55632,
+          "gitBlob": "7a428e0242428d4e847f1e1001aa4d0a8655e0bb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DamageEachAi.java",
+          "bytes": 2432,
+          "gitBlob": "a51d6e948e5c27733251eb1a50a7877094f68e1b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DamagePreventAi.java",
+          "bytes": 8733,
+          "gitBlob": "6b7a7c5515ba886c056ec194360f63215d33c535"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DayTimeAi.java",
+          "bytes": 1880,
+          "gitBlob": "da0c109282df40a9084eb78ee6ac5d1a7f99e411"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DebuffAi.java",
+          "bytes": 9370,
+          "gitBlob": "162ed79ce89ddf1898ef3293dfe88c79da2b3fcc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DelayedTriggerAi.java",
+          "bytes": 7780,
+          "gitBlob": "9d8d45fb5af9e3d208c0ec8ccd2b90d20348f50c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DestroyAi.java",
+          "bytes": 24804,
+          "gitBlob": "edefb6608c436192b3c7ad4a6c55eed7c40b173e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DestroyAllAi.java",
+          "bytes": 10945,
+          "gitBlob": "6dc9a8c7598c203f3d26410c53d590917ffe4f10"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DetainAi.java",
+          "bytes": 4880,
+          "gitBlob": "faaaaa96ab619d3b4f2cc36fb1b97380b6f855a8"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DigAi.java",
+          "bytes": 10053,
+          "gitBlob": "265d1549b3b5ab008086aa20c02908f7369362d3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DigMultipleAi.java",
+          "bytes": 3705,
+          "gitBlob": "bceaeac36e65e44ca1fdbbed7f5bb3729226e5cc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DigUntilAi.java",
+          "bytes": 7687,
+          "gitBlob": "207a4fcf5d26743f6ce264f10f93eb0ebaba2948"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DiscardAi.java",
+          "bytes": 12567,
+          "gitBlob": "2dd93294878589d12935a65dc99541507842a3e4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DiscoverAi.java",
+          "bytes": 3740,
+          "gitBlob": "4455f9c01b3ea2b3b9a01b401c720be38c58722b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DrainManaAi.java",
+          "bytes": 2806,
+          "gitBlob": "ea67e9c4c639e5aedbcf5e705e73240813e5751f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/DrawAi.java",
+          "bytes": 28325,
+          "gitBlob": "8b73648b90292712d78138d1a2964981384c657e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/EarthbendAi.java",
+          "bytes": 2397,
+          "gitBlob": "073b942d361e06d9df31af07202f23c7ea3034c6"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/EffectAi.java",
+          "bytes": 45244,
+          "gitBlob": "a1cf58a95dc163287ec9e50e9fc78c20d47207d2"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/EncodeAi.java",
+          "bytes": 3849,
+          "gitBlob": "0ce8eb920ad36c45771b044453a39fc80f7cfd3f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/EndTurnAi.java",
+          "bytes": 1115,
+          "gitBlob": "c9b595b9bc752cd294e3de2a3bf4a2c759908b67"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/EndureAi.java",
+          "bytes": 6703,
+          "gitBlob": "f9e59ab053b5a982bda607fca415e0f2a99dfe22"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ExploreAi.java",
+          "bytes": 3398,
+          "gitBlob": "e80bc69eacb1136ec8ae985a8a1ca50bd38cdbaf"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/FightAi.java",
+          "bytes": 15756,
+          "gitBlob": "1cb5703dd37f6c58ba63f237d91baa5a8cd82eef"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/FlipCoinAi.java",
+          "bytes": 4302,
+          "gitBlob": "89be4d336fd43f0a7597afb1960165a899721134"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/FlipOntoBattlefieldAi.java",
+          "bytes": 2361,
+          "gitBlob": "9a5eb0dbe894c2d02e5c37b82aa852edffab0fe4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/FogAi.java",
+          "bytes": 7133,
+          "gitBlob": "b24466240643ea8966b44ddfc9113c5f16d408bc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/GameLossAi.java",
+          "bytes": 1562,
+          "gitBlob": "2e4d228f77ab4b31fa4dc88f84b6a9cb7a0e7d81"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/GameWinAi.java",
+          "bytes": 1301,
+          "gitBlob": "079be0d542a3a47ea392942deabb2be400abf999"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/GoadAi.java",
+          "bytes": 4527,
+          "gitBlob": "a04ab78364ab845af331e2e01c38ea1e3d95ee49"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/HauntAi.java",
+          "bytes": 1313,
+          "gitBlob": "710dafdf6932bb71ff1aaf4275842e719fc9ba2f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ImmediateTriggerAi.java",
+          "bytes": 3589,
+          "gitBlob": "f6bb878f96d9cbeeff9e29f40b657e007c70989c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/InvestigateAi.java",
+          "bytes": 1144,
+          "gitBlob": "d6d29b6f22f9d3d2d293e95d7717602db1f24589"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LearnAi.java",
+          "bytes": 2190,
+          "gitBlob": "da6270e0bfedd008a4b4042789c8509473a93eed"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LegendaryRuleAi.java",
+          "bytes": 2473,
+          "gitBlob": "cd5ad701a4b791c8b5652c1398ac1c5093aa9313"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LifeExchangeAi.java",
+          "bytes": 3265,
+          "gitBlob": "8985b6425b80df2aa65645d5db81060a4ac32722"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LifeExchangeVariantAi.java",
+          "bytes": 7205,
+          "gitBlob": "551227631a3e6647778955384dd1851b96137450"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LifeGainAi.java",
+          "bytes": 11515,
+          "gitBlob": "82934fdfccae1e4b849be24b38a38af1bd9d833f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LifeLoseAi.java",
+          "bytes": 11727,
+          "gitBlob": "7d5ffd0df8ff275305319b25274c136f440b070a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/LifeSetAi.java",
+          "bytes": 7844,
+          "gitBlob": "ae06e35349d89aed97ca5dd1ae73262465005595"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ManaAi.java",
+          "bytes": 11436,
+          "gitBlob": "05fad1770af4335915fec989efa0e3d55bebd0be"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ManifestAi.java",
+          "bytes": 1428,
+          "gitBlob": "a187d4502ad2c2bc83e63afccb096e695788c4de"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ManifestBaseAi.java",
+          "bytes": 5771,
+          "gitBlob": "9bd519ab512fb393c1a3fa8acc4c056507327482"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/MayDecisions.java",
+          "bytes": 6497,
+          "gitBlob": "27def04c14bf058aed522cb48edf626626a0fa95"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/MeldAi.java",
+          "bytes": 1518,
+          "gitBlob": "3c1598a6bdf8cee93e45170bf3e78337d648594e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/MillAi.java",
+          "bytes": 9517,
+          "gitBlob": "889b79e5db935c49ae683df7d616f4dcb6e5a2eb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/MustBlockAi.java",
+          "bytes": 6731,
+          "gitBlob": "3706a8855436f81f0e6df7141aabc73dfa173c5d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/MutateAi.java",
+          "bytes": 2403,
+          "gitBlob": "7d0af6f00ac76a8e9dcedd243a6fc1feac01b35e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/NothingAi.java",
+          "bytes": 3610,
+          "gitBlob": "448d3705fad000fc12aa7eac361e4cf2f369d9bb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PeekAndRevealAi.java",
+          "bytes": 4400,
+          "gitBlob": "a1ffbe414cbc16784bff4a3baa5b419ed7429844"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PermanentAi.java",
+          "bytes": 23373,
+          "gitBlob": "47ee986d705f9a9d825b8cc5f2b6384f2d4181c5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PermanentCreatureAi.java",
+          "bytes": 11497,
+          "gitBlob": "92773c67a27780d1bfaf2306f21159b612ac25b5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PermanentNoncreatureAi.java",
+          "bytes": 3909,
+          "gitBlob": "6b5cc6f4f562bd4a2d9e7a1ab56b20815540f5f0"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PhasesAi.java",
+          "bytes": 5737,
+          "gitBlob": "b47346171e5053d2e1042bc883984fb091d2892a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PlayAi.java",
+          "bytes": 13677,
+          "gitBlob": "20914213c64a237c78d59e724f615d5abc4a8f9f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PoisonAi.java",
+          "bytes": 5604,
+          "gitBlob": "66c177e0a53c1e028a5a6f45c6fda6c9a5e8fde4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PowerExchangeAi.java",
+          "bytes": 2798,
+          "gitBlob": "3f6f7812080bde89ea2eec542d6759be46af87d9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ProtectAi.java",
+          "bytes": 12494,
+          "gitBlob": "eb1b1ee0c908dc201ee6d751515b0af94130d3e9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ProtectAllAi.java",
+          "bytes": 911,
+          "gitBlob": "06b82f8aa2bd521516e32e8d0f939f2dbfb8596b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PumpAi.java",
+          "bytes": 32360,
+          "gitBlob": "d151c3672127f47805df2d0f5cdff9b73083f177"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PumpAiBase.java",
+          "bytes": 24859,
+          "gitBlob": "d5f1dae8c4f545d14c915a64bf36707ec7e6356e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PumpAllAi.java",
+          "bytes": 8306,
+          "gitBlob": "e84d70dafb6e85c6e8923b5b0b21ab6846345a9f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/PutStickerAi.java",
+          "bytes": 5724,
+          "gitBlob": "4d91c0e84332baf724c789d23b5f15b15f99161f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RearrangeTopOfLibraryAi.java",
+          "bytes": 5585,
+          "gitBlob": "9ae617100f00cbadc60181c0c497510eba149231"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RegenerateAi.java",
+          "bytes": 7691,
+          "gitBlob": "2f0f8f1c051f8c2d68f7374e392dc3d082b28771"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RemoveFromCombatAi.java",
+          "bytes": 1373,
+          "gitBlob": "80472690c0e256672222bc982b61dffee26ec894"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RepeatAi.java",
+          "bytes": 4159,
+          "gitBlob": "1002736b0219b652fa3b433b84f98d414992271f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RepeatEachAi.java",
+          "bytes": 4583,
+          "gitBlob": "9e3e4d6ad2db14338190dbd9dd651c70ea072598"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ReplaceDamageAi.java",
+          "bytes": 1131,
+          "gitBlob": "2bf0000393e687310b54176356533e6970a41722"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RestartGameAi.java",
+          "bytes": 1219,
+          "gitBlob": "709ea63cda663005643dd69963bcd6f02eb99852"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RevealAi.java",
+          "bytes": 4715,
+          "gitBlob": "988cb007ae7fc8a5b9a74371d69781790a543fd3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RevealAiBase.java",
+          "bytes": 1635,
+          "gitBlob": "4230343c5b9946bbd89d1dfb9eb7e6e4220138be"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RevealHandAi.java",
+          "bytes": 1145,
+          "gitBlob": "ee98df9ab613a2b4fea53e0c62900d749d78b00a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RollDiceAi.java",
+          "bytes": 2496,
+          "gitBlob": "2a811b3439ccdcf0d57145f50b2d53140ebad058"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/RollPlanarDiceAi.java",
+          "bytes": 10840,
+          "gitBlob": "3e36e590fd2a1e10c334f8965fb13098e608cddc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SacrificeAi.java",
+          "bytes": 14351,
+          "gitBlob": "60d39d4f3e3530a925c726f5f9e8f5886c298a00"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SacrificeAllAi.java",
+          "bytes": 2360,
+          "gitBlob": "d0b9ed4e28e5c01674633f99e0c2c29aa3fbb265"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SacrificeWorth.java",
+          "bytes": 7020,
+          "gitBlob": "5b5661bb70c88152f609f047b6358746fbfe9bc9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ScryAi.java",
+          "bytes": 7752,
+          "gitBlob": "d4ba9adfca7e2211d85521f757096cf8b7689dce"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SetStateAi.java",
+          "bytes": 10380,
+          "gitBlob": "1d35a82385611a83db4066f4e4f0c250efbb7947"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ShuffleAi.java",
+          "bytes": 2439,
+          "gitBlob": "9584e17ae9c8376c721a6621e8add7f77f88f5a0"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SkipPhaseAi.java",
+          "bytes": 1651,
+          "gitBlob": "fb323267ffd269a76b660373bec16a86ce967e2a"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SkipTurnAi.java",
+          "bytes": 1056,
+          "gitBlob": "2fc3d71aaa230bb21eabe19b5934dc504137990e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/StoreSVarAi.java",
+          "bytes": 1513,
+          "gitBlob": "9f71b9f84dd99cefbfcaf8b3ee63eac44d994fcd"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/SurveilAi.java",
+          "bytes": 4337,
+          "gitBlob": "a3f3b358bf32c68653018716b71ad644b9439b52"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TapAi.java",
+          "bytes": 8954,
+          "gitBlob": "66dd947b6271d1b07e253ffd47093cd8bea5d242"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TapAiBase.java",
+          "bytes": 11872,
+          "gitBlob": "8f93fccdbbb890ad035e18f0e431c2978a18c064"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TapAllAi.java",
+          "bytes": 4946,
+          "gitBlob": "05aacdcef12dd7aa204e1aa60c540e933c3cc2d9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TapOrUntapAi.java",
+          "bytes": 4477,
+          "gitBlob": "422c1a670ac79b134a35dd251600c713ae034dba"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TapOrUntapAllAi.java",
+          "bytes": 776,
+          "gitBlob": "4c7ee71f7f8d54be7dfd3d5c1e054ef2806fe6ae"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TargetOnlyAi.java",
+          "bytes": 17124,
+          "gitBlob": "9078a0056edfc13e493d0facbc0fddb13a9cdfb1"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TimeTravelAi.java",
+          "bytes": 2435,
+          "gitBlob": "c261f2ad23fabe064eac7ea6bb8083a3b49a79cc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TokenAi.java",
+          "bytes": 24323,
+          "gitBlob": "0230d9455db3888c05ded05c32ba6af7c5a2a063"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/TwoPilesAi.java",
+          "bytes": 2055,
+          "gitBlob": "cab38fddd487c2220214dfd94b4dec633cc60e7f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/UnattachAi.java",
+          "bytes": 1780,
+          "gitBlob": "32784abc14e2692af685ca3c9f49941878174a21"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/UnlockDoorAi.java",
+          "bytes": 6388,
+          "gitBlob": "48358b59f9373c1b02c8171ce35db96dc8f5d18b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/UntapAi.java",
+          "bytes": 23508,
+          "gitBlob": "78452a1907048479adb6b22058bc8a57192c6ba3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/UntapAllAi.java",
+          "bytes": 2494,
+          "gitBlob": "c171d059fb1e9747bb2cd1c87f392e3754c58c58"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/VentureAi.java",
+          "bytes": 3974,
+          "gitBlob": "fcc2f4521a7dfe4f19f1fe5954ae181353157d23"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/VoteAi.java",
+          "bytes": 2606,
+          "gitBlob": "550b56fe45f298e9dba8b07dd46a2f663fe646ef"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/ability/ZoneExchangeAi.java",
+          "bytes": 2548,
+          "gitBlob": "6f2ac39b757f81e7992d63aca4585b79de21b4cb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ActivationGuard.java",
+          "bytes": 56254,
+          "gitBlob": "b59ced367a6f4f3eae92bf429569f3bf00f59f6b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/AffinityPlan.java",
+          "bytes": 4115,
+          "gitBlob": "add446b8e220ba87d785025d32ee6778270fcf62"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/AiCardLists.java",
+          "bytes": 16877,
+          "gitBlob": "a66d085711d7666d47092db76df3bd8c8fd9a2e1"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/AlurenPlan.java",
+          "bytes": 48009,
+          "gitBlob": "3b6e0e17e8c131d31e417c934d0ece956a7d96ce"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/AntiCombo.java",
+          "bytes": 5702,
+          "gitBlob": "83ad0b25996325858f8fe253f470096c1ea43cfa"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ComboAssembly.java",
+          "bytes": 13723,
+          "gitBlob": "fca1674f2208fb784bd8ec0dc6d944f83d34607f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ComboCatalog.java",
+          "bytes": 24150,
+          "gitBlob": "3617ca163c0869789ea42a13504b38ec8745e398"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ComboGuard.java",
+          "bytes": 43247,
+          "gitBlob": "8f3e22a4e4b4e4e1e97aa67d10511a41bb19aebd"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ComboPlan.java",
+          "bytes": 187006,
+          "gitBlob": "b9912895745c026df622159b4597135ecbc25164"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/CommanderPlan.java",
+          "bytes": 24952,
+          "gitBlob": "8bc674202ca88532f80c126ef4a1a09cd160baa0"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ConsultationWin.java",
+          "bytes": 6694,
+          "gitBlob": "e5121b9106073a1333d0b24302a800f34478ff14"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/DeckPlan.java",
+          "bytes": 19037,
+          "gitBlob": "0f090fde4910b2eb0b4cd8437df52a11e43771ca"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/DonateCombo.java",
+          "bytes": 9605,
+          "gitBlob": "9e42cbc92c6c9fc51cbad5dc3bc65450711ec8d5"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/DoomsdayPile.java",
+          "bytes": 28808,
+          "gitBlob": "0e39c79190798f001f1dc5712f976751c00201e1"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/DreadReturnWin.java",
+          "bytes": 3322,
+          "gitBlob": "96bfd8e7ad5efc779e9cc1d4d897c544f81a0c7e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/DredgeLine.java",
+          "bytes": 7376,
+          "gitBlob": "ca14ed57e68bf7acc9cb967a9daff3191a7d2d8b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ElfLoop.java",
+          "bytes": 23621,
+          "gitBlob": "5bcbb185b2d8ba8be7819f2e7d89520de2ccee59"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/EnablerGuard.java",
+          "bytes": 6622,
+          "gitBlob": "2187bacdb0b2cd85c1dd0be1cf1f079f87af2362"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/FlatMonteCarloPicker.java",
+          "bytes": 169077,
+          "gitBlob": "61ca7591bceb918edb8c399215a09ee6eb41a73c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/FlatMonteCarloStats.java",
+          "bytes": 16833,
+          "gitBlob": "7a0105d7ae88f1ef9524b1b4e636c419e3c00ed7"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/Forecast.java",
+          "bytes": 3471,
+          "gitBlob": "5b075b37e1c925027f0a4341beb8c7844d8cb4ad"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/GameCopier.java",
+          "bytes": 30418,
+          "gitBlob": "bd4f2b2acd04d08b363ff63b05d4a770c9336c1c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/GameSimulator.java",
+          "bytes": 18722,
+          "gitBlob": "5e4e3381c1690b86aaa7aba7d2176951b4fc3f03"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/GameStateEvaluator.java",
+          "bytes": 17950,
+          "gitBlob": "f03354e1859cda0988822936c881cb22b51417ad"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/HandAbilities.java",
+          "bytes": 4664,
+          "gitBlob": "8e43f267023b5d71bf47a17364591c6d6e23413c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/HiddenInfoShuffler.java",
+          "bytes": 4715,
+          "gitBlob": "2f356488df91185a2283e80451561e8130b0e24d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/LegalityGuard.java",
+          "bytes": 21451,
+          "gitBlob": "b6db04893d214ef25285d86d168dd35d60b71843"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/LibraryOutWin.java",
+          "bytes": 2945,
+          "gitBlob": "ff3f11d5ec5d483986235d647d049c2cdd1f29eb"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/LifeDrawGuard.java",
+          "bytes": 2924,
+          "gitBlob": "61b924366a05503a58898b5ba10e9d9abd1ea027"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/LoopRunner.java",
+          "bytes": 48606,
+          "gitBlob": "cbe27430eb61a76b26c5364b015cf66bd97bf058"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ManaConversion.java",
+          "bytes": 11242,
+          "gitBlob": "73b76732407e4104b9fa9c05f7534ce21cba9821"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/MassRemoval.java",
+          "bytes": 6969,
+          "gitBlob": "da640367c43dd6cba0aa89492c6f87681c1ea761"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/MultiTargetSelector.java",
+          "bytes": 5766,
+          "gitBlob": "fcf8bbf34fa701bb1f6fd354cfad40f8a12c7d6c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/OathTiming.java",
+          "bytes": 3740,
+          "gitBlob": "b366c3d1e8d3f02b375280b3b3864afd30c3b836"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/OnePlaySafetyChecker.java",
+          "bytes": 2306,
+          "gitBlob": "b70bc1086a7fb156340e274402a789c71f81a176"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/OpeningHand.java",
+          "bytes": 22807,
+          "gitBlob": "bc46ed9ba5ebc1cecd108d14eaa8a58db444ea09"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/ParadoxOutcome.java",
+          "bytes": 3376,
+          "gitBlob": "acf9ff1371ff66078150917c1f45b5a03a30ec94"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/Plan.java",
+          "bytes": 5199,
+          "gitBlob": "bdebb458110a94287214f56e69dfc9e34d1c6bb9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/PodPlan.java",
+          "bytes": 3833,
+          "gitBlob": "8ab2e02b5675fa4682eca66999d58eac9885635e"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/PossibleTargetSelector.java",
+          "bytes": 9270,
+          "gitBlob": "dd1a72cc3ff63e917de02e99d2ca460e0691090d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SimAudit.java",
+          "bytes": 9332,
+          "gitBlob": "e90a4738f6c3d3f00a90009771d15f0d921ccfbc"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SimulationController.java",
+          "bytes": 11614,
+          "gitBlob": "b27998c2c830d063a2834b23e90f65931874794c"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SpecialActions.java",
+          "bytes": 6560,
+          "gitBlob": "46e8072e7b7f762c35deceda24331526b77f66ea"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SpellAbilityChoiceCopier.java",
+          "bytes": 4654,
+          "gitBlob": "145913dd86664083f867cbb5d39e38ebe4d65066"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SpellAbilityChoicesIterator.java",
+          "bytes": 12096,
+          "gitBlob": "18d3eee61c00ed31c798264223eea72eecd7ef7b"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SpellAbilityPicker.java",
+          "bytes": 20557,
+          "gitBlob": "ff50b7d0535235698eb5078ea1e73a1c87cba641"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/StifleCombo.java",
+          "bytes": 7562,
+          "gitBlob": "c91e16bd2c66b02e55b3af8a05c5a7779aeaf58d"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/StormSolver.java",
+          "bytes": 34257,
+          "gitBlob": "d587f00fca89783ba4f1e49e39300c1faa344744"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/StrategicEvaluator.java",
+          "bytes": 12969,
+          "gitBlob": "a76b9ce317e617273b4cf33e504aeb4b5e2c7922"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/SurpriseEntry.java",
+          "bytes": 6179,
+          "gitBlob": "4ea94d6aa386b3c1618df3b6654f271f3ec5cae4"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/TidePlan.java",
+          "bytes": 5898,
+          "gitBlob": "1705d0f49c65ee7ebedeeb475cb9d279f683369f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/TideSolver.java",
+          "bytes": 7127,
+          "gitBlob": "b5555683746146aa759053992538dbe232b9f67f"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/TimedAbilityGuard.java",
+          "bytes": 12350,
+          "gitBlob": "178fbb8d4e71035d8382b3a39f1f33a90d99f446"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/TutorPlan.java",
+          "bytes": 7649,
+          "gitBlob": "006d3f8d8b6a86f92ed3736a60e8978e150ea507"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/VaultLoop.java",
+          "bytes": 24904,
+          "gitBlob": "4ce7d68d2e1ad24d088aa47171722b271d8c8cb3"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/VetoLog.java",
+          "bytes": 5259,
+          "gitBlob": "0414f3c654989b20042c24e7465778d8bf006a99"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/WillReplay.java",
+          "bytes": 2962,
+          "gitBlob": "a8b77270fbb270563f074384f1e0983968ab7dc9"
+        },
+        {
+          "path": "forge-ai/src/main/java/forge/ai/simulation/XChoice.java",
+          "bytes": 14387,
+          "gitBlob": "36293546d5188923c37c2da20f5771ec1ac42947"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 35148,
+          "gitBlob": "e72bfddabc15be5718a7cc061ac10e47741d8219"
+        },
+        {
+          "path": "README.md",
+          "bytes": 4869,
+          "gitBlob": "08e1272228cdea91a2b7b6af21eb1bd155cfc117"
+        },
+        {
+          "path": "pom.xml",
+          "bytes": 16220,
+          "gitBlob": "897e7e5ce73c4e52f01fff63ec8cbadce9d070ef"
+        },
+        {
+          "path": "forge-ai/pom.xml",
+          "bytes": 1077,
+          "gitBlob": "b51460f8ce7b2e409cf65e03c6f97b48126d7579"
+        }
+      ]
+    },
+    {
+      "id": "triplea",
+      "name": "TripleA",
+      "repository": "triplea-game/triplea",
+      "commit": "84ad0f7911d46d1c0fd37592606137e29e5f7ebe",
+      "license": "GPL-3.0 (see upstream LICENSE)",
+      "repositorySizeKiB": 727859,
+      "files": [
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/does/nothing/DoesNothingAi.java",
+          "bytes": 3167,
+          "gitBlob": "588d270184ca68b3d18972f8bfcb1c8aae42c8e2"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/Constants.java",
+          "bytes": 183,
+          "gitBlob": "b716316ddd0c7ad83344636c97f7b22dbad5fdbc"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/FlowFieldAi.java",
+          "bytes": 5037,
+          "gitBlob": "56491a519310ea6be1e5453ddc93b0996ff3f354"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/README.md",
+          "bytes": 1093,
+          "gitBlob": "16705a21c390a89b8bdc1227289744e7714125dd"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/InfluenceMap.java",
+          "bytes": 7358,
+          "gitBlob": "b83eb8d0362e3de179ced275713335cecfbc2d7c"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/InfluenceMapBuilder.java",
+          "bytes": 4453,
+          "gitBlob": "99982e92a1a3074e3ce1da4b12690efa667de9d0"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/InfluenceMapSetup.java",
+          "bytes": 613,
+          "gitBlob": "6bf66c2d0c6c30ca4a46f9438dd70d7e3f12702d"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/InfluenceTerritory.java",
+          "bytes": 2671,
+          "gitBlob": "722833dac0724106cac760752c61cd068d97bb30"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/ResourceValue.java",
+          "bytes": 1308,
+          "gitBlob": "dbd70b9be3b6c6cfdaf0c95b7e4bf652f2b803d1"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/TerritoryDebugAction.java",
+          "bytes": 3150,
+          "gitBlob": "1e15659887224f31f9171b145b29bec1eab62196"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/defense/AllyResourceToProtect.java",
+          "bytes": 1353,
+          "gitBlob": "248ac765e041d7705980ce3c58ef43cc22aa2f27"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/defense/MyResourceToProtect.java",
+          "bytes": 1144,
+          "gitBlob": "ef1296da0561dea29566890cb6ac7bfe8664ffc5"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/offense/EnemyCapitals.java",
+          "bytes": 1217,
+          "gitBlob": "bea1635644dd8aca134fc8b224a1d78dfa72c06d"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/influence/offense/ResourceToGet.java",
+          "bytes": 1571,
+          "gitBlob": "677864da89015c47d40326c2e6bd7db189fe8c48"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/neighbors/MapWithNeighbors.java",
+          "bytes": 1195,
+          "gitBlob": "bfccf2fb860acf16e5ed786cdc0fa6125fa58dea"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/neighbors/NeighborGetter.java",
+          "bytes": 1217,
+          "gitBlob": "7e3f932ce8e53c2259b45058a3aba5e87a79156f"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/neighbors/TerritoryWithNeighbors.java",
+          "bytes": 620,
+          "gitBlob": "d8dc90c4da30dc1fcf637e56db76e40e9c99446d"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/odds/BattleDetails.java",
+          "bytes": 2375,
+          "gitBlob": "06b59260b9660f90c9b23c4c0f19cd8fdbbc3017"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/odds/LanchesterBattleCalculator.java",
+          "bytes": 2414,
+          "gitBlob": "fff9b4d9b7299afd181001bdbff17080249ec86c"
+        },
+        {
+          "path": "game-app/ai/src/main/java/org/triplea/ai/flowfield/odds/LanchesterDebugAction.java",
+          "bytes": 8473,
+          "gitBlob": "721e073b9f7de3dab1bb2af9c47b13cbe8349f2f"
+        },
+        {
+          "path": "game-app/ai/src/test/java/org/triplea/ai/flowfield/influence/InfluenceMapTest.java",
+          "bytes": 21465,
+          "gitBlob": "c1463a47bcea6e021ae2f8d223cdc389a3c1257f"
+        },
+        {
+          "path": "game-app/ai/src/test/java/org/triplea/ai/flowfield/neighbors/MapWithNeighborsTest.java",
+          "bytes": 1355,
+          "gitBlob": "ea5d712d868a67eafdabb781766836c21e2127ba"
+        },
+        {
+          "path": "game-app/ai/src/test/java/org/triplea/ai/flowfield/neighbors/TerritoryWithNeighborsTest.java",
+          "bytes": 2008,
+          "gitBlob": "8c74f186d12f4ffbbe8a17ddeec31364f7fb85d2"
+        },
+        {
+          "path": "game-app/ai/src/test/java/org/triplea/ai/flowfield/odds/LanchesterBattleCalculatorTest.java",
+          "bytes": 6180,
+          "gitBlob": "2e7eb1e558e8a80dfce9310a35e6a260b35faf79"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/AbstractAi.java",
+          "bytes": 32521,
+          "gitBlob": "86f4ef3b54145cf3eb465a5a2571c4687314fc56"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/AiPoliticalUtils.java",
+          "bytes": 6399,
+          "gitBlob": "6cfdde45ea9ce74e6bf6ba49778b0069e3b4fcd5"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/AiRandom.java",
+          "bytes": 746,
+          "gitBlob": "76f471065c59af58287c6341eaf7117f52bfc3f5"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/AiUtils.java",
+          "bytes": 9411,
+          "gitBlob": "f5f36afe81b0e4562f28c559055d2eac85b412e1"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/RocketTargetPlanner.java",
+          "bytes": 4891,
+          "gitBlob": "46a5e82f010b341d9cdea5fdc4d696b17a636a7d"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/AbstractProAi.java",
+          "bytes": 32744,
+          "gitBlob": "a4ef7999ea601f0f4cdb2864414d6492478570d3"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProAi.java",
+          "bytes": 1367,
+          "gitBlob": "1a5727d3cf5f743e345ec8407e3a7e28967b7ee1"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProBidPlanner.java",
+          "bytes": 24299,
+          "gitBlob": "493139b7c237543136876da3080561755d010ab2"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProCombatMoveAi.java",
+          "bytes": 130089,
+          "gitBlob": "a42fc9f8f884e7abe89fc3bbef5e3528b67ee77c"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProData.java",
+          "bytes": 4752,
+          "gitBlob": "9c9f6a8270ea775facdb22772767f1b602139087"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProNonCombatMoveAi.java",
+          "bytes": 116881,
+          "gitBlob": "4942f31bcbf70a90d1391ce17f483d7069117064"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProPoliticsAi.java",
+          "bytes": 9130,
+          "gitBlob": "31b11b04bfbee952296e5d71ef97551fb55001ed"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProPurchaseAi.java",
+          "bytes": 141493,
+          "gitBlob": "b6677c3f6c8f6b7c17d60aeaf6bf3e99cec9315b"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProRetreatAi.java",
+          "bytes": 5369,
+          "gitBlob": "1cbe6d82ff0d4cb7d8debee8c272a1da1517cd87"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProScoring.java",
+          "bytes": 7879,
+          "gitBlob": "779a60d2ea24bd3ae6b2d5028ed7ab5f714a8a69"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProScrambleAi.java",
+          "bytes": 7133,
+          "gitBlob": "bfac82d72e4ab19eda14f9a0ee8cf2c16ea4a6bb"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/ProTechAi.java",
+          "bytes": 30250,
+          "gitBlob": "c2ee1cc6f8bd794641da78ce3ef61ba488d4bf47"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProBattleResult.java",
+          "bytes": 1622,
+          "gitBlob": "30c2098b051fcccab73ef355f3f5e374808a32ec"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProMyMoveOptions.java",
+          "bytes": 1426,
+          "gitBlob": "56f274a302787b2fcc57ddd29a344e88a75424b8"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProOtherMoveOptions.java",
+          "bytes": 4212,
+          "gitBlob": "98658ac90aeec1d828484d018994ef296b7b81e9"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProPlaceTerritory.java",
+          "bytes": 908,
+          "gitBlob": "d9ca0cbdd15572abb2847df3466af3a84013ab1c"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProPurchaseOption.java",
+          "bytes": 21189,
+          "gitBlob": "e66e0738fcc5bdbdc05525659e47defb8208a17e"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProPurchaseOptionMap.java",
+          "bytes": 8223,
+          "gitBlob": "f07d111a06fb7f533d030acfbfb7243b2dbe591e"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProPurchaseTerritory.java",
+          "bytes": 3002,
+          "gitBlob": "ac5320bc606dcb366f931cd31fadc41b459195d9"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProResourceTracker.java",
+          "bytes": 2516,
+          "gitBlob": "c3618b94dcd50e52234e1ded0ea8bbbceb2c4e89"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProTerritory.java",
+          "bytes": 11400,
+          "gitBlob": "dfbfedc0bc91d0197223e93d635eab116608f2d2"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProTerritoryManager.java",
+          "bytes": 61129,
+          "gitBlob": "9b09542afa675ef4e7432e7595da498211b53e7e"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/data/ProTransport.java",
+          "bytes": 1647,
+          "gitBlob": "daaa2cbb0d7e58c9c948f5d8b3daceb697ae27d8"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/logging/ProLogSettings.java",
+          "bytes": 2504,
+          "gitBlob": "90fb2c211603cbc8db13c3a955199cd4c66b90b5"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/logging/ProLogUi.java",
+          "bytes": 2589,
+          "gitBlob": "42ca83624f919ec6b242b7924ee5a0ce013bd1b7"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/logging/ProLogWindow.java",
+          "bytes": 18849,
+          "gitBlob": "ad471d3c0df8ce4ae0c8f7ba628fdb358486970d"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/logging/ProLogger.java",
+          "bytes": 3776,
+          "gitBlob": "0283a0fd3c9d5a748d00dde4458f52ff37684223"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/simulate/ProDummyDelegateBridge.java",
+          "bytes": 3399,
+          "gitBlob": "fc777c87ee542b87e268d4b5b8f52c743e716dfd"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/simulate/ProSimulateTurnUtils.java",
+          "bytes": 14505,
+          "gitBlob": "0927d1a505ce21782a8054cd9068bee6d3a8eeb5"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/MoveBatcher.java",
+          "bytes": 4287,
+          "gitBlob": "6093153685fd33669351c9da4b2af99989f05f6b"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProAirBattleEstimator.java",
+          "bytes": 7153,
+          "gitBlob": "7816a398b6280ce6e6d03fcde03c3af7e10e06ee"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProAirliftPlanner.java",
+          "bytes": 12236,
+          "gitBlob": "31263c0d9a1cc94505468bf6d6dbff3ee18e7f47"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProBattleUtils.java",
+          "bytes": 17903,
+          "gitBlob": "8ddbc48b310ec9cbd5e9c8fd5913beb1fef4706c"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProCaptureChainUtils.java",
+          "bytes": 10523,
+          "gitBlob": "ff36e29c53605fbd25b575f3db2a241cf511894a"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProCasualtyUtils.java",
+          "bytes": 5716,
+          "gitBlob": "5c7409cc6df73cd22296a554ce78ad8cc59a33c8"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProClockUtils.java",
+          "bytes": 13006,
+          "gitBlob": "f46428f52236cf5cf3fc5c5c0b7aae337e204187"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProMatches.java",
+          "bytes": 29715,
+          "gitBlob": "580b3a1960e777df04a5934fa1d46e6e1083fa44"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProMoveUtils.java",
+          "bytes": 20670,
+          "gitBlob": "d0d0037fa9b28f05dd32708aa1bbaf8dce5cc764"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProNationalObjectiveUtils.java",
+          "bytes": 7682,
+          "gitBlob": "c5ae43d90a4ab309810e4383b967023f04492347"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProOddsCalculator.java",
+          "bytes": 17965,
+          "gitBlob": "b25199d608db40dcbbda70706f29b07edccfdad6"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProPurchaseUtils.java",
+          "bytes": 16593,
+          "gitBlob": "d87c04e2c6e500e864a45f41a708fe05b9ace715"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProPurchaseValidationUtils.java",
+          "bytes": 11625,
+          "gitBlob": "c3e58e8d505c80048bdb37dc62d6f17f04b49af1"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProRepairUtils.java",
+          "bytes": 1152,
+          "gitBlob": "26df17704862b66787afba05baf42a5ff5797ea6"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProSeaBlockerUtils.java",
+          "bytes": 8361,
+          "gitBlob": "b00428dade8f535316d17a2a24de3db33b249902"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProSortMoveOptionsUtils.java",
+          "bytes": 10517,
+          "gitBlob": "e958b10ec4e2ae859430d695fd0f8e190eb88524"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProTerritoryValueUtils.java",
+          "bytes": 24562,
+          "gitBlob": "abf269977f6edfebebddfe4a92342e4db6a94487"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProTransportUtils.java",
+          "bytes": 21954,
+          "gitBlob": "4d92eba538400879b990df7334d85f5136382091"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/pro/util/ProUtils.java",
+          "bytes": 16443,
+          "gitBlob": "6c86a0f3b20244a123bb981d544dea238f126f7f"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/fast/AggregateEstimate.java",
+          "bytes": 2978,
+          "gitBlob": "e02a250ea381d2e1e9fbd971ba83f6ed99324976"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/fast/FastAi.java",
+          "bytes": 587,
+          "gitBlob": "b53ca56a6517f91379503213cf784f526c229cf2"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/fast/FastOddsEstimator.java",
+          "bytes": 3248,
+          "gitBlob": "827482fd7581fd35d9bc9260025a4eb0abf3eea5"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/weak/Utils.java",
+          "bytes": 3791,
+          "gitBlob": "f3458178a78d18dffe80bf22963a21c049856a0a"
+        },
+        {
+          "path": "game-app/game-core/src/main/java/games/strategy/triplea/ai/weak/WeakAi.java",
+          "bytes": 48526,
+          "gitBlob": "54c4b830104306d508f305407799094ef7cdd2d6"
+        },
+        {
+          "path": "AGENTS.md",
+          "bytes": 6510,
+          "gitBlob": "34120c887293e1c12c023985d6977bc91b32aa22"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 35149,
+          "gitBlob": "f288702d2fa16d3cdf0035b15a9fcbc552cd88e7"
+        },
+        {
+          "path": "README.md",
+          "bytes": 3063,
+          "gitBlob": "22a22714a05093b4a63f2cd33e68e4823c9067a5"
+        },
+        {
+          "path": "settings.gradle.kts",
+          "bytes": 2510,
+          "gitBlob": "7ed24d4ce7d07a5f69080241b993231c7c05e48c"
+        },
+        {
+          "path": "game-app/ai/AGENTS.md",
+          "bytes": 1896,
+          "gitBlob": "7796decac711ee081177e30fbb50fade6f107bcc"
+        },
+        {
+          "path": "game-app/ai/build.gradle.kts",
+          "bytes": 208,
+          "gitBlob": "7e361f7340420ed437cfab7d251ca9b45a2966d3"
+        }
+      ]
+    }
+  ]
+}

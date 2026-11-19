@@ -1,0 +1,24 @@
+{
+  "name": "qmg-mercury",
+  "version": "0.1.0",
+  "private": true,
+  "description": "战场军需官重建项目基础环境",
+  "type": "module",
+  "engines": { "node": ">=24.12.0 <25", "npm": ">=11 <12" },
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "doctor": "node tools/doctor.mjs",
+    "legacy:verify": "node tools/verify-legacy.mjs",
+    "refs:download": "node tools/references.mjs download",
+    "refs:verify": "node tools/references.mjs verify",
+    "check": "npm run typecheck && npm run build && npm test && node tools/check-boundaries.mjs && node tools/verify-legacy.mjs --allow-missing && node tools/references.mjs verify --allow-missing"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

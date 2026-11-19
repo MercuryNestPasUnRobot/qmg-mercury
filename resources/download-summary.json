@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-11-19T14:20:10.159Z",
+  "scope": "AI source snapshots only; excluded from public Git repository",
+  "projects": [
+    {
+      "id": "forge",
+      "commit": "9748ef2c96d18bcb55271e20e63c32bdee3e991c",
+      "verifiedFiles": 259,
+      "verifiedBytes": 4023499,
+      "missing": 0,
+      "errors": 0
+    },
+    {
+      "id": "triplea",
+      "commit": "84ad0f7911d46d1c0fd37592606137e29e5f7ebe",
+      "verifiedFiles": 88,
+      "verifiedBytes": 1176399,
+      "missing": 0,
+      "errors": 0
+    }
+  ]
+}

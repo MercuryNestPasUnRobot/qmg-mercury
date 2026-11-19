@@ -1,0 +1,2 @@
+#!/bin/sh
+node tools/check-boundaries.mjs && node tools/verify-legacy.mjs --allow-missing

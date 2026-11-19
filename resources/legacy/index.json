@@ -1,0 +1,15 @@
+{
+  "archive": "legacy/2026-11-19",
+  "baselineHead": "86181b157a27fe8333fc30bb6bee032acc27653f",
+  "manifest": "resources/legacy/manifest.json",
+  "verifiedFiles": 1725,
+  "verifiedBytes": 730004876,
+  "groups": [
+    { "id": "progress", "paths": ["docs/ai/tasks.md", "docs/ai/reports/T15/README.md", "docs/implementation-status.md"], "purpose": "旧验收状态与未完成项" },
+    { "id": "rules", "paths": ["reference/", "src/engine/", "docs/rule-clarifications.md"], "purpose": "规则来源、实现与回归案例" },
+    { "id": "content", "paths": ["Images/", "assets/", "public/assets/"], "purpose": "地图、卡牌、OCR 和校对候选" },
+    { "id": "ai", "paths": ["src/ai/", "training/qmg_training/"], "purpose": "规则 AI、观察编码与训练草稿" },
+    { "id": "replay", "paths": ["src/replay/", "scripts/replay-reader.ts", "scripts/replay-repository.ts", "training-data/"], "purpose": "只读回放与实际归档" },
+    { "id": "desktop-network", "paths": ["electron/", "src/network/", "src/editor/"], "purpose": "桌面、联机和编辑器参考" }
+  ]
+}
