@@ -45,7 +45,7 @@ def test_setting_declining_and_revealing_response_keep_information_boundaries(da
     assert enemy["history"][0]["source"] is None  # A later reveal never rewrites private history.
     assert sum(r["source"] == "g-draw" and r["operation_type"] == "PAY_COST" for r in enemy["history"]) == 1
     assert p.state.scores["axis"] == 5  # Four from the response and one from the following Victory phase.
-    assert p.state.tokens["ability:g-draw:response-trigger"].position_id == "germany:ABILITY_INACTIVE"
+    assert p.state.tokens["ability:g-draw:response-trigger"].position_id == "germany:OBJECT_POOL"
 
 
 def test_announcement_uses_actual_battle_victim_for_defensive_trigger(data):
@@ -67,7 +67,7 @@ def test_winning_response_is_public_and_closes_unfinished_frames(data):
     assert p.state.winner == "axis" and p.state.scores == {"axis": 4, "allies": 0}
     assert not p.state.stack and not p.state.announcements and not p.state.decision
     assert p.state.tokens["g-draw"].position_id == "germany:DISCARD"
-    assert p.state.tokens["ability:g-draw:response-trigger"].position_id == "germany:ABILITY_INACTIVE"
+    assert p.state.tokens["ability:g-draw:response-trigger"].position_id == "germany:OBJECT_POOL"
 
 
 def end_phase(p):

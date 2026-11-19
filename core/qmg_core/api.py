@@ -4,7 +4,7 @@ from copy import deepcopy
 from .model import CoreError, TURN_ORDER, Token, TurnClock, GameState, zone
 from .engine import CommandProcessor
 from .definitions import RuleSet
-from .rules import MapGraph
+from .rules import MapGraph, initial_abilities
 
 PUBLIC_ZONES = {"DISCARD", "STATUS", "RESERVE_ARMY", "RESERVE_NAVY"}
 
@@ -27,14 +27,17 @@ def observation(processor, controlled_countries):
         country, _, kind = position.partition(":")
         permitted = _visible_position(position, rules, controlled)
         positions[position] = {"count": len(ids)}
-        if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind in ("SCORE_DORMANT", "SET_ASIDE"))):
+        if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind in ("SCORE_DORMANT", "SET_ASIDE", "OBJECT_POOL"))):
             positions[position]["count"] = 0
         if permitted:
-            positions[position]["tokens"] = list(ids)
-            for token_id in ids:
+            known = [key for key in ids if s.tokens[key].token_type != "ABILITY" or
+                     _visible_position(s.tokens[s.tokens[key].source_token_id].position_id, rules, controlled)]
+            positions[position].update(tokens=known, count=len(known))
+            for token_id in known:
                 visible[token_id] = deepcopy(s.tokens[token_id].__dict__)
     history = []
     revealed_sources = set()
+    public_objects = set()
     for record in processor.records:
         source = record["source"]
         outcome = record["outcome"]
@@ -42,18 +45,26 @@ def observation(processor, controlled_countries):
             revealed_sources.discard(source)
         if revealed_source := outcome["context"].get("revealed_source"):
             revealed_sources.add(revealed_source)
+        moves = outcome["changes"]
+        public_objects.update(c["token_id"] for c in moves if c["to"] == "RESOLUTION")
+        obj = record["operation"].get("object_token_id")
+        hidden_response = (record["operation"].get("object_origin") == zone(record["actor"], "RESPONSE")
+                           and record["actor"] not in controlled and obj not in public_objects)
         source_position = next((change["from"] for change in outcome["changes"] if change["token_id"] == source), None)
         source_definition = rules.cards.get(s.tokens[source].definition_id) if source in s.tokens else None
         response_private = source_definition and source_definition["type"] == "RESPONSE" and source not in revealed_sources and record["actor"] not in controlled
-        hidden_source = source is not None and (response_private or (source not in visible and not _visible_position(source_position, rules, controlled)))
+        hidden_source = hidden_response or (source is not None and (response_private or (
+            source not in visible and source not in public_objects and not _visible_position(source_position, rules, controlled))))
         history.append({"sequence_id": record["sequence_id"],
                         "operation_type": "PRIVATE_OPERATION" if hidden_source else record["operation_type"],
                         "actor": record["actor"], "source": None if hidden_source else source,
-                        "changes": [deepcopy(c) for c in outcome["changes"]
-                                    if _visible_position(c["to"], rules, controlled)
-                                    and (c["token_id"] in visible or _visible_position(c["from"], rules, controlled))],
+                        "changes": [deepcopy(c) for c in moves if _visible_position(c["to"], rules, controlled)
+                                    and (c["token_id"] in visible or c["to"] == "RESOLUTION"
+                                         or _visible_position(c["from"], rules, controlled))],
                         "score_changes": deepcopy(outcome["score_changes"]),
                         "success": outcome["success"]})
+        public_objects.difference_update(c["token_id"] for c in moves if c["from"] == "RESOLUTION")
+        revealed_sources.difference_update(c["token_id"] for c in moves if c["to"] == zone(record["actor"], "RESPONSE"))
     decision = None
     if s.decision:
         decision = {"required_country": s.decision.required_country}
@@ -63,7 +74,10 @@ def observation(processor, controlled_countries):
                             operation_type=s.decision.continuation["type"])
     resolution = []
     for frame in s.stack:
-        source = frame.source_card_id
+        ability_id = frame.context.get("ability_token")
+        if frame.context.get("origin") == zone(frame.actor_country, "RESPONSE") and ability_id not in visible:
+            continue
+        source = ability_id if ability_id in s.positions["RESOLUTION"] else frame.source_card_id
         if source in visible:
             resolution.append({"source": source, "country": frame.actor_country})
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
@@ -128,15 +142,17 @@ def simulation_from_observation(rules, view):
     # Public deployed statuses are known. Conservatively model their abilities as ready;
     # never read their actual hidden replica positions or private usage history.
     for token in list(tokens.values()):
-        if token.token_type == "CARD" and token.position_id == zone(token.owner_country, "STATUS"):
-            for ability_id in rules.cards[token.definition_id].get("abilities", []):
-                if not any(t.token_type == "ABILITY" and t.source_token_id == token.token_id and t.definition_id == ability_id for t in tokens.values()):
-                    token_id = f"known-ability:{token.token_id}:{ability_id}"
-                    p = zone(token.owner_country, "ABILITY_READY")
-                    tokens[token_id] = Token(token_id, ability_id, "ABILITY", token.owner_country, p, token.token_id)
-                    positions[p].append(token_id)
-    data["initial_tokens"] = [deepcopy(t.__dict__) for t in tokens.values() if t.token_type != "ABILITY"]
-    simulation_rules = RuleSet(data)
+        if (token.token_type == "CARD" and token.position_id == zone(token.owner_country, "STATUS") and
+                "tokens" not in view["positions"][zone(token.owner_country, "ABILITY_READY")]):
+            for replica in initial_abilities(rules, token, include_pool=zone(token.owner_country, "OBJECT_POOL") in positions):
+                tokens[replica.token_id] = replica
+                positions[replica.position_id].append(replica.token_id)
     state = GameState(view["game_id"], rules.version, tokens, positions, TurnClock(**view["turn"]),
                       deepcopy(view["scores"]), 1, version=view["version"], winner=view["winner"])
+    if zone(TURN_ORDER[0], "OBJECT_POOL") not in positions:
+        from .operations import OperationExecutor
+        from .persistence import upgrade_object_pools
+        upgrade_object_pools(state, RuleSet(data), OperationExecutor(rules))
+    data["initial_tokens"] = [deepcopy(t.__dict__) for t in tokens.values()]
+    simulation_rules = RuleSet(data, projected=True)
     return CommandProcessor(simulation_rules, state)

@@ -1,6 +1,6 @@
 """Atomic rule semantics. All physical changes use ZoneRegistry.transfer."""
 from .model import CoreError, TURN_ORDER, PHASES, ZoneRegistry, zone
-from .rules import board_units, LegalActionGenerator, SupplyResolver, RuleModifierResolver
+from .rules import board_units, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver
 
 
 def outcome(kind, **context):
@@ -52,22 +52,37 @@ class OperationExecutor:
         return max(0, cost)
 
     def transfer(self, state, token_id, destination, result, index=None, resolving_ability=None):
-        result["changes"].append(ZoneRegistry.transfer(state, token_id, destination, index))
+        change = ZoneRegistry.transfer(state, token_id, destination, index)
+        result["changes"].append(change)
         source = state.tokens[token_id]
         if source.token_type == "CARD":
-            active = destination in (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
-            for t in sorted(state.tokens.values(), key=lambda token: token.token_id):
-                if t.token_type == "ABILITY" and t.source_token_id == token_id:
-                    if t.token_id == resolving_ability and destination == "RESOLUTION":
-                        continue
-                    if not active:
-                        p = zone(t.owner_country, "ABILITY_INACTIVE")
-                    elif t.position_id == zone(t.owner_country, "ABILITY_INACTIVE"):
-                        p = zone(t.owner_country, "ABILITY_READY")
-                    else:
-                        continue
-                    if p != t.position_id:
-                        result["changes"].append(ZoneRegistry.transfer(state, t.token_id, p))
+            deployed = (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
+            if destination in deployed and change["from"] not in deployed:
+                for replica in initial_abilities(self.rules, source):
+                    if replica.token_id in state.tokens and state.tokens[replica.token_id].position_id != replica.position_id:
+                        result["changes"].append(ZoneRegistry.transfer(state, replica.token_id, replica.position_id))
+            elif destination not in deployed and (change["from"] in deployed or change["from"] == "RESOLUTION"):
+                pool = zone(source.owner_country, "OBJECT_POOL")
+                for t in sorted(state.tokens.values(), key=lambda item: item.token_id):
+                    if t.source_token_id == token_id and t.token_type == "ABILITY" and t.token_id != resolving_ability and t.position_id != pool:
+                        result["changes"].append(ZoneRegistry.transfer(state, t.token_id, pool))
+                        for frame in state.stack:
+                            if frame.context.get("ability_token") == t.token_id:
+                                frame.context["invalidated"] = True
+
+    def transfer_from_pool(self, state, kind, definition, country, destination, result, source_id=None, exact=None):
+        for key in state.positions[zone(country, "OBJECT_POOL")]:
+            token = state.tokens[key]
+            if (exact is None or key == exact) and token.token_type == kind and token.definition_id == definition and token.source_token_id == source_id:
+                self.transfer(state, key, destination, result)
+                return True
+        return False
+
+    def settle_card(self, state, token_id, origin, default_zone, result):
+        card = state.tokens[token_id]
+        after = self.rules.cards[card.definition_id].get("after")
+        destination = origin if after == "origin" else zone(card.owner_country, "OBJECT_POOL" if after == "delete" else default_zone)
+        self.transfer(state, token_id, destination, result)
 
     def execute(self, state, op, frame):
         kind, country = op["type"], op["actor_country"]
@@ -95,6 +110,28 @@ class OperationExecutor:
             if op.get("reason") == "unsupplied" and token.token_id in SupplyResolver(self.rules).supplied(state, token.owner_country):
                 return outcome_failure(kind, "Supply restored before removal")
             self.transfer(state, token.token_id, zone(token.owner_country, "RESERVE_" + self.rules.units[token.definition_id]["kind"]), result)
+        elif kind == "CREATE":
+            source_id = None
+            exact = op.get("token")
+            if op["token_type"] == "ABILITY":
+                source = state.tokens.get(frame.source_card_id)
+                if (not source or source.position_id not in (zone(country, "STATUS"), zone(country, "RESPONSE"))
+                        or op["definition"] not in self.rules.bound_abilities[source.definition_id]):
+                    return outcome_failure(kind, "Ability source is no longer deployed")
+                source_id = source.token_id
+                if op.get("same_copy"):
+                    origin = state.tokens.get(frame.context.get("ability_token"))
+                    group = self.rules.copy_groups.get((source_id, op["definition"]), [])
+                    if origin is None:
+                        return outcome_failure(kind, "Copy selection needs a resolving ability")
+                    slot = self.rules.copy_groups[(source_id, origin.definition_id)].index(origin.token_id)
+                    if slot >= len(group):
+                        return outcome_failure(kind, "No corresponding copy in inventory")
+                    exact = group[slot]
+            elif self.rules.cards[op["definition"]]["country"] != country:
+                return outcome_failure(kind, "Card definition belongs to another country")
+            if not self.transfer_from_pool(state, op["token_type"], op["definition"], country, zone(country, op["zone"]), result, source_id, exact):
+                return outcome_failure(kind, "No matching object available in pool")
         elif kind == "TRANSFER":
             destination = op["destination"]
             if destination not in self.legal.targets(state, country, op):
@@ -144,12 +181,6 @@ class OperationExecutor:
                     state.turn.round_id += 1
                     scoring.terminal(state, round_end=True)
             state.turn.phase = op["phase"]
-            for t in sorted(state.tokens.values(), key=lambda token: token.token_id):
-                if t.token_type == "ABILITY" and t.position_id == zone(t.owner_country, "ABILITY_COOLDOWN"):
-                    a = self.rules.abilities[t.definition_id]
-                    if (op.get("turn_end") and a["reset_policy"] == "TURN_END") or (
-                            op.get("turn_start") and t.owner_country == country and a["reset_policy"] == "OWNER_TURN_START"):
-                        self.transfer(state, t.token_id, zone(t.owner_country, "ABILITY_READY"), result)
         else:
             raise CoreError(f"Unsupported executor operation: {kind}")
         return result

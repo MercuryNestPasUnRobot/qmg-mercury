@@ -23,8 +23,11 @@ class AbilityScanner:
         if not result["success"] or state.winner:
             return
         matches = []
-        for token in state.tokens.values():
-            if token.token_type != "ABILITY" or token.position_id != zone(token.owner_country, "ABILITY_READY"):
+        reserved = {f.context.get("ability_token") for f in state.stack}
+        selected = set()
+        for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
+            if token.token_type != "ABILITY" or token.token_id in reserved or token.position_id not in (
+                    zone(token.owner_country, "ABILITY_READY"), zone(token.owner_country, "RESPONSE")):
                 continue
             ability = self.rules.abilities[token.definition_id]
             source = state.tokens[token.source_token_id]
@@ -34,9 +37,13 @@ class AbilityScanner:
             if trigger["operation_type"] != result["event"]:
                 continue
             event_source = state.tokens.get(op.get("source_token_id"))
-            if result["event"] == "OBJECT_SETTLED" and token.source_token_id == op.get("source_token_id"):
+            if result["event"] == "OBJECT_SETTLED" and token.source_token_id == op.get("source_token_id") and (
+                    op.get("settled_definition") in (token.definition_id, source.definition_id)):
                 continue
-            if trigger.get("source_definition_id") and (not event_source or event_source.definition_id != trigger["source_definition_id"]):
+            event_definition = op.get("settled_definition", event_source.definition_id if event_source else None)
+            if trigger.get("source_definition_id") and event_definition != trigger["source_definition_id"]:
+                continue
+            if "turn_start" in trigger and trigger["turn_start"] != bool(op.get("turn_start")):
                 continue
             if trigger.get("announced_type") and trigger["announced_type"] != op.get("announced_type"):
                 continue
@@ -54,28 +61,36 @@ class AbilityScanner:
                     targets = state.positions.get(op.get("target"), [])
                 if not any(state.tokens[target].owner_country == token.owner_country for target in targets):
                     continue
+            group = (source.token_id, token.definition_id)
+            if token.position_id == zone(token.owner_country, "ABILITY_READY"):
+                if group in selected:
+                    continue
+                selected.add(group)
             matches.append((ability["priority"], token.token_id, token, ability))
         # Priorities are content data, not inferred official response precedence.
-        priorities = [m[0] for m in matches]
-        if len(set(priorities)) != len(priorities):
+        priorities = {(priority, ability["id"]) for priority, _, _, ability in matches}
+        if len({priority for priority, _ in priorities}) != len(priorities):
             raise CoreError("Ambiguous simultaneous ability priorities; content must specify an order")
         frames = []
         for _, _, token, ability in sorted(matches):
-            executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_PENDING"), result)
+            if token.position_id == zone(token.owner_country, "ABILITY_READY"):
+                executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_PENDING"), result)
             frames.append(CardInterpreter.frame(state, token.owner_country, token.source_token_id,
                           [{"type": "ACTIVATE_ABILITY"}], source_frame.resolution_id if source_frame else None,
-                          {"ability_token": token.token_id, "event": deepcopy(op), "event_outcome": deepcopy(result)}))
+                          {"ability_token": token.token_id, "origin": token.position_id,
+                           "event": deepcopy(op), "event_outcome": deepcopy(result)}))
         state.stack.extend(reversed(frames))
 
 
 class CommandProcessor:
-    def __init__(self, rules, state, logger=None, record_head="0" * 64, checkpoint_path=None):
+    def __init__(self, rules, state, logger=None, record_head="0" * 64, checkpoint_path=None, *, legacy_snapshot=False):
         self.rules = rules
         self._state = deepcopy(state)
-        validate_state(rules, self._state)
+        validate_state(rules, self._state, legacy_snapshot=legacy_snapshot)
         self.logger, self.record_head = logger, record_head
         self.checkpoint_path = checkpoint_path
         self.records = []
+        self._first_commit = True
         self.executor, self.legal = OperationExecutor(rules), LegalActionGenerator(rules)
 
     @property
@@ -107,7 +122,12 @@ class CommandProcessor:
         draft = deepcopy(self._state)
         operation = deepcopy(op)
         operation.setdefault("operation_id", draft.new_id("operation"))
+        legacy_changes = []
+        if self._first_commit and zone(TURN_ORDER[0], "OBJECT_POOL") not in draft.positions:
+            from .persistence import upgrade_object_pools
+            legacy_changes = upgrade_object_pools(draft, self.rules, self.executor)
         result = apply(draft)
+        result["changes"][:0] = legacy_changes
         if draft.winner and not self._state.winner:
             self._close_terminal_resolution(draft, result)
         draft.version += 1
@@ -130,6 +150,7 @@ class CommandProcessor:
             self.logger.append(deepcopy(record))
         # Publish only after the durable append succeeds; a failed step changes nothing.
         self._state, self.record_head = draft, record["record_digest"]
+        self._first_commit = False
         self.records.append(record)
         if self.checkpoint_path is not None and operation.get("advance_country"):
             from .persistence import SaveRepository
@@ -139,8 +160,11 @@ class CommandProcessor:
     def _close_terminal_resolution(self, state, result):
         # Keep the winning operation and retire unfinished cards without running their effects.
         for token_id in sorted(state.positions["RESOLUTION"]):
-            token = state.tokens[token_id]
-            self.executor.transfer(state, token_id, zone(token.owner_country, "DISCARD"), result)
+            token = state.tokens.get(token_id)
+            if token and token.token_type == "CARD":
+                self.executor.transfer(state, token_id, zone(token.owner_country, "DISCARD"), result)
+            elif token:
+                self.executor.transfer(state, token_id, zone(token.owner_country, "OBJECT_POOL"), result)
         for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
             if token.token_type == "ABILITY" and token.position_id == zone(token.owner_country, "ABILITY_PENDING"):
                 self.executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_READY"), result)
@@ -185,6 +209,8 @@ class CommandProcessor:
             frame = self._state.stack[-1]
             op.update(resolution_id=frame.resolution_id, parent_resolution_id=frame.parent_resolution_id,
                       source_token_id=frame.source_card_id, decision_id=command["decision_id"])
+            if "ability_token" in frame.context:
+                op.update(object_token_id=frame.context["ability_token"], object_origin=frame.context.get("origin"))
         def apply(s):
             if command["type"] == "CHOOSE":
                 d = s.decision
@@ -216,7 +242,8 @@ class CommandProcessor:
                     return result
                 result = outcome("PLAY_CARD")
                 self.executor.transfer(s, token_id, "RESOLUTION", result)
-                frame = CardInterpreter.frame(s, command["actor"], token_id, definition["effects"], context={"failure_policy": definition["failure_policy"]})
+                frame = CardInterpreter.frame(s, command["actor"], token_id, definition["effects"],
+                                              context={"failure_policy": definition["failure_policy"], "origin": zone(command["actor"], "HAND")})
                 s.stack.append(frame)
                 result["context"]["resolution_id"] = frame.resolution_id
                 s.turn.plays_remaining -= 1
@@ -274,11 +301,15 @@ class CommandProcessor:
         op.update(actor_country=actor, source_token_id=frame.source_card_id,
                   resolution_id=frame.resolution_id, parent_resolution_id=frame.parent_resolution_id,
                   operation_id=f"operation:{self._state.serial + 1}")
+        if "ability_token" in frame.context:
+            op["object_token_id"] = frame.context["ability_token"]
+            op["object_origin"] = frame.context.get("origin")
         def apply(s):
             f = s.stack[-1]
             # A source removed during nested resolution cannot keep producing effects.
             ability_id = f.context.get("ability_token")
-            if ability_id and s.tokens[ability_id].position_id == zone(f.actor_country, "ABILITY_INACTIVE"):
+            if ability_id and (f.context.get("invalidated") or s.tokens[ability_id].position_id in
+                               (zone(f.actor_country, "ABILITY_INACTIVE"), zone(f.actor_country, "OBJECT_POOL"))):
                 s.stack.pop()
                 return outcome("ABILITY_INVALIDATED")
             if op["type"] == "FINISH_FRAME":
@@ -286,18 +317,30 @@ class CommandProcessor:
                 result = outcome("FINISH_FRAME")
                 completed_object = False
                 on_settle = ()
+                settled_definition = None
                 if ability_id:
                     t = s.tokens[ability_id]
+                    ability = self.rules.abilities[t.definition_id]
                     if s.tokens[t.source_token_id].position_id == "RESOLUTION":
-                        self.executor.transfer(s, t.source_token_id, zone(t.owner_country, "DISCARD"), result)
+                        settled_definition = s.tokens[t.source_token_id].definition_id
+                        self.executor.settle_card(s, t.source_token_id, zone(t.owner_country, "RESPONSE"), "DISCARD", result)
                         completed_object = True
-                        on_settle = self.rules.abilities[t.definition_id].get("on_settle", ())
+                        on_settle = ability.get("on_settle", ())
+                    elif t.position_id == "RESOLUTION":
+                        completed_object = True
+                        settled_definition = t.definition_id
+                        on_settle = ability.get("on_settle", ())
+                        if ability["after"] == "origin":
+                            self.executor.transfer(s, ability_id, f.context.get("origin", zone(t.owner_country, "ABILITY_READY")), result)
+                        else:
+                            self.executor.transfer(s, ability_id, zone(t.owner_country, "OBJECT_POOL"), result)
                     elif t.position_id == zone(t.owner_country, "ABILITY_PENDING"):
                         self.executor.transfer(s, ability_id, zone(t.owner_country, "ABILITY_READY"), result)
                 elif f.source_card_id and s.tokens[f.source_card_id].position_id == "RESOLUTION":
                     card = self.rules.cards[s.tokens[f.source_card_id].definition_id]
+                    settled_definition = card["id"]
                     destination = card["type"] if card["type"] in ("STATUS", "RESPONSE") else "DISCARD"
-                    self.executor.transfer(s, f.source_card_id, zone(f.actor_country, destination), result)
+                    self.executor.settle_card(s, f.source_card_id, f.context.get("origin", zone(f.actor_country, "HAND")), destination, result)
                     completed_object = True
                     on_settle = card.get("on_settle", ())
                 if completed_object:
@@ -310,7 +353,8 @@ class CommandProcessor:
                         if not output["success"]:
                             result["context"].setdefault("output_failures", []).append(output["context"]["reason"])
                     parent = next((frame for frame in s.stack if frame.resolution_id == f.parent_resolution_id), None)
-                    AbilityScanner(self.rules).scan(s, {**op, "type": "OBJECT_SETTLED"}, result, parent, self.executor)
+                    result["context"]["settled_definition"] = settled_definition
+                    AbilityScanner(self.rules).scan(s, {**op, "type": "OBJECT_SETTLED", "settled_definition": settled_definition}, result, parent, self.executor)
                 return result
             f.remaining_operations.pop()
             f.current_step += 1
@@ -353,7 +397,9 @@ class CommandProcessor:
             use = op.get("use", True)
             result = outcome("ABILITY_ACTIVATED" if use and len(hand) >= cost else "ABILITY_DECLINED")
             if not use or len(hand) < cost:
-                self.executor.transfer(s, token.token_id, zone(country, "ABILITY_READY"), result)
+                origin = f.context.get("origin", zone(country, "ABILITY_READY"))
+                if token.position_id != origin:
+                    self.executor.transfer(s, token.token_id, origin, result)
                 return result, False
             # Costs are selected, not automatically taken from hidden cards.
             f.context["cost_tokens"] = []
@@ -379,11 +425,11 @@ class CommandProcessor:
             for token_id in cost_tokens:
                 self.executor.transfer(s, token_id, zone(country, "DISCARD"), result)
             source = s.tokens[token.source_token_id]
-            if source.position_id == zone(country, "RESPONSE"):
+            if source.position_id == zone(country, "RESPONSE") and token.position_id != source.position_id:
                 self.executor.transfer(s, source.token_id, "RESOLUTION", result, resolving_ability=token.token_id)
                 result["context"]["revealed_source"] = source.token_id
-            if ability["reset_policy"] != "CHECKPOINT":
-                self.executor.transfer(s, token.token_id, zone(country, "ABILITY_COOLDOWN"), result)
+            else:
+                self.executor.transfer(s, token.token_id, "RESOLUTION", result)
             return result, False
         if kind == "CHECK_SUPPLY":
             supplied = SupplyResolver(self.rules).supplied(s, country)

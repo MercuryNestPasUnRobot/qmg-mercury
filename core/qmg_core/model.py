@@ -23,7 +23,7 @@ def zone(country, kind):
 
 
 ZONES = ("DECK", "HAND", "DISCARD", "STATUS", "RESPONSE", "RESERVE_ARMY", "RESERVE_NAVY",
-         "ABILITY_READY", "ABILITY_PENDING", "ABILITY_COOLDOWN", "ABILITY_INACTIVE", "SCORE_DORMANT")
+         "ABILITY_READY", "ABILITY_PENDING", "ABILITY_COOLDOWN", "ABILITY_INACTIVE", "SCORE_DORMANT", "OBJECT_POOL")
 PHASES = ("Play", "Supply", "Victory", "Discard", "Draw")
 TURN_ORDER = ("germany", "united-kingdom", "japan", "soviet-union", "italy", "united-states")
 

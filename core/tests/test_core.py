@@ -137,7 +137,7 @@ def test_direct_elimination_does_not_trigger_battle_ability(data):
     assert not any(r['operation_type'] == 'LAND_BATTLE' for r in p.records)
 
 
-def test_optional_cost_cooldown_and_global_turn_reset(data):
+def test_optional_paid_copy_returns_from_pool_via_turn_end_response(data):
     move_initial(data, 'g-status', 'germany:STATUS')
     card(data, 'g-battle')['effects'] *= 2
     p = make(data)
@@ -151,14 +151,18 @@ def test_optional_cost_cooldown_and_global_turn_reset(data):
     assert p.state.decision.decision_type == 'TARGET'  # Second battle, not another activation.
     choose(p, 'B')
     ability = 'ability:g-status:g-extra'
-    assert p.state.tokens[ability].position_id == 'germany:ABILITY_COOLDOWN'
+    assert p.state.tokens[ability].position_id == 'germany:OBJECT_POOL'
+    listener, = p.state.positions['germany:RESPONSE']
+    assert p.state.tokens[listener].source_token_id == 'g-status'
     assert p.state.tokens['g-copy'].position_id == 'germany:DISCARD'
     assert p.state.scores['axis'] == 2
     for _ in range(5):
         p.submit(p.legal_commands((TURN_ORDER[p.state.turn.country_index],))[0], TURN_ORDER)
         finish_choices(p)
     assert p.state.turn.country_index == 1 and p.state.turn.phase == 'Play'
-    assert p.state.tokens[ability].position_id == 'germany:ABILITY_READY'
+    replacement, = p.state.positions['germany:ABILITY_READY']
+    assert p.state.tokens[replacement].definition_id == 'g-extra'
+    assert replacement == ability and p.state.tokens[listener].position_id == 'germany:OBJECT_POOL'
 
 
 def test_cost_selection_does_not_consume_partial_payment(data):
@@ -196,7 +200,7 @@ def test_source_removal_invalidates_remaining_ability_effects(data):
     p = make(data)
     play(p, 'g-battle'); choose(p, 'B')
     assert p.state.scores['axis'] == 0
-    assert p.state.tokens['ability:g-status:g-extra'].position_id == 'germany:ABILITY_INACTIVE'
+    assert p.state.tokens['ability:g-status:g-extra'].position_id == 'germany:OBJECT_POOL'
     assert any(r['operation_type'] == 'ABILITY_INVALIDATED' for r in p.records)
 
 
@@ -423,9 +427,14 @@ def test_seeded_command_sequences_preserve_invariants_and_replay(tmp_path, data)
             commands = p.legal_commands(TURN_ORDER)
             if not commands:
                 break
+            start = len(p.records)
             p.submit(rng.choice(commands), TURN_ORDER)
             validate_state(p.rules, p.state)
-            assert set(p.state.tokens) == tokens
+            for record in p.records[start:]:
+                for move in record["outcome"]["changes"]:
+                    assert move["token_id"] in tokens
+                    assert move["from"] in p.state.positions and move["to"] in p.state.positions
+            assert tokens == set(p.state.tokens)
         restored = SaveRepository.recover(snapshot, p.rules, journal)
         assert restored.state.to_dict() == p.state.to_dict()
         assert restored.record_head == p.record_head

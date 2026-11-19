@@ -3,8 +3,38 @@ import json
 import os
 from pathlib import Path
 
-from .model import CoreError, GameState, canonical, digest
-from .rules import validate_state
+from .model import CoreError, GameState, TURN_ORDER, canonical, digest, zone
+from .rules import initial_abilities, validate_state
+
+
+def upgrade_object_pools(state, rules, executor):
+    """Give a verified pre-pool save its static inventory on the first new journal write."""
+    changes = []
+    result = {"changes": changes}
+    frames = {f.context["ability_token"]: f for f in state.stack if "ability_token" in f.context}
+    for country in TURN_ORDER:
+        state.positions[zone(country, "OBJECT_POOL")] = []
+    for source in list(state.tokens.values()):
+        if source.token_type == "CARD":
+            for replica in initial_abilities(rules, source, include_pool=True):
+                if replica.token_id not in state.tokens:
+                    state.tokens[replica.token_id] = replica
+                    state.positions[replica.position_id].append(replica.token_id)
+    for country in TURN_ORDER:
+        for key in list(state.positions[zone(country, "ABILITY_COOLDOWN")]):
+            token = state.tokens[key]
+            source = state.tokens[token.source_token_id]
+            if key in frames:
+                frames[key].context.setdefault("origin", zone(country, "ABILITY_READY"))
+                position = zone(country, "ABILITY_PENDING") if source.position_id == "RESOLUTION" else "RESOLUTION"
+                executor.transfer(state, key, position, result)
+            else:
+                if rules.abilities[token.definition_id].get("reset_policy") in ("TURN_END", "OWNER_TURN_START"):
+                    if not executor.transfer_from_pool(state, "ABILITY", "renew-" + token.definition_id, country,
+                                                       zone(country, "RESPONSE"), result, source.token_id):
+                        raise CoreError("Legacy listener missing from initial inventory")
+                executor.transfer(state, key, zone(country, "OBJECT_POOL"), result)
+    return changes
 
 
 class OperationLogger:
@@ -54,12 +84,14 @@ class OperationLogger:
 
 
 class SaveRepository:
-    SCHEMA = 1
+    SCHEMA = 2
 
     @staticmethod
     def save(path, processor):
-        payload = {"schema": SaveRepository.SCHEMA, "rules_digest": processor.rules.fingerprint,
-                   "state": processor.state.to_dict(), "record_head": processor.record_head}
+        state = processor.state.to_dict()
+        schema = SaveRepository.SCHEMA if zone(TURN_ORDER[0], "OBJECT_POOL") in state["positions"] else 1
+        payload = {"schema": schema, "rules_digest": processor.rules.fingerprint,
+                   "state": state, "record_head": processor.record_head}
         envelope = {"payload": payload, "sha256": digest(payload)}
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -75,11 +107,10 @@ class SaveRepository:
         from .engine import CommandProcessor
         envelope = json.loads(Path(path).read_text(encoding="utf-8"))
         p = envelope["payload"]
-        if digest(p) != envelope["sha256"] or p["schema"] != SaveRepository.SCHEMA or p["rules_digest"] != rules.fingerprint:
+        if digest(p) != envelope["sha256"] or p["schema"] not in (1, SaveRepository.SCHEMA) or p["rules_digest"] != rules.fingerprint:
             raise CoreError("Snapshot checksum, schema or rules identity mismatch")
         state = GameState.from_dict(p["state"])
-        validate_state(rules, state)
-        processor = CommandProcessor(rules, state, record_head=p["record_head"])
+        processor = CommandProcessor(rules, state, record_head=p["record_head"], legacy_snapshot=p["schema"] == 1)
         if journal is not None and Path(journal).exists():
             previous_sequence, previous_digest, previous_state_hash = None, None, None
             with Path(journal).open("rb") as stream:
@@ -135,7 +166,7 @@ class SaveRepository:
             raise CoreError("Journal identity or state chain mismatch")
         before.update(record["state_patch"])
         next_state = GameState.from_dict(before)
-        validate_state(processor.rules, next_state)
+        validate_state(processor.rules, next_state, legacy_snapshot=zone(TURN_ORDER[0], "OBJECT_POOL") not in state.positions)
         if next_state.version != sequence or digest(next_state.to_dict()) != record["after_hash"]:
             raise CoreError("Replay state mismatch")
         processor._state = next_state

@@ -199,7 +199,7 @@ def validate_token_position(rules, state, token, position):
         elif position != zone(country, f"RESERVE_{kind}"):
             raise CoreError("Invalid reserve")
     elif token.token_type == "CARD":
-        if position not in {"RESOLUTION", *(zone(country, kind) for kind in ("DECK", "HAND", "DISCARD", "STATUS", "RESPONSE", "SET_ASIDE"))}:
+        if position not in {"RESOLUTION", *(zone(country, kind) for kind in ("DECK", "HAND", "DISCARD", "STATUS", "RESPONSE", "SET_ASIDE", "OBJECT_POOL"))}:
             raise CoreError("Invalid card zone")
     elif token.token_type == "SCORE_SOURCE":
         dormant = zone(country, "SCORE_DORMANT") if country else "SCORE_DORMANT"
@@ -209,7 +209,7 @@ def validate_token_position(rules, state, token, position):
         raise CoreError("Ability positions follow their source card and activation lifecycle")
 
 
-def validate_state(rules, state):
+def validate_state(rules, state, *, legacy_snapshot=False):
     if state.ruleset_version != rules.version or set(state.scores) != {"axis", "allies"}:
         raise CoreError("State/rules mismatch")
     if not isinstance(state.game_id, str) or not state.game_id or any(type(v) is not int or v < 0 for v in (state.version, state.serial, state.rng)) or state.rng > 0xFFFFFFFF:
@@ -218,7 +218,9 @@ def validate_state(rules, state):
         raise CoreError("Invalid turn counters")
     expected_positions = set(rules.regions) | {"RESOLUTION", "SCORE_DORMANT"} | {zone(c, z) for c in TURN_ORDER for z in ZONES}
     expected_positions.update(zone(c, "SET_ASIDE") for c in rules.settings.get("staging_countries", ()))
-    if set(state.positions) != expected_positions:
+    old_positions = expected_positions - {zone(c, "OBJECT_POOL") for c in TURN_ORDER}
+    has_pool = set(state.positions) == expected_positions
+    if not has_pool and (not legacy_snapshot or set(state.positions) != old_positions):
         raise CoreError("Position registry mismatch")
     seen = set()
     for position, ids in state.positions.items():
@@ -228,9 +230,15 @@ def validate_state(rules, state):
             seen.add(token_id)
     if seen != set(state.tokens):
         raise CoreError("Unpositioned token")
+    if has_pool and state.tokens.keys() != rules.inventory.keys():
+        raise CoreError("Closed object inventory mismatch")
     for key, t in state.tokens.items():
         if key != t.token_id or (t.owner_country not in rules.countries and not (t.token_type == "SCORE_SOURCE" and t.owner_country is None)):
             raise CoreError("Invalid token identity/owner")
+        slot = rules.inventory.get(key)
+        if not slot or (slot.definition_id, slot.token_type, slot.owner_country, slot.source_token_id) != (
+                t.definition_id, t.token_type, t.owner_country, t.source_token_id):
+            raise CoreError("Immutable object identity mismatch")
         if t.token_type == "UNIT":
             if t.definition_id not in rules.units:
                 raise CoreError("Unknown unit definition")
@@ -241,14 +249,16 @@ def validate_state(rules, state):
             validate_token_position(rules, state, t, t.position_id)
         elif t.token_type == "ABILITY":
             source = state.tokens.get(t.source_token_id)
-            if not source or source.token_type != "CARD" or t.owner_country != source.owner_country or t.definition_id not in rules.cards[source.definition_id].get("abilities", []):
+            if not source or source.token_type != "CARD" or t.owner_country != source.owner_country or t.definition_id not in rules.bound_abilities[source.definition_id]:
                 raise CoreError("Invalid ability source")
-            if t.position_id not in {zone(t.owner_country, z) for z in ZONES if z.startswith("ABILITY_")}:
+            if t.position_id not in {"RESOLUTION", zone(t.owner_country, "RESPONSE"), zone(t.owner_country, "OBJECT_POOL"), *(zone(t.owner_country, z) for z in ZONES if z.startswith("ABILITY_"))}:
                 raise CoreError("Invalid ability lifecycle zone")
+            if t.position_id == "RESOLUTION" and not any(f.context.get("ability_token") == key for f in state.stack):
+                raise CoreError("Ability in resolution needs an active frame")
             resolving_response = (source.position_id == "RESOLUTION" and rules.cards[source.definition_id]["type"] == "RESPONSE"
                                   and any(frame.source_card_id == source.token_id and frame.context.get("ability_token") == t.token_id
                                           for frame in state.stack))
-            if source.position_id not in (zone(t.owner_country, "STATUS"), zone(t.owner_country, "RESPONSE")) and not resolving_response and t.position_id != zone(t.owner_country, "ABILITY_INACTIVE"):
+            if source.position_id not in (zone(t.owner_country, "STATUS"), zone(t.owner_country, "RESPONSE")) and not resolving_response and t.position_id not in (zone(t.owner_country, "ABILITY_INACTIVE"), zone(t.owner_country, "OBJECT_POOL")):
                 raise CoreError("Orphan active ability")
         elif t.token_type == "SCORE_SOURCE":
             if t.definition_id not in rules.sites:
@@ -277,29 +287,50 @@ def validate_state(rules, state):
         raise CoreError("Decision does not block the active resolution frame")
 
 
+def initial_abilities(rules, source, include_pool=False):
+    active = source.position_id in (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
+    roots = rules.cards[source.definition_id].get("abilities", [])
+    capacity = sum(rules.abilities[key].get("copies", 1) for key in roots)
+    pool = zone(source.owner_country, "OBJECT_POOL")
+    for definition in (sorted(rules.bound_abilities[source.definition_id]) if include_pool else roots):
+        count = rules.abilities[definition].get("copies", 1) if definition in roots else 0
+        total = max(count, rules.abilities[definition].get("pool_capacity", count or capacity or 1)) if include_pool else count
+        for copy in range(total):
+            position = pool
+            if copy < count and source.position_id != pool:
+                position = zone(source.owner_country, "ABILITY_READY" if active else "ABILITY_INACTIVE")
+            key = f"ability:{source.token_id}:{definition}"
+            yield Token(f"{key}:{copy + 1}" if copy else key, definition, "ABILITY",
+                        source.owner_country, position, source.token_id)
+
+
+def initial_inventory(rules, projected):
+    tokens = {}
+    for row in rules.data["initial_tokens"]:
+        source = Token(**row)
+        slots = [source]
+        if not projected and source.token_type == "CARD":
+            if source.definition_id not in rules.cards:
+                raise CoreError("Unknown initial card definition")
+            slots.extend(initial_abilities(rules, source, include_pool=True))
+        for slot in slots:
+            if slot.token_id in tokens:
+                raise CoreError("Duplicate object in initial inventory")
+            tokens[slot.token_id] = slot
+    return tokens
+
+
 def initialize(rules, seed=1, game_id="fixture-game"):
     positions = {p: [] for p in rules.regions}
     positions.update({zone(c, z): [] for c in TURN_ORDER for z in ZONES})
     positions.update({zone(c, "SET_ASIDE"): [] for c in rules.settings.get("staging_countries", ())})
     positions["RESOLUTION"] = []
     positions["SCORE_DORMANT"] = []
-    tokens = {}
-    for row in rules.data["initial_tokens"]:
-        token = Token(**row)
-        if token.token_id in tokens or token.position_id not in positions:
-            raise CoreError("Duplicate token or invalid initial position")
-        tokens[token.token_id] = token
+    tokens = rules.inventory.copy()
+    for token in tokens.values():
+        if token.position_id not in positions:
+            raise CoreError("Invalid initial position")
         positions[token.position_id].append(token.token_id)
-    for token in list(tokens.values()):
-        if token.token_type == "CARD":
-            for ability in rules.cards[token.definition_id].get("abilities", []):
-                token_id = f"ability:{token.token_id}:{ability}"
-                active = token.position_id in (zone(token.owner_country, "STATUS"), zone(token.owner_country, "RESPONSE"))
-                p = zone(token.owner_country, "ABILITY_READY" if active else "ABILITY_INACTIVE")
-                if token_id in tokens:
-                    raise CoreError("Ability identity collision")
-                tokens[token_id] = Token(token_id, ability, "ABILITY", token.owner_country, p, token.token_id)
-                positions[p].append(token_id)
     for country in TURN_ORDER:
         deck = zone(country, "DECK")
         positions[deck], seed = shuffle(positions[deck], seed & 0xFFFFFFFF)

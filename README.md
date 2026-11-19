@@ -21,6 +21,7 @@ npm run core:play
 | 位置 | 用途 |
 | --- | --- |
 | [Core 实现与验收](docs/core/implementation-v0.1.md) | 架构职责、API、测试映射、临时工程选择及未定规则 |
+| [对象池与回合末响应的测试](core/tests/test_object_lifecycle.py) | 核对无限次、一次性和限次副本的 ID、区域移动与中途重放。可运行 `npm run core:test -- tests/test_object_lifecycle.py` |
 | [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
 | `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |
 | [旧项目分析](docs/legacy-analysis.md) | 实际进度、可复用模块、未完成事项和资源 |
