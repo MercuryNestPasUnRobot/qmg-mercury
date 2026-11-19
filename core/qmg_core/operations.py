@@ -51,13 +51,15 @@ class OperationExecutor:
                 cost += modifier["amount"]
         return max(0, cost)
 
-    def transfer(self, state, token_id, destination, result, index=None):
+    def transfer(self, state, token_id, destination, result, index=None, resolving_ability=None):
         result["changes"].append(ZoneRegistry.transfer(state, token_id, destination, index))
         source = state.tokens[token_id]
         if source.token_type == "CARD":
             active = destination in (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
-            for t in list(state.tokens.values()):
+            for t in sorted(state.tokens.values(), key=lambda token: token.token_id):
                 if t.token_type == "ABILITY" and t.source_token_id == token_id:
+                    if t.token_id == resolving_ability and destination == "RESOLUTION":
+                        continue
                     if not active:
                         p = zone(t.owner_country, "ABILITY_INACTIVE")
                     elif t.position_id == zone(t.owner_country, "ABILITY_INACTIVE"):
@@ -68,7 +70,7 @@ class OperationExecutor:
                         result["changes"].append(ZoneRegistry.transfer(state, t.token_id, p))
 
     def execute(self, state, op, frame):
-        kind, country = op["type"], frame.actor_country
+        kind, country = op["type"], op["actor_country"]
         result = outcome(kind)
         if kind in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT"):
             target = op.get("target")
@@ -94,7 +96,10 @@ class OperationExecutor:
                 return outcome_failure(kind, "Supply restored before removal")
             self.transfer(state, token.token_id, zone(token.owner_country, "RESERVE_" + self.rules.units[token.definition_id]["kind"]), result)
         elif kind == "TRANSFER":
-            self.transfer(state, op["token"], op["destination"], result, op.get("index"))
+            destination = op["destination"]
+            if destination not in self.legal.targets(state, country, op):
+                return outcome_failure(kind, "Token or destination is no longer eligible")
+            self.transfer(state, op["token"], destination, result, op.get("index"))
         elif kind == "DISCARD":
             source = zone(country, op.get("from_zone", "HAND"))
             token_id = op.get("target_token")
@@ -117,15 +122,29 @@ class OperationExecutor:
             if type(amount) is not int:
                 raise CoreError("VP must be an integer")
             self.gain(state, country, amount, result)
-            ScoreResolver(self.rules).terminal(state)
+            if not any(active.context.get("closing_turn") for active in state.stack):
+                ScoreResolver(self.rules).terminal(state)
         elif kind == "CANCEL":
             key = op["announcement_id"]
             if key not in state.announcements:
                 return outcome_failure(kind, "No pending announced operation")
             state.announcements[key]["cancelled"] = True
+        elif kind == "TURN_END":
+            result["context"]["phase"] = state.turn.phase
         elif kind == "BEGIN_PHASE":
+            if op.get("advance_country"):
+                scoring = ScoreResolver(self.rules)
+                scoring.terminal(state)
+                if state.winner:
+                    return outcome("GAME_END", reason="victory_margin")
+                state.turn.country_index = (state.turn.country_index + 1) % len(TURN_ORDER)
+                state.turn.turn_id += 1
+                state.turn.plays_remaining = self.rules.settings["plays_per_turn"]
+                if state.turn.country_index == 0:
+                    state.turn.round_id += 1
+                    scoring.terminal(state, round_end=True)
             state.turn.phase = op["phase"]
-            for t in list(state.tokens.values()):
+            for t in sorted(state.tokens.values(), key=lambda token: token.token_id):
                 if t.token_type == "ABILITY" and t.position_id == zone(t.owner_country, "ABILITY_COOLDOWN"):
                     a = self.rules.abilities[t.definition_id]
                     if (op.get("turn_end") and a["reset_policy"] == "TURN_END") or (
@@ -157,14 +176,9 @@ class TurnController:
         phase = state.turn.phase
         ops = []
         if phase == "Draw":
-            state.turn.country_index = (state.turn.country_index + 1) % 6
-            state.turn.turn_id += 1
-            if state.turn.country_index == 0:
-                state.turn.round_id += 1
-                ScoreResolver(self.rules).terminal(state, round_end=True)
-            state.turn.plays_remaining = self.rules.settings["plays_per_turn"]
-            country = TURN_ORDER[state.turn.country_index]
-            ops = [{"type": "BEGIN_PHASE", "phase": "Play", "turn_start": True, "turn_end": True}]
+            ops = [{"type": "TURN_END"},
+                   {"type": "BEGIN_PHASE", "phase": "Play", "turn_start": True,
+                    "turn_end": True, "advance_country": True}]
         else:
             next_phase = PHASES[PHASES.index(phase) + 1]
             ops.append({"type": "BEGIN_PHASE", "phase": next_phase})

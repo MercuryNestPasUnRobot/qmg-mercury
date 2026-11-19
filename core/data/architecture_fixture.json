@@ -290,6 +290,26 @@
       "ruleset_version": "architecture-fixture-v1"
     },
     {
+      "id": "g-restore",
+      "country": "germany",
+      "type": "RESPONSE",
+      "effects": [],
+      "abilities": ["g-turn-restore"],
+      "failure_policy": "stop",
+      "printed_reference": "Original architecture fixture",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
+      "id": "g-return",
+      "country": "germany",
+      "type": "RESPONSE",
+      "effects": [],
+      "abilities": ["g-return-effect"],
+      "failure_policy": "stop",
+      "printed_reference": "Original architecture fixture",
+      "ruleset_version": "architecture-fixture-v1"
+    },
+    {
       "id": "g-noop",
       "country": "germany",
       "type": "EVENT",
@@ -361,6 +381,39 @@
       ]
     },
     {
+      "id": "g-turn-restore",
+      "trigger": {"operation_type": "TURN_END", "actor": "self"},
+      "activation_mode": "OPTIONAL",
+      "reset_policy": "NEVER",
+      "listener_scope": ["RESPONSE"],
+      "priority": 30,
+      "effects": [],
+      "on_settle": [{
+        "type": "TRANSFER",
+        "token": "g-return",
+        "expected_from": "germany:SET_ASIDE",
+        "destination": "germany:RESPONSE"
+      }]
+    },
+    {
+      "id": "g-return-effect",
+      "trigger": {"operation_type": "OBJECT_SETTLED", "actor": "self", "source_definition_id": "g-restore"},
+      "activation_mode": "AUTO",
+      "reset_policy": "NEVER",
+      "listener_scope": ["RESPONSE"],
+      "priority": 40,
+      "effects": [{
+        "type": "CHOOSE",
+        "operation": {
+          "type": "TRANSFER",
+          "token": "germany-army-2",
+          "expected_from": "germany:RESERVE_ARMY",
+          "destination": "$choice",
+          "destinations": ["B", "C"]
+        }
+      }]
+    },
+    {
       "id": "uk-prevent",
       "trigger": {
         "operation_type": "ANNOUNCE",
@@ -416,6 +469,7 @@
     }
   ],
   "settings": {
+    "staging_countries": ["germany"],
     "hand_limit": 7,
     "initial_hand": 0,
     "setup_discard": 0,
@@ -482,6 +536,20 @@
       "token_type": "CARD",
       "owner_country": "germany",
       "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-restore",
+      "definition_id": "g-restore",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:HAND"
+    },
+    {
+      "token_id": "g-return",
+      "definition_id": "g-return",
+      "token_type": "CARD",
+      "owner_country": "germany",
+      "position_id": "germany:SET_ASIDE"
     },
     {
       "token_id": "g-copy",

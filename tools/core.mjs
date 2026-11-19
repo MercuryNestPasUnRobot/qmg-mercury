@@ -17,4 +17,5 @@ if (mode === 'setup') {
   run(local, ['-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple', '-r', 'requirements-dev.txt']);
 } else if (mode === 'test') run(existsSync(local) ? local : base, ['-m', 'pytest', ...process.argv.slice(3)]);
 else if (mode === 'demo') run(existsSync(local) ? local : base, ['-m', 'qmg_core']);
+else if (mode === 'play') run(existsSync(local) ? local : base, ['-m', 'qmg_core.workbench', ...process.argv.slice(3)]);
 else throw new Error('Unknown core action');

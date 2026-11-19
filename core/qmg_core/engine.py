@@ -20,7 +20,7 @@ class AbilityScanner:
         self.rules = rules
 
     def scan(self, state, op, result, source_frame, executor):
-        if not result["success"]:
+        if not result["success"] or state.winner:
             return
         matches = []
         for token in state.tokens.values():
@@ -33,6 +33,11 @@ class AbilityScanner:
             trigger = ability["trigger"]
             if trigger["operation_type"] != result["event"]:
                 continue
+            event_source = state.tokens.get(op.get("source_token_id"))
+            if result["event"] == "OBJECT_SETTLED" and token.source_token_id == op.get("source_token_id"):
+                continue
+            if trigger.get("source_definition_id") and (not event_source or event_source.definition_id != trigger["source_definition_id"]):
+                continue
             if trigger.get("announced_type") and trigger["announced_type"] != op.get("announced_type"):
                 continue
             actor = op.get("actor_country")
@@ -41,9 +46,14 @@ class AbilityScanner:
                 continue
             if relation == "enemy" and (not actor or self.rules.team(actor) == self.rules.team(token.owner_country)):
                 continue
-            victim = state.tokens.get(op.get("target_token"))
-            if trigger.get("target_owner") == "self" and (not victim or victim.owner_country != token.owner_country):
-                continue
+            if trigger.get("target_owner") == "self":
+                targets = result["context"].get("victims", [])
+                if op.get("target_token"):
+                    targets = [op["target_token"]]
+                elif op.get("announced_type") in ("LAND_BATTLE", "SEA_BATTLE"):
+                    targets = state.positions.get(op.get("target"), [])
+                if not any(state.tokens[target].owner_country == token.owner_country for target in targets):
+                    continue
             matches.append((ability["priority"], token.token_id, token, ability))
         # Priorities are content data, not inferred official response precedence.
         priorities = [m[0] for m in matches]
@@ -75,23 +85,21 @@ class CommandProcessor:
     @classmethod
     def create(cls, rules, seed=1, game_id="fixture-game", logger=None, checkpoint_path=None):
         obj = cls(rules, initialize(rules, seed, game_id), logger, checkpoint_path=checkpoint_path)
+        count = rules.settings["setup_discard"]
+        if count:
+            state = obj._state
+            if any(len(state.positions[zone(c, "HAND")]) < count for c in TURN_ORDER):
+                raise CoreError("Not enough cards for setup")
+            state.turn.phase = "Setup"
+            state.stack.append(CardInterpreter.frame(state, TURN_ORDER[0], None, [{"type": "SETUP_DONE"}]))
+            for country in reversed(TURN_ORDER):
+                state.stack.append(CardInterpreter.frame(state, country, None, [
+                    {"type": "CHOOSE", "operation": {"type": "DISCARD", "target_token": "$choice"}}
+                    for _ in range(count)]))
         if checkpoint_path is not None:
             from .persistence import SaveRepository
             SaveRepository.save(checkpoint_path, obj)
-        count = rules.settings["setup_discard"]
-        if count:
-            if any(len(obj._state.positions[zone(c, "HAND")]) < count for c in TURN_ORDER):
-                raise CoreError("Not enough cards for setup")
-            def setup(s):
-                s.turn.phase = "Setup"
-                s.stack.append(CardInterpreter.frame(s, TURN_ORDER[0], None, [{"type": "SETUP_DONE"}]))
-                for c in reversed(TURN_ORDER):
-                    s.stack.append(CardInterpreter.frame(s, c, None, [
-                        {"type": "CHOOSE", "operation": {"type": "DISCARD", "target_token": "$choice"}}
-                        for _ in range(count)]))
-                return outcome("SETUP_BEGIN")
-            obj._commit({"type": "SETUP_BEGIN"}, setup)
-            obj.advance()
+        obj.advance()
         return obj
 
     def _commit(self, op, apply):
@@ -100,15 +108,18 @@ class CommandProcessor:
         operation = deepcopy(op)
         operation.setdefault("operation_id", draft.new_id("operation"))
         result = apply(draft)
+        if draft.winner and not self._state.winner:
+            self._close_terminal_resolution(draft, result)
         draft.version += 1
         validate_state(self.rules, draft)
         after = draft.to_dict()
         record = {"sequence_id": draft.version, "game_id": draft.game_id,
                   "round_id": draft.turn.round_id, "turn_id": draft.turn.turn_id,
-                  "resolution_id": operation.get("resolution_id"), "operation_type": result["event"],
+                  "resolution_id": operation.get("resolution_id") or result["context"].get("resolution_id"),
+                  "operation_type": result["event"],
                   "parent_resolution_id": operation.get("parent_resolution_id"),
                   "source": operation.get("source_token_id"), "actor": operation.get("actor_country"),
-                  "targets": {k: operation[k] for k in ("target", "target_token") if k in operation},
+                  "targets": {k: operation[k] for k in ("target", "target_token", "token", "destination") if k in operation},
                   "operation": operation, "outcome": result, "ruleset_version": self.rules.version,
                   "rules_digest": self.rules.fingerprint, "before_version": self._state.version,
                   "after_version": draft.version, "before_hash": digest(before), "after_hash": digest(after),
@@ -120,10 +131,22 @@ class CommandProcessor:
         # Publish only after the durable append succeeds; a failed step changes nothing.
         self._state, self.record_head = draft, record["record_digest"]
         self.records.append(record)
-        if self.checkpoint_path is not None and result["event"] == "END_PHASE" and result["context"].get("phase") == "Draw":
+        if self.checkpoint_path is not None and operation.get("advance_country"):
             from .persistence import SaveRepository
             SaveRepository.save(self.checkpoint_path, self)
         return deepcopy(result)
+
+    def _close_terminal_resolution(self, state, result):
+        # Keep the winning operation and retire unfinished cards without running their effects.
+        for token_id in sorted(state.positions["RESOLUTION"]):
+            token = state.tokens[token_id]
+            self.executor.transfer(state, token_id, zone(token.owner_country, "DISCARD"), result)
+        for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
+            if token.token_type == "ABILITY" and token.position_id == zone(token.owner_country, "ABILITY_PENDING"):
+                self.executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_READY"), result)
+        state.stack.clear()
+        state.announcements.clear()
+        state.decision = None
 
     def legal_commands(self, controlled_countries):
         s = self._state
@@ -144,9 +167,9 @@ class CommandProcessor:
                 card = self.rules.cards[s.tokens[token_id].definition_id]
                 first = card["effects"][0] if card["effects"] else None
                 effective = first.get("operation") if first and first["type"] == "CHOOSE" else first
-                if effective and effective["type"] in PREVENTABLE | {"DISCARD"}:
+                if effective and effective["type"] in PREVENTABLE | {"DISCARD", "TRANSFER"}:
                     targets = self.legal.targets(s, country, effective)
-                    selected = effective.get("target", effective.get("target_token", "$choice"))
+                    selected = effective.get("destination", effective.get("target", effective.get("target_token", "$choice")))
                     if not targets or (selected != "$choice" and selected not in targets):
                         continue
                 if card.get("simulation_unknown") or not self.legal.requirements_met(s, country, card.get("requirements", [])):
@@ -155,9 +178,13 @@ class CommandProcessor:
         return commands
 
     def submit(self, command, controlled_countries, auto_resolve=True):
-        if type(command.get("expected_version")) is not int or command not in self.legal_commands(controlled_countries):
+        if not isinstance(command, dict) or type(command.get("expected_version")) is not int or command not in self.legal_commands(controlled_countries):
             raise CoreError("Unauthorized, stale or illegal command")
         op = {"type": command["type"], "actor_country": command["actor"], "source_token_id": command.get("card")}
+        if command["type"] == "CHOOSE":
+            frame = self._state.stack[-1]
+            op.update(resolution_id=frame.resolution_id, parent_resolution_id=frame.parent_resolution_id,
+                      source_token_id=frame.source_card_id, decision_id=command["decision_id"])
         def apply(s):
             if command["type"] == "CHOOSE":
                 d = s.decision
@@ -171,6 +198,8 @@ class CommandProcessor:
                     continuation["token"] = option
                 elif continuation["type"] == "REBUILD_UNIT":
                     continuation["target"] = option
+                elif continuation["type"] == "TRANSFER":
+                    continuation["destination"] = option
                 else:
                     key = "target_token" if continuation["type"] in ("DISCARD", "ELIMINATE", "COST_SELECTED") else "target"
                     continuation[key] = option
@@ -180,15 +209,21 @@ class CommandProcessor:
             if command["type"] == "PLAY_CARD":
                 token_id = command["card"]
                 definition = self.rules.cards[s.tokens[token_id].definition_id]
+                if definition["type"] == "RESPONSE":
+                    result = outcome("SET_RESPONSE")
+                    self.executor.transfer(s, token_id, zone(command["actor"], "RESPONSE"), result)
+                    s.turn.plays_remaining -= 1
+                    return result
                 result = outcome("PLAY_CARD")
                 self.executor.transfer(s, token_id, "RESOLUTION", result)
                 frame = CardInterpreter.frame(s, command["actor"], token_id, definition["effects"], context={"failure_policy": definition["failure_policy"]})
                 s.stack.append(frame)
+                result["context"]["resolution_id"] = frame.resolution_id
                 s.turn.plays_remaining -= 1
                 AbilityScanner(self.rules).scan(s, op, result, frame, self.executor)
                 return result
             country, operations, result = TurnController(self.rules).next_phase(s)
-            frame = CardInterpreter.frame(s, country, None, operations)
+            frame = CardInterpreter.frame(s, country, None, operations, context={"closing_turn": result["context"]["phase"] == "Draw"})
             s.stack.append(frame)
             AbilityScanner(self.rules).scan(s, op, result, frame, self.executor)
             return result
@@ -235,7 +270,8 @@ class CommandProcessor:
         frame = self._state.stack[-1]
         raw = deepcopy(frame.remaining_operations[-1]) if frame.remaining_operations else {"type": "FINISH_FRAME"}
         op = self._resolve(raw, frame)
-        op.update(actor_country=frame.actor_country, source_token_id=frame.source_card_id,
+        actor = TURN_ORDER[(self._state.turn.country_index + 1) % len(TURN_ORDER)] if op.get("advance_country") else frame.actor_country
+        op.update(actor_country=actor, source_token_id=frame.source_card_id,
                   resolution_id=frame.resolution_id, parent_resolution_id=frame.parent_resolution_id,
                   operation_id=f"operation:{self._state.serial + 1}")
         def apply(s):
@@ -248,14 +284,33 @@ class CommandProcessor:
             if op["type"] == "FINISH_FRAME":
                 s.stack.pop()
                 result = outcome("FINISH_FRAME")
+                completed_object = False
+                on_settle = ()
                 if ability_id:
                     t = s.tokens[ability_id]
-                    if t.position_id == zone(t.owner_country, "ABILITY_PENDING"):
+                    if s.tokens[t.source_token_id].position_id == "RESOLUTION":
+                        self.executor.transfer(s, t.source_token_id, zone(t.owner_country, "DISCARD"), result)
+                        completed_object = True
+                        on_settle = self.rules.abilities[t.definition_id].get("on_settle", ())
+                    elif t.position_id == zone(t.owner_country, "ABILITY_PENDING"):
                         self.executor.transfer(s, ability_id, zone(t.owner_country, "ABILITY_READY"), result)
                 elif f.source_card_id and s.tokens[f.source_card_id].position_id == "RESOLUTION":
                     card = self.rules.cards[s.tokens[f.source_card_id].definition_id]
                     destination = card["type"] if card["type"] in ("STATUS", "RESPONSE") else "DISCARD"
                     self.executor.transfer(s, f.source_card_id, zone(f.actor_country, destination), result)
+                    completed_object = True
+                    on_settle = card.get("on_settle", ())
+                if completed_object:
+                    result["event"] = "OBJECT_SETTLED"
+                    for definition in on_settle:
+                        transfer = self._resolve(definition, f)
+                        transfer["actor_country"] = f.actor_country
+                        output = self.executor.execute(s, transfer, f)
+                        result["changes"].extend(output["changes"])
+                        if not output["success"]:
+                            result["context"].setdefault("output_failures", []).append(output["context"]["reason"])
+                    parent = next((frame for frame in s.stack if frame.resolution_id == f.parent_resolution_id), None)
+                    AbilityScanner(self.rules).scan(s, {**op, "type": "OBJECT_SETTLED"}, result, parent, self.executor)
                 return result
             f.remaining_operations.pop()
             f.current_step += 1
@@ -323,6 +378,10 @@ class CommandProcessor:
             result = outcome("PAY_COST")
             for token_id in cost_tokens:
                 self.executor.transfer(s, token_id, zone(country, "DISCARD"), result)
+            source = s.tokens[token.source_token_id]
+            if source.position_id == zone(country, "RESPONSE"):
+                self.executor.transfer(s, source.token_id, "RESOLUTION", result, resolving_ability=token.token_id)
+                result["context"]["revealed_source"] = source.token_id
             if ability["reset_policy"] != "CHECKPOINT":
                 self.executor.transfer(s, token.token_id, zone(country, "ABILITY_COOLDOWN"), result)
             return result, False

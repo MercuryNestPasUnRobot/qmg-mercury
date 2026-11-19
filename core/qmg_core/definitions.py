@@ -6,6 +6,7 @@ from .model import CoreError, TURN_ORDER, digest
 
 OPERATIONS = {"TRANSFER", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE",
               "ELIMINATE", "DRAW", "DISCARD", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY"}
+CONNECTION_USES = frozenset({"supply", "build", "battle"})
 
 
 class RuleSet:
@@ -21,6 +22,9 @@ class RuleSet:
         self.units = self._index(data["units"], "id")
         self.abilities = self._index(data["abilities"], "id")
         self.settings = deepcopy(data["settings"])
+        staging = self.settings.get("staging_countries", [])
+        if not isinstance(staging, list) or any(not isinstance(country, str) or country not in TURN_ORDER for country in staging):
+            raise CoreError("Invalid staging countries")
         self.sites = self._index(data["score_sites"], "id")
         if tuple(data["turn_order"]) != TURN_ORDER or set(self.countries) != set(TURN_ORDER):
             raise CoreError("The six-country architecture turn order is required")
@@ -28,6 +32,7 @@ class RuleSet:
         for c in self.connections.values():
             if c["a"] not in self.regions or c["b"] not in self.regions or c["a"] == c["b"]:
                 raise CoreError("Invalid connection")
+            self._connection_uses(c)
         for country in self.countries.values():
             if country["team"] not in ("axis", "allies"):
                 raise CoreError("Invalid team")
@@ -43,8 +48,11 @@ class RuleSet:
             if card["failure_policy"] not in ("stop", "continue"):
                 raise CoreError("Explicit card failure policy required")
             self._effects(card["effects"])
+            self._completion_transfers(card.get("on_settle", []))
             if any(a not in self.abilities for a in card.get("abilities", [])):
                 raise CoreError("Unknown ability")
+            if card["type"] == "RESPONSE" and (card["effects"] or not card.get("abilities")) and not card.get("simulation_unknown"):
+                raise CoreError("Face-down responses must define their effects on abilities")
             for req in card.get("requirements", []):
                 if req.get("kind") not in ("min_hand", "occupied", "phase"):
                     raise CoreError("Unknown card requirement")
@@ -57,6 +65,8 @@ class RuleSet:
                     raise CoreError("Unknown rule modifier or scope")
                 if m["kind"] == "connection" and (m["a"] not in self.regions or m["b"] not in self.regions or type(m["enabled"]) is not bool):
                     raise CoreError("Invalid connection modifier")
+                if m["kind"] == "connection":
+                    self._connection_uses(m)
                 if m["kind"] in ("supply_source", "build_region") and m["region"] not in self.regions:
                     raise CoreError("Invalid modifier region")
                 if m["kind"] == "build_region" and m["unit_kind"] not in ("ARMY", "NAVY"):
@@ -71,10 +81,13 @@ class RuleSet:
             if type(ability["priority"]) is not int or type(ability.get("discard_cost", 0)) is not int or ability.get("discard_cost", 0) < 0:
                 raise CoreError("Explicit ability priority and nonnegative cost required")
             self._effects(ability["effects"])
+            self._completion_transfers(ability.get("on_settle", []))
             trigger = ability["trigger"]
-            if not set(trigger) <= {"operation_type", "announced_type", "actor", "target_owner"} or trigger.get("actor", "any") not in ("self", "enemy", "any") or trigger.get("target_owner", "self") != "self":
+            if not set(trigger) <= {"operation_type", "announced_type", "actor", "target_owner", "source_definition_id"} or trigger.get("actor", "any") not in ("self", "enemy", "any") or trigger.get("target_owner", "self") != "self":
                 raise CoreError("Unsupported trigger predicate")
-            if trigger["operation_type"] not in OPERATIONS | {"PLAY_CARD", "ANNOUNCE", "BEGIN_PHASE", "END_PHASE", "CHECK_SUPPLY", "CHECK_SCORE", "CHECK_DISCARD"}:
+            if "source_definition_id" in trigger and trigger["source_definition_id"] not in self.cards:
+                raise CoreError("Unknown trigger source definition")
+            if trigger["operation_type"] not in OPERATIONS | {"PLAY_CARD", "ANNOUNCE", "BEGIN_PHASE", "END_PHASE", "TURN_END", "OBJECT_SETTLED", "CHECK_SUPPLY", "CHECK_SCORE", "CHECK_DISCARD"}:
                 raise CoreError("Unsupported listener checkpoint")
             if not set(ability.get("listener_scope", ["STATUS", "RESPONSE"])) <= {"STATUS", "RESPONSE"}:
                 raise CoreError("Unsupported listener scope")
@@ -89,6 +102,14 @@ class RuleSet:
         if self.settings["setup_discard"] > self.settings["initial_hand"] or self.settings["max_atomic_steps"] == 0 or self.settings["max_rounds"] == 0:
             raise CoreError("Invalid setup or execution budget")
         self.fingerprint = digest(self.data)
+
+    @staticmethod
+    def _connection_uses(definition):
+        tags = definition.get("movement_or_supply_tags")
+        if tags is not None and (not isinstance(tags, list) or not tags or
+                                 any(not isinstance(tag, str) or tag not in CONNECTION_USES for tag in tags) or
+                                 len(tags) != len(set(tags))):
+            raise CoreError("Invalid connection tags")
 
     @staticmethod
     def _index(rows, key):
@@ -113,11 +134,27 @@ class RuleSet:
                 raise CoreError(f"Unsupported instruction: {op.get('type')}")
             if op["type"] == "CHOOSE":
                 self._effects([op["operation"]])
-                if op["operation"]["type"] not in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "ELIMINATE", "DISCARD"):
+                if op["operation"]["type"] not in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "ELIMINATE", "DISCARD", "TRANSFER"):
                     raise CoreError("Unsupported target choice operation")
             if op["type"] == "GAIN_VP" and type(op.get("amount")) is not int:
                 raise CoreError("Invalid VP amount")
             if op["type"] == "DRAW" and (type(op.get("count", 1)) is not int or op.get("count", 1) < 0):
                 raise CoreError("Invalid draw count")
+            if op["type"] == "TRANSFER":
+                if any(not isinstance(op.get(key), str) or not op[key] for key in ("token", "destination")):
+                    raise CoreError("Transfer requires a token and destination")
+                if "expected_from" in op and not isinstance(op["expected_from"], str):
+                    raise CoreError("Invalid expected source position")
+                destinations = op.get("destinations")
+                if destinations is not None and (not isinstance(destinations, list) or not destinations or
+                                                 any(not isinstance(position, str) for position in destinations)):
+                    raise CoreError("Invalid transfer destinations")
+                if op.get("index") is not None and (type(op["index"]) is not int or op["index"] < 0):
+                    raise CoreError("Transfer position index must be nonnegative")
             if op["type"] in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE") and op.get("target") != "$choice" and op.get("target") not in self.regions:
                 raise CoreError("Unknown target region")
+
+    def _completion_transfers(self, effects):
+        self._effects(effects)
+        if any(effect["type"] != "TRANSFER" or effect["destination"] == "$choice" for effect in effects):
+            raise CoreError("Settlement can only publish declared position transfers")

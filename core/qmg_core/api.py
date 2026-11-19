@@ -4,8 +4,17 @@ from copy import deepcopy
 from .model import CoreError, TURN_ORDER, Token, TurnClock, GameState, zone
 from .engine import CommandProcessor
 from .definitions import RuleSet
+from .rules import MapGraph
 
 PUBLIC_ZONES = {"DISCARD", "STATUS", "RESERVE_ARMY", "RESERVE_NAVY"}
+
+
+def _visible_position(position, rules, controlled):
+    if position is None:
+        return False
+    country, _, kind = position.partition(":")
+    return (position in rules.regions or position == "RESOLUTION" or kind in PUBLIC_ZONES
+            or (country in controlled and kind != "DECK"))
 
 
 def observation(processor, controlled_countries):
@@ -16,35 +25,51 @@ def observation(processor, controlled_countries):
     visible, positions = {}, {}
     for position, ids in s.positions.items():
         country, _, kind = position.partition(":")
-        public = position in rules.regions or position == "RESOLUTION" or kind in PUBLIC_ZONES
-        permitted = public or (country in controlled and kind != "DECK")
+        permitted = _visible_position(position, rules, controlled)
         positions[position] = {"count": len(ids)}
-        if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind == "SCORE_DORMANT")):
+        if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind in ("SCORE_DORMANT", "SET_ASIDE"))):
             positions[position]["count"] = 0
         if permitted:
             positions[position]["tokens"] = list(ids)
             for token_id in ids:
                 visible[token_id] = deepcopy(s.tokens[token_id].__dict__)
     history = []
+    revealed_sources = set()
     for record in processor.records:
         source = record["source"]
-        hidden_source = source is not None and source not in visible
+        outcome = record["outcome"]
+        if record["operation_type"] == "SET_RESPONSE":
+            revealed_sources.discard(source)
+        if revealed_source := outcome["context"].get("revealed_source"):
+            revealed_sources.add(revealed_source)
+        source_position = next((change["from"] for change in outcome["changes"] if change["token_id"] == source), None)
+        source_definition = rules.cards.get(s.tokens[source].definition_id) if source in s.tokens else None
+        response_private = source_definition and source_definition["type"] == "RESPONSE" and source not in revealed_sources and record["actor"] not in controlled
+        hidden_source = source is not None and (response_private or (source not in visible and not _visible_position(source_position, rules, controlled)))
         history.append({"sequence_id": record["sequence_id"],
                         "operation_type": "PRIVATE_OPERATION" if hidden_source else record["operation_type"],
-                        "actor": record["actor"], "source": source if source in visible else None,
-                        "changes": [deepcopy(c) for c in record["outcome"]["changes"] if c["token_id"] in visible],
-                        "score_changes": deepcopy(record["outcome"]["score_changes"]),
-                        "success": record["outcome"]["success"]})
+                        "actor": record["actor"], "source": None if hidden_source else source,
+                        "changes": [deepcopy(c) for c in outcome["changes"]
+                                    if _visible_position(c["to"], rules, controlled)
+                                    and (c["token_id"] in visible or _visible_position(c["from"], rules, controlled))],
+                        "score_changes": deepcopy(outcome["score_changes"]),
+                        "success": outcome["success"]})
     decision = None
     if s.decision:
         decision = {"required_country": s.decision.required_country}
         if s.decision.required_country in controlled:
             decision.update(decision_id=s.decision.decision_id, decision_type=s.decision.decision_type,
-                            legal_options=list(s.decision.legal_options), optional_flag=s.decision.optional_flag)
+                            legal_options=list(s.decision.legal_options), optional_flag=s.decision.optional_flag,
+                            operation_type=s.decision.continuation["type"])
+    resolution = []
+    for frame in s.stack:
+        source = frame.source_card_id
+        if source in visible:
+            resolution.append({"source": source, "country": frame.actor_country})
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
             "tokens": visible, "positions": positions, "turn": deepcopy(s.turn.__dict__),
             "scores": dict(s.scores), "winner": s.winner, "decision": decision,
-            "resolution_depth": len(s.stack), "history": history}
+            "resolution_depth": len(s.stack), "resolution": resolution, "history": history}
 
 
 class CoreAPI:
@@ -60,6 +85,17 @@ class CoreAPI:
 
     def legal_commands(self):
         return deepcopy(self._processor.legal_commands(self.controlled_countries))
+
+    def regions(self):
+        rules, state = self._processor.rules, self._processor.state
+        graph = MapGraph(rules)
+        country = self.controlled_countries[0] if self.controlled_countries else None
+        neighbors = graph.adjacency(state, country)
+        return {region: {"type": definition["type"],
+                         "neighbors": sorted(neighbors[region]),
+                         "base_vp": sum(site["vp"] for site in rules.sites.values()
+                                        if site["region"] == region and not site.get("dynamic"))}
+                for region, definition in rules.regions.items()}
 
     def submit(self, command):
         self._processor.submit(deepcopy(command), self.controlled_countries)

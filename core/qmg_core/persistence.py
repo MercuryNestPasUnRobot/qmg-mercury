@@ -1,5 +1,4 @@
 """Private, versioned checkpoints and an append-only transactional JSONL journal."""
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -82,44 +81,72 @@ class SaveRepository:
         validate_state(rules, state)
         processor = CommandProcessor(rules, state, record_head=p["record_head"])
         if journal is not None and Path(journal).exists():
-            lines = Path(journal).read_bytes().splitlines(keepends=True)
-            previous_sequence, previous_digest = None, None
-            for i, line in enumerate(lines):
-                if not line.endswith(b"\n") and i == len(lines) - 1:
-                    if tolerate_truncated_tail:
-                        break
-                    raise CoreError("Incomplete journal tail")
-                try:
-                    record = json.loads(line)
-                except (ValueError, UnicodeDecodeError) as e:
-                    raise CoreError("Corrupt journal record") from e
-                body = {k: v for k, v in record.items() if k != "record_digest"}
-                if digest(body) != record["record_digest"]:
-                    raise CoreError("Journal checksum mismatch")
-                if record["rules_digest"] != rules.fingerprint or record["game_id"] != state.game_id:
-                    raise CoreError("Journal belongs to another game/ruleset")
-                seq = record["sequence_id"]
-                if previous_sequence is not None and seq != previous_sequence + 1:
-                    raise CoreError("Duplicate, missing or reordered record")
-                if previous_digest is not None and record["previous_record"] != previous_digest:
-                    raise CoreError("Broken journal record chain")
-                previous_sequence = seq
-                previous_digest = record["record_digest"]
-                if seq <= state.version:
-                    if seq == state.version and (record["record_digest"] != processor.record_head or record["after_hash"] != digest(state.to_dict())):
-                        raise CoreError("Snapshot and journal disagree")
+            previous_sequence, previous_digest, previous_state_hash = None, None, None
+            with Path(journal).open("rb") as stream:
+                for line in stream:
+                    if not line.endswith(b"\n"):
+                        if tolerate_truncated_tail:
+                            break
+                        raise CoreError("Incomplete journal tail")
+                    record = SaveRepository._read_record(line, rules, state.game_id)
+                    sequence = record["sequence_id"]
+                    if previous_sequence is not None and (
+                        sequence != previous_sequence + 1
+                        or record["previous_record"] != previous_digest
+                        or record["before_hash"] != previous_state_hash
+                    ):
+                        raise CoreError("Duplicate, missing, reordered or disconnected journal record")
+                    previous_sequence = sequence
+                    previous_digest = record["record_digest"]
+                    previous_state_hash = record["after_hash"]
+                    if sequence == state.version:
+                        if previous_digest != processor.record_head or previous_state_hash != digest(state.to_dict()):
+                            raise CoreError("Snapshot and journal disagree")
+                    elif sequence > state.version:
+                        state = SaveRepository._apply_record(processor, state, record)
                     processor.records.append(record)
-                    continue
-                if seq != state.version + 1 or record["previous_record"] != processor.record_head or record["before_hash"] != digest(state.to_dict()) or record["rules_digest"] != rules.fingerprint or record["game_id"] != state.game_id:
-                    raise CoreError("Journal identity or state chain mismatch")
-                data = state.to_dict()
-                data.update(deepcopy(record["state_patch"]))
-                next_state = GameState.from_dict(data)
-                validate_state(rules, next_state)
-                if next_state.version != seq or digest(next_state.to_dict()) != record["after_hash"]:
-                    raise CoreError("Replay state mismatch")
-                state = next_state
-                processor._state = state
-                processor.record_head = record["record_digest"]
-                processor.records.append(record)
+            if previous_sequence is not None and previous_sequence < state.version:
+                raise CoreError("Journal ends before its checkpoint")
+        return processor
+
+    @staticmethod
+    def _read_record(line, rules, game_id):
+        try:
+            record = json.loads(line)
+            body = {key: value for key, value in record.items() if key != "record_digest"}
+            if digest(body) != record["record_digest"]:
+                raise CoreError("Journal checksum mismatch")
+            sequence = record["sequence_id"]
+            if type(sequence) is not int or sequence < 1 or record["before_version"] != sequence - 1 or record["after_version"] != sequence:
+                raise CoreError("Invalid journal sequence or versions")
+            if record["rules_digest"] != rules.fingerprint or record["game_id"] != game_id:
+                raise CoreError("Journal belongs to another game/ruleset")
+            return record
+        except CoreError:
+            raise
+        except (ValueError, AttributeError, KeyError, TypeError) as e:
+            raise CoreError("Corrupt journal record") from e
+
+    @staticmethod
+    def _apply_record(processor, state, record):
+        sequence = record["sequence_id"]
+        before = state.to_dict()
+        if sequence != state.version + 1 or record["previous_record"] != processor.record_head or record["before_hash"] != digest(before):
+            raise CoreError("Journal identity or state chain mismatch")
+        before.update(record["state_patch"])
+        next_state = GameState.from_dict(before)
+        validate_state(processor.rules, next_state)
+        if next_state.version != sequence or digest(next_state.to_dict()) != record["after_hash"]:
+            raise CoreError("Replay state mismatch")
+        processor._state = next_state
+        processor.record_head = record["record_digest"]
+        return next_state
+
+    @staticmethod
+    def resume(path, rules, journal):
+        """Recover a verified prefix and continue writing to the same journal."""
+        processor = SaveRepository.recover(path, rules, journal)
+        processor.logger = OperationLogger(journal)
+        processor.checkpoint_path = path
+        processor.advance()
         return processor

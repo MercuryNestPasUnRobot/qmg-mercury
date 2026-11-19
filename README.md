@@ -1,6 +1,6 @@
 # QMG Mercury · 战场军需官重建
 
-本仓库是 2026-11-19 启动的独立重建项目。目前提供 Python 底层 Core：统一 Token 位置、地图与补给查询、串行结算、阻塞选择、能力触发、日志重放及确定性单步 AI 评价。Node.js / TypeScript 保留启动页和工程检查。Core 使用合成机制测试数据，正式第二版地图/卡牌内容包、可玩 GUI 和桌面打包尚未完成。
+本仓库是 2026-11-19 启动的独立重建项目。Python Core 支持统一 Token 位置、地图与补给查询、串行结算、阻塞选择、能力触发、日志重放及确定性单步 AI 评价。浏览器验收台可运行原创机制场景，包含暗置响应、回合末对象恢复和存档续跑。正式游戏内容包与完整产品界面另属内容和客户端阶段。
 
 ## 开始运行
 
@@ -11,10 +11,10 @@ npm ci
 npm run core:setup
 npm run check
 npm run core:demo
-npm run dev
+npm run core:play
 ```
 
-打开 [本地启动页](http://127.0.0.1:5173)。也可运行 `powershell -File tools/setup.ps1` 完成安装和检查。`npm run build` 后用 `npm start` 启动编译版本。
+打开 [Core 验收台](http://127.0.0.1:5184)。可从德国手牌盖放「回合末恢复」，结束各阶段，到 Draw 结束时选择使用能力及合法地区。重新运行相同命令会继续原局。如需另起一局，可指定一个新目录，例如 `npm run core:play -- --save-dir ../.cache/core-second-game`。原 Node 启动页可用 `npm run dev` 打开。
 
 ## 项目入口
 
@@ -38,6 +38,7 @@ npm run dev
 npm run doctor          # 环境、Git、内存及参考资料状态
 npm run core:test       # Python Core 机制、重放与 AI 边界
 npm run core:demo       # 无 GUI 运行多步结算、保存恢复与单步 AI
+npm run core:play       # 浏览器操作同一个 Core，支持中途续跑
 npm run legacy:verify   # 核验本机 1,725 个旧文件是否仍原样保留
 npm run refs:download   # 资源足够时下载/补齐锁定的 AI 源码
 npm run refs:verify     # 严格核验本机参考源码；缺文件会失败
