@@ -4,8 +4,10 @@ from pathlib import Path
 
 from .model import CoreError, TURN_ORDER, digest
 
-TARGETED_OPERATIONS = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE",
-                       "ELIMINATE", "DISCARD", "TRANSFER"}
+CONSTRUCTION = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT"}
+BATTLES = {"LAND_BATTLE", "SEA_BATTLE"}
+FORCE_OPERATIONS = CONSTRUCTION | BATTLES
+TARGETED_OPERATIONS = FORCE_OPERATIONS | {"ELIMINATE", "DISCARD", "TRANSFER"}
 OPERATIONS = TARGETED_OPERATIONS | {"CREATE", "DRAW", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY"}
 CONNECTION_USES = frozenset({"supply", "build", "battle"})
 
@@ -18,6 +20,15 @@ class RuleSet:
         if not isinstance(self.version, str) or not self.version:
             raise CoreError("Ruleset version required")
         self.countries = self._index(data["countries"], "id")
+        self.auxiliary_forces = self._index(data.get("auxiliary_forces", []), "id")
+        self.force_controllers = {country: country for country in self.countries}
+        for key, force in self.auxiliary_forces.items():
+            controller = force.get("controller")
+            if not isinstance(controller, str) or controller not in self.countries or key in self.countries:
+                raise CoreError(f"Invalid controller or duplicate ID for auxiliary force {key}")
+            if "name" in force and (not isinstance(force["name"], str) or not force["name"].strip()):
+                raise CoreError(f"Invalid name for auxiliary force {key}")
+            self.force_controllers[key] = controller
         self.regions = self._index(data["regions"], "id")
         self.cards = self._index(data["cards"], "id")
         self.units = self._index(data["units"], "id")
@@ -58,7 +69,10 @@ class RuleSet:
             if country["team"] not in ("axis", "allies"):
                 raise CoreError("Invalid team")
         for r in self.regions.values():
-            if r["type"] not in ("LAND", "SEA") or (r.get("home_country") and r["home_country"] not in self.countries):
+            if r["type"] not in ("LAND", "SEA") or any(
+                r.get(field) is not None and r[field] not in self.force_controllers
+                for field in ("home_country", "supply_source_for")
+            ):
                 raise CoreError("Invalid region")
         for u in self.units.values():
             if u["kind"] not in ("ARMY", "NAVY"):
@@ -180,7 +194,10 @@ class RuleSet:
         return cls(json.loads(path.read_text(encoding="utf-8")))
 
     def team(self, country):
-        return self.countries[country]["team"]
+        return self.countries[self.force_controllers[country]]["team"]
+
+    def controlled_forces(self, country):
+        return tuple(force for force, controller in self.force_controllers.items() if controller == country)
 
     def _effects(self, effects):
         for op in effects:
@@ -219,8 +236,12 @@ class RuleSet:
                         raise CoreError("Card creation needs a known definition and card zone")
                 else:
                     raise CoreError("Unknown created object type")
-            if op["type"] in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE") and op.get("target") != "$choice" and op.get("target") not in self.regions:
+            if op["type"] in FORCE_OPERATIONS and op.get("target") != "$choice" and op.get("target") not in self.regions:
                 raise CoreError("Unknown target region")
+            if op["type"] in FORCE_OPERATIONS | {"REDEPLOY"} and "force" in op:
+                force = op["force"]
+                if not isinstance(force, str) or force not in self.force_controllers:
+                    raise CoreError("Unknown acting force")
 
     def _programs(self, definition):
         for stage in ("effects", "on_settle"):

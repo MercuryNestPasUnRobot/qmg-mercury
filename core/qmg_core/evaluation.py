@@ -60,7 +60,7 @@ class ScoreEvaluator:
         if excluded_unit is not None:
             pieces = [piece for piece in pieces if piece.token_id != excluded_unit.token_id]
         supply = SupplyResolver(rules)
-        supplied = {c: supply.supplied(s, c, units=pieces) for c in TURN_ORDER}
+        supplied = {force: supply.supplied(s, force, units=pieces) for force in rules.force_controllers}
         point_values, influences, map_value = [], [], 0.0
         for site_id, site in rules.sites.items():
             if site.get("dynamic"):
@@ -90,10 +90,11 @@ class ScoreEvaluator:
                 else:
                     hostile += strength
             advantage = max(-1.0, min(1.0, (friendly - hostile) / w["saturation"]))
-            controllers = [t for t in pieces if t.position_id in regions and t.owner_country in site["countries"] and
+            controllers = [t for t in pieces if t.position_id in regions
+                           and rules.force_controllers[t.owner_country] in site["countries"] and
                            (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
             control = sign(controllers[0].owner_country) if controllers else 0
-            relevant = {t.owner_country for t in controllers} if controllers else set(site["countries"])
+            relevant = {rules.force_controllers[t.owner_country] for t in controllers} if controllers else set(site["countries"])
             remaining = 0
             for round_id in range(s.turn.round_id, rules.settings["max_rounds"] + 1):
                 for index, eligible_country in enumerate(TURN_ORDER):

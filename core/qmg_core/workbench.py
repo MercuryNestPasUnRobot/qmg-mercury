@@ -100,7 +100,8 @@ class Workbench:
                 return escape(token_id)
             definition = token["definition_id"]
             if token["token_type"] == "UNIT":
-                owner = COUNTRY_NAMES[token["owner_country"]]
+                force = token["owner_country"]
+                owner = self.processor.rules.auxiliary_forces.get(force, {}).get("name", COUNTRY_NAMES.get(force, force))
                 return escape(f"{owner} · {'陆军' if self.processor.rules.units[definition]['kind'] == 'ARMY' else '海军'}")
             card = self.processor.rules.cards.get(definition, {})
             return escape(card.get("title") or CARD_NAMES.get(definition, definition))
@@ -144,6 +145,11 @@ class Workbench:
         for country in TURN_ORDER:
             counts = [f'{name} {view["positions"][zone(country, key)]["count"]}' for key, name in ZONE_NAMES.items()]
             zones.append(f'<li><strong>{COUNTRY_NAMES[country]}</strong> {" · ".join(counts)}</li>')
+        for force, definition in self.processor.rules.auxiliary_forces.items():
+            counts = [f'{ZONE_NAMES[kind]} {view["positions"][zone(force, kind)]["count"]}'
+                      for kind in ("RESERVE_ARMY", "RESERVE_NAVY")]
+            label = escape(definition.get("name", force))
+            zones.append(f'<li><strong>{label}</strong> {" · ".join(counts)}</li>')
         history = []
         for row in reversed(view["history"][-20:]):
             summary = " · ".join(f'{token_name(c["token_id"])} {escape(c["from"])} → {escape(c["to"])}' for c in row["changes"])

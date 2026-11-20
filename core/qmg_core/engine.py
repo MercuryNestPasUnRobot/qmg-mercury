@@ -61,7 +61,8 @@ class AbilityScanner:
                     targets = [op["target_token"]]
                 elif op.get("announced_type") in BATTLES:
                     targets = [key for key in state.positions[op["target"]] if state.tokens[key].token_type == "UNIT"]
-                if not any(target in state.tokens and state.tokens[target].owner_country == token.owner_country
+                if not any(target in state.tokens and
+                           self.rules.force_controllers.get(state.tokens[target].owner_country) == token.owner_country
                            for target in targets):
                     continue
             group = (source.token_id, token.definition_id)
@@ -140,7 +141,7 @@ class CommandProcessor:
                   "operation_type": result["event"],
                   "parent_resolution_id": operation.get("parent_resolution_id"),
                   "source": operation.get("source_token_id"), "actor": operation.get("actor_country"),
-                  "targets": {k: operation[k] for k in ("target", "target_token", "token", "destination") if k in operation},
+                  "targets": {k: operation[k] for k in ("target", "target_token", "token", "destination", "force") if k in operation},
                   "operation": operation, "outcome": result, "ruleset_version": self.rules.version,
                   "rules_digest": self.rules.fingerprint, "before_version": self._state.version,
                   "after_version": draft.version, "before_hash": digest(before), "after_hash": digest(after),
@@ -436,8 +437,10 @@ class CommandProcessor:
                 self.executor.transfer(s, token.token_id, "RESOLUTION", result)
             return result, False
         if kind == "CHECK_SUPPLY":
-            supplied = SupplyResolver(self.rules).supplied(s, country)
-            ops = [{"type": "ELIMINATE", "target_token": t.token_id, "reason": "unsupplied"} for t in board_units(self.rules, s, country) if t.token_id not in supplied]
+            pieces = board_units(self.rules, s)
+            supplied = SupplyResolver(self.rules).supplied_for_seat(s, country, pieces)
+            ops = [{"type": "ELIMINATE", "target_token": t.token_id, "reason": "unsupplied"}
+                   for t in pieces if self.rules.force_controllers[t.owner_country] == country and t.token_id not in supplied]
             f.remaining_operations.extend(reversed(ops))
             return outcome(kind), True
         if kind == "CHECK_SCORE":
@@ -455,31 +458,39 @@ class CommandProcessor:
             s.turn.phase = "Play"
             return outcome(kind), False
         if kind == "REDEPLOY":
+            force = op.get("force", country)
+            if self.rules.force_controllers.get(force) != country:
+                return outcome_failure(kind, "Acting seat does not control this force"), False
             if not f.eligible_token_ids:
-                f.eligible_token_ids = sorted(t.token_id for t in board_units(self.rules, s, country) if self.rules.units[t.definition_id]["kind"] == "ARMY")
+                f.eligible_token_ids = [t.token_id for t in board_units(self.rules, s, force)
+                                        if self.rules.units[t.definition_id]["kind"] == "ARMY"]
             choices = [t for t in f.eligible_token_ids if t not in f.processed_token_ids and s.tokens[t].position_id in self.rules.regions]
             if not choices:
+                f.eligible_token_ids.clear()
+                f.processed_token_ids.clear()
                 return outcome("REDEPLOY_COMPLETE"), False
             return self._request(s, f, "REDEPLOY_UNIT", choices, {"type": "REDEPLOY_SELECTED"}, op["operation_id"]), False
-        if kind == "REDEPLOY_SELECTED":
+        if kind in ("REDEPLOY_SELECTED", "REBUILD_UNIT"):
             token_id = op["token"]
+            force = s.tokens[token_id].owner_country
+            force_args = {"force": force} if force != country else {}
+            restart = {"type": "REDEPLOY", **force_args}
             virtual = deepcopy(s)
-            self.executor.transfer(virtual, token_id, zone(country, "RESERVE_ARMY"), outcome("INTERNAL"))
-            targets = self.legal.targets(virtual, country, {"type": "BUILD_ARMY"})
-            if not targets:
-                f.processed_token_ids.append(token_id)
-                f.remaining_operations.append({"type": "REDEPLOY"})
-                return outcome_failure("REDEPLOY", "No rebuilding site; original unit retained"), False
-            return self._request(s, f, "REDEPLOY_TARGET", targets, {"type": "REBUILD_UNIT", "token": token_id}, op["operation_id"]), False
-        if kind == "REBUILD_UNIT":
-            virtual = deepcopy(s)
-            self.executor.transfer(virtual, op["token"], zone(country, "RESERVE_ARMY"), outcome("INTERNAL"))
-            if op["target"] not in self.legal.targets(virtual, country, {"type": "BUILD_ARMY"}):
+            self.executor.transfer(virtual, token_id, zone(force, "RESERVE_ARMY"), outcome("INTERNAL"))
+            targets = self.legal.targets(virtual, country, {"type": "BUILD_ARMY", **force_args})
+            if kind == "REDEPLOY_SELECTED":
+                if not targets:
+                    f.processed_token_ids.append(token_id)
+                    f.remaining_operations.append(restart)
+                    return outcome_failure("REDEPLOY", "No rebuilding site; original unit retained"), False
+                continuation = {"type": "REBUILD_UNIT", "token": token_id, **force_args}
+                return self._request(s, f, "REDEPLOY_TARGET", targets, continuation, op["operation_id"]), False
+            if op["target"] not in targets:
                 return outcome_failure("REDEPLOY", "Rebuild invalid; original unit retained"), False
             result = outcome("BUILD_ARMY", redeployed=True)
-            self.executor.transfer(s, op["token"], op["target"], result)
-            f.processed_token_ids.append(op["token"])
-            f.remaining_operations.append({"type": "REDEPLOY"})
+            self.executor.transfer(s, token_id, op["target"], result)
+            f.processed_token_ids.append(token_id)
+            f.remaining_operations.append(restart)
             return result, True
         return self.executor.execute(s, op, f), True
 
