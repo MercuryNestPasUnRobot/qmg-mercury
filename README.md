@@ -1,23 +1,29 @@
 # QMG Mercury · 战场军需官重建
 
-本仓库是 2026-11-19 启动的独立重建基线。目前提供可运行的 Node.js / TypeScript 基础环境、启动页、自动检查，以及旧项目和开源 AI 的参考索引。游戏规则、正式内容、桌面打包和 AI 尚未在新代码中实现。
+本仓库是 2026-11-19 启动的独立重建项目。Python Core 支持统一 Token 位置、地图与补给查询、串行结算、阻塞选择、能力触发、日志重放及确定性单步 AI 评价。浏览器验收台可运行原创机制场景，包含暗置响应、回合末对象恢复和存档续跑。正式游戏内容包与完整产品界面另属内容和客户端阶段。
 
 ## 开始运行
 
-需要 Node.js **24.12+（24.x）**、npm 11 和 Git。
+需要 Node.js **24.12+（24.x）**、npm 11、Python **3.11+** 和 Git。
 
 ```powershell
 npm ci
+npm run core:setup
 npm run check
-npm run dev
+npm run core:demo
+npm run core:play
 ```
 
-打开 [本地启动页](http://127.0.0.1:5173)。也可运行 `powershell -File tools/setup.ps1` 完成安装和检查。`npm run build` 后用 `npm start` 启动编译版本。
+打开 [Core 验收台](http://127.0.0.1:5184)。可从德国手牌盖放「回合末恢复」，结束各阶段，到 Draw 结束时选择使用能力及合法地区。重新运行相同命令会继续原局。如需另起一局，可指定一个新目录，例如 `npm run core:play -- --save-dir ../.cache/core-second-game`。原 Node 启动页可用 `npm run dev` 打开。
 
 ## 项目入口
 
 | 位置 | 用途 |
 | --- | --- |
+| [Core 实现与验收](docs/core/implementation-v0.1.md) | 架构职责、API、测试映射、临时工程选择及未定规则 |
+| [对象池与回合末响应的测试](core/tests/test_object_lifecycle.py) | 核对无限次、一次性和限次副本的 ID、区域移动与中途重放。可运行 `npm run core:test -- tests/test_object_lifecycle.py` |
+| [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
+| `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |
 | [旧项目分析](docs/legacy-analysis.md) | 实际进度、可复用模块、未完成事项和资源 |
 | [重建顺序](docs/restart-plan.md) | 新项目边界与后续最小里程碑 |
 | [开发环境说明](docs/development.md) | 运行、检查、Git 与问题排查 |
@@ -31,6 +37,9 @@ npm run dev
 
 ```powershell
 npm run doctor          # 环境、Git、内存及参考资料状态
+npm run core:test       # Python Core 机制、重放与 AI 边界
+npm run core:demo       # 无 GUI 运行多步结算、保存恢复与单步 AI
+npm run core:play       # 浏览器操作同一个 Core，支持中途续跑
 npm run legacy:verify   # 核验本机 1,725 个旧文件是否仍原样保留
 npm run refs:download   # 资源足够时下载/补齐锁定的 AI 源码
 npm run refs:verify     # 严格核验本机参考源码；缺文件会失败

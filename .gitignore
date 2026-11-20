@@ -6,6 +6,9 @@
 /dist/
 /.cache/
 /coverage/
+/.runtime/
+.pytest_cache/
+*.egg-info/
 *.log
 .env
 .env.*
