@@ -18,4 +18,5 @@ if (mode === 'setup') {
 } else if (mode === 'test') run(existsSync(local) ? local : base, ['-m', 'pytest', ...process.argv.slice(3)]);
 else if (mode === 'demo') run(existsSync(local) ? local : base, ['-m', 'qmg_core']);
 else if (mode === 'play') run(existsSync(local) ? local : base, ['-m', 'qmg_core.workbench', ...process.argv.slice(3)]);
+else if (mode === 'data') run(existsSync(local) ? local : base, ['-m', 'qmg_core.catalog', ...process.argv.slice(3)]);
 else throw new Error('Unknown core action');

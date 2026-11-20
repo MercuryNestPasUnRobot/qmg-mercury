@@ -21,6 +21,7 @@ npm run core:play
 | 位置 | 用途 |
 | --- | --- |
 | [Core 实现与验收](docs/core/implementation-v0.1.md) | 架构职责、API、测试映射、临时工程选择及未定规则 |
+| [固定内容和卡牌存储](docs/core/implementation-v0.1.md#固定内容和卡牌存储) | SQLite 数据库、卡牌效果声明、构建命令及对局日志边界 |
 | [对象池与回合末响应的测试](core/tests/test_object_lifecycle.py) | 核对无限次、一次性和限次副本的 ID、区域移动与中途重放。可运行 `npm run core:test -- tests/test_object_lifecycle.py` |
 | [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
 | `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |
@@ -40,6 +41,7 @@ npm run doctor          # 环境、Git、内存及参考资料状态
 npm run core:test       # Python Core 机制、重放与 AI 边界
 npm run core:demo       # 无 GUI 运行多步结算、保存恢复与单步 AI
 npm run core:play       # 浏览器操作同一个 Core，支持中途续跑
+npm run core:data -- --help   # 构建或检查固定内容数据库
 npm run legacy:verify   # 核验本机 1,725 个旧文件是否仍原样保留
 npm run refs:download   # 资源足够时下载/补齐锁定的 AI 源码
 npm run refs:verify     # 严格核验本机参考源码；缺文件会失败

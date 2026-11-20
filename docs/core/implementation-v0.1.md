@@ -14,6 +14,7 @@
 | --- | --- |
 | `model.py` | Token、TurnClock、GameState、ResolutionFrame、DecisionRequest、ZoneRegistry、规范 JSON 与哈希 |
 | `definitions.py` | RuleSet 静态定义加载与验证，白名单 JSON 指令、显式使用限制与优先级 |
+| `catalog.py` | 固定内容的 SQLite 架构、编译、只读加载及指纹校验 |
 | `rules.py` | MapGraph、RuleModifierResolver、SupplyResolver、LegalActionGenerator、初始化与状态不变量 |
 | `operations.py` | OperationExecutor、ScoreResolver、TurnController；语义化建设、征募、战斗、消灭等 |
 | `engine.py` | CommandProcessor / ResolutionEngine、CardInterpreter、AbilityScanner；后进先出帧、串行提交与阻塞选择 |
@@ -22,6 +23,29 @@
 | `evaluation.py` | 可解释 VP 等效评分、影响力、补给边际诊断、有限单卡选择树和候选排序 |
 | `__main__.py` | 无 GUI 的完整演示入口 |
 | `workbench.py` | 回环浏览器验收台、固定席位、合法选项、可见记录及存档续跑 |
+
+## 固定内容和卡牌存储
+
+规则作者编辑版本化 JSON。构建命令将它编译为独立、带格式版本的 SQLite 数据库。Core 启动时只读加载数据库并恢复 `RuleSet`。两种格式保留相同的列表顺序和规则指纹，同内容的旧 JSON 对局可直接用 SQLite 续跑。改动卡牌效果会更改指纹，旧对局须继续使用与存档匹配的内容版本。
+
+| 表 | 保存的数据 |
+| --- | --- |
+| `catalog`、`definitions` | 规则版本、指纹、设置、国家、地区及连线、单位和得分点定义 |
+| `cards`、`abilities`、`card_abilities` | 卡牌定义、能力定义及其有序关联。卡牌以定义 ID 索引，也可按归属及类别查询 |
+| `card_effects`、`ability_effects` | 效果发生阶段、顺序、操作类型和参数。普通效果写在 `effects`，结算后转移或出池写在 `on_settle` |
+| `initial_tokens` | 开局登记的对象实例及位置。多张同定义牌共用一份效果，每张牌保有自己的实例 ID |
+
+`g-chain` 展示按顺序计分、等待合法地区选择、从预备区部署和再计分。卡牌完成后移入弃牌区。`g-restore` 与 `g-return` 展示回合末触发、进入结算区、执行区域转移以及清空结算栈后换手。牌名可用可选的 `title` 声明。这些效果都通过现有 Core 操作执行器驱动，数据库只提供定义。
+
+默认数据库位于 `.cache/core-data/<规则指纹>.sqlite3`。浏览器验收台默认把快照和 JSONL 操作日志写入 `.cache/core-workbench/`。快照记录当前 Token 的位置、顺序及结算状态，日志记录实际发生的操作及其变化。两个文件通过规则指纹绑定固定内容。构建按新文件发布，已有数据库及存档文件保留各自版本。
+
+下列命令构建、检查和运行同一份内容。参数路径以 `core/` 为基准。编辑效果后发布到一个新的数据库文件，并用独立对局目录验收。
+
+```powershell
+npm run core:data -- build data/architecture_fixture.json ../.cache/core-data/fixture.sqlite3
+npm run core:data -- inspect ../.cache/core-data/fixture.sqlite3 --card g-chain
+npm run core:play -- --catalog ../.cache/core-data/fixture.sqlite3 --save-dir ../.cache/core-db-match
+```
 
 ## 权威状态与执行约束
 
