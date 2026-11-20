@@ -21,7 +21,7 @@ def main():
         SaveRepository.save(root / "waiting.json", processor)
         gui.submit(next(c for c in gui.legal_commands() if c["option"] == "B"))
         recovered = SaveRepository.recover(root / "initial.json", rules, root / "operations.jsonl")
-        fresh = CommandProcessor.create(rules)
+        fresh = CoreAPI(CommandProcessor.create(rules), ("germany",))
         ranked = OneStepPlanner(rules, weights).rank(fresh, "germany")
         print(json.dumps({"fixture_only": True, "waiting_decision": waiting,
                           "completed_scores": gui.observe()["scores"], "operation_records": len(processor.records),

@@ -3,9 +3,11 @@ from copy import deepcopy
 
 from .model import CoreError, DecisionRequest, ResolutionFrame, TURN_ORDER, digest, zone
 from .rules import LegalActionGenerator, SupplyResolver, board_units, initialize, validate_state
-from .operations import OperationExecutor, ScoreResolver, TurnController, outcome, outcome_failure
+from .operations import BATTLES, PREVENTABLE, OperationExecutor, ScoreResolver, TurnController, outcome, outcome_failure
 
-PREVENTABLE = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "ELIMINATE"}
+
+class ResolutionBudgetExceeded(CoreError):
+    pass
 
 
 class CardInterpreter:
@@ -57,9 +59,10 @@ class AbilityScanner:
                 targets = result["context"].get("victims", [])
                 if op.get("target_token"):
                     targets = [op["target_token"]]
-                elif op.get("announced_type") in ("LAND_BATTLE", "SEA_BATTLE"):
-                    targets = state.positions.get(op.get("target"), [])
-                if not any(state.tokens[target].owner_country == token.owner_country for target in targets):
+                elif op.get("announced_type") in BATTLES:
+                    targets = [key for key in state.positions[op["target"]] if state.tokens[key].token_type == "UNIT"]
+                if not any(target in state.tokens and state.tokens[target].owner_country == token.owner_country
+                           for target in targets):
                     continue
             group = (source.token_id, token.definition_id)
             if token.position_id == zone(token.owner_country, "ABILITY_READY"):
@@ -189,14 +192,7 @@ class CommandProcessor:
         if s.turn.phase == "Play" and s.turn.plays_remaining > 0:
             for token_id in s.positions[zone(country, "HAND")]:
                 card = self.rules.cards[s.tokens[token_id].definition_id]
-                first = card["effects"][0] if card["effects"] else None
-                effective = first.get("operation") if first and first["type"] == "CHOOSE" else first
-                if effective and effective["type"] in PREVENTABLE | {"DISCARD", "TRANSFER"}:
-                    targets = self.legal.targets(s, country, effective)
-                    selected = effective.get("destination", effective.get("target", effective.get("target_token", "$choice")))
-                    if not targets or (selected != "$choice" and selected not in targets):
-                        continue
-                if card.get("simulation_unknown") or not self.legal.requirements_met(s, country, card.get("requirements", [])):
+                if not self.legal.can_start_card(s, country, card):
                     continue
                 commands.append({"type": "PLAY_CARD", "actor": country, "expected_version": s.version, "card": token_id})
         return commands
@@ -286,7 +282,7 @@ class CommandProcessor:
                 return self.state
             self.step()
         if self._state.stack and not self._state.decision and not self._state.winner:
-            raise CoreError("Atomic-step budget exceeded; committed prefix remains resumable")
+            raise ResolutionBudgetExceeded("Atomic-step budget exceeded; committed prefix remains resumable")
         return self.state
 
     def step(self):
@@ -310,8 +306,14 @@ class CommandProcessor:
             ability_id = f.context.get("ability_token")
             if ability_id and (f.context.get("invalidated") or s.tokens[ability_id].position_id in
                                (zone(f.actor_country, "ABILITY_INACTIVE"), zone(f.actor_country, "OBJECT_POOL"))):
+                abandoned = []
+                for pending in f.remaining_operations:
+                    announcement_id = pending.get("announcement_id")
+                    if announcement_id in s.announcements:
+                        del s.announcements[announcement_id]
+                        abandoned.append(announcement_id)
                 s.stack.pop()
-                return outcome("ABILITY_INVALIDATED")
+                return outcome("ABILITY_INVALIDATED", abandoned_announcements=abandoned)
             if op["type"] == "FINISH_FRAME":
                 s.stack.pop()
                 result = outcome("FINISH_FRAME")
@@ -359,6 +361,10 @@ class CommandProcessor:
             f.remaining_operations.pop()
             f.current_step += 1
             if op["type"] in PREVENTABLE and "announcement_id" not in op:
+                if reason := self.executor.target_failure(s, op):
+                    if f.context.get("failure_policy") == "stop":
+                        f.remaining_operations.clear()
+                    return outcome_failure(op["type"], reason)
                 announcement = s.new_id("announcement")
                 s.announcements[announcement] = {"cancelled": False}
                 f.remaining_operations.append({**raw, "announcement_id": announcement})

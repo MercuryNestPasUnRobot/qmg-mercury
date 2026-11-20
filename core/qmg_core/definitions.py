@@ -4,8 +4,9 @@ from pathlib import Path
 
 from .model import CoreError, TURN_ORDER, digest
 
-OPERATIONS = {"TRANSFER", "CREATE", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE",
-              "ELIMINATE", "DRAW", "DISCARD", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY"}
+TARGETED_OPERATIONS = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE",
+                       "ELIMINATE", "DISCARD", "TRANSFER"}
+OPERATIONS = TARGETED_OPERATIONS | {"CREATE", "DRAW", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY"}
 CONNECTION_USES = frozenset({"supply", "build", "battle"})
 
 
@@ -183,7 +184,7 @@ class RuleSet:
                 raise CoreError(f"Unsupported instruction: {op.get('type')}")
             if op["type"] == "CHOOSE":
                 self._effects([op["operation"]])
-                if op["operation"]["type"] not in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "ELIMINATE", "DISCARD", "TRANSFER"):
+                if op["operation"]["type"] not in TARGETED_OPERATIONS:
                     raise CoreError("Unsupported target choice operation")
             if op["type"] == "GAIN_VP" and type(op.get("amount")) is not int:
                 raise CoreError("Invalid VP amount")

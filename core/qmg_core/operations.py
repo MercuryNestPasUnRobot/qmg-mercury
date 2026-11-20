@@ -3,6 +3,11 @@ from .model import CoreError, TURN_ORDER, PHASES, ZoneRegistry, zone
 from .rules import board_units, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver
 
 
+CONSTRUCTION = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT"}
+BATTLES = {"LAND_BATTLE", "SEA_BATTLE"}
+PREVENTABLE = CONSTRUCTION | BATTLES | {"ELIMINATE"}
+
+
 def outcome(kind, **context):
     return {"success": True, "event": kind, "changes": [], "score_changes": [], "context": context}
 
@@ -84,31 +89,39 @@ class OperationExecutor:
         destination = origin if after == "origin" else zone(card.owner_country, "OBJECT_POOL" if after == "delete" else default_zone)
         self.transfer(state, token_id, destination, result)
 
+    def target_failure(self, state, op):
+        kind, country = op["type"], op["actor_country"]
+        if kind == "ELIMINATE":
+            token = state.tokens.get(op.get("target_token"))
+            if not token or token.token_type != "UNIT" or token.position_id not in self.rules.regions:
+                return "Victim no longer on board"
+            if op.get("reason") == "unsupplied":
+                if token.token_id in SupplyResolver(self.rules).supplied(state, token.owner_country):
+                    return "Supply restored before removal"
+            elif token.token_id not in self.legal.targets(state, country, op):
+                return "Elimination victim not eligible"
+        elif op.get("target") not in self.legal.targets(state, country, op):
+            return "Battle no longer legal" if kind in BATTLES else "Target no longer legal"
+        return None
+
     def execute(self, state, op, frame):
         kind, country = op["type"], op["actor_country"]
+        if kind in PREVENTABLE:
+            if reason := self.target_failure(state, op):
+                return outcome_failure(kind, reason)
         result = outcome(kind)
-        if kind in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT"):
+        if kind in CONSTRUCTION:
             target = op.get("target")
-            if target not in self.legal.targets(state, country, op):
-                return outcome_failure(kind, "Target no longer legal")
             unit_kind = op.get("unit_kind", "NAVY" if kind == "BUILD_NAVY" else "ARMY")
             token_id = state.positions[zone(country, f"RESERVE_{unit_kind}")][0]
             self.transfer(state, token_id, target, result)
-        elif kind in ("LAND_BATTLE", "SEA_BATTLE"):
-            if op.get("target") not in self.legal.targets(state, country, op):
-                return outcome_failure(kind, "Battle no longer legal")
+        elif kind in BATTLES:
             victims = [t for t in board_units(self.rules, state) if t.position_id == op["target"]]
             for t in victims:
                 self.transfer(state, t.token_id, zone(t.owner_country, "RESERVE_" + self.rules.units[t.definition_id]["kind"]), result)
             result["context"]["victims"] = [t.token_id for t in victims]
         elif kind == "ELIMINATE":
-            token = state.tokens.get(op.get("target_token"))
-            if not token or token.token_type != "UNIT" or token.position_id not in self.rules.regions:
-                return outcome_failure(kind, "Victim no longer on board")
-            if op.get("reason") != "unsupplied" and token.token_id not in self.legal.targets(state, country, op):
-                return outcome_failure(kind, "Elimination victim not eligible")
-            if op.get("reason") == "unsupplied" and token.token_id in SupplyResolver(self.rules).supplied(state, token.owner_country):
-                return outcome_failure(kind, "Supply restored before removal")
+            token = state.tokens[op["target_token"]]
             self.transfer(state, token.token_id, zone(token.owner_country, "RESERVE_" + self.rules.units[token.definition_id]["kind"]), result)
         elif kind == "CREATE":
             source_id = None

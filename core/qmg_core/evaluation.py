@@ -5,10 +5,11 @@ import json
 from math import isfinite
 from pathlib import Path
 
-from .api import observation, simulation_from_observation
-from .engine import CommandProcessor
+from .api import CoreAPI, simulation_from_observation
+from .definitions import RuleSet
+from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
-from .rules import MapGraph, SupplyResolver, board_units
+from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,8 @@ class PositionValue:
 
 class ScoreEvaluator:
     def __init__(self, rules, weights):
-        self.rules, self.weights = rules, deepcopy(weights)
+        self.rules = RuleSet({**rules.data, "initial_tokens": []}, projected=True)
+        self.weights = deepcopy(weights)
         numbers = [*weights["distance_weights"], *weights["supply_weights"].values(),
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
                    *weights["resource_penalties"].values(), weights["time_discount"], weights["saturation"],
@@ -41,22 +43,24 @@ class ScoreEvaluator:
     def load(cls, rules, path):
         return cls(rules, json.loads(Path(path).read_text(encoding="utf-8")))
 
-    def evaluate(self, processor, country, controlled_countries=None):
-        # Even evaluation on an authoritative processor immediately uses a belief projection.
-        view = observation(processor, controlled_countries or (country,))
+    def evaluate(self, client, country):
+        view = client.observe()
         if view["resolution_depth"] and not view["winner"]:
             raise CoreError("Incomplete resolution cannot receive a completed-action score")
         belief = simulation_from_observation(self.rules, view)
         return self._value(belief, country)
 
-    def _value(self, processor, country):
+    def _value(self, processor, country, *, excluded_unit=None):
         s, rules, w = processor.state, processor.rules, self.weights
         team = rules.team(country)
         sign = lambda c: 1 if rules.team(c) == team else -1
         enemy = "allies" if team == "axis" else "axis"
         actual = s.scores[team] - s.scores[enemy]
         pieces = board_units(rules, s)
-        supplied = {c: SupplyResolver(rules).supplied(s, c) for c in TURN_ORDER}
+        if excluded_unit is not None:
+            pieces = [piece for piece in pieces if piece.token_id != excluded_unit.token_id]
+        supply = SupplyResolver(rules)
+        supplied = {c: supply.supplied(s, c, units=pieces) for c in TURN_ORDER}
         point_values, influences, map_value = [], [], 0.0
         for site_id, site in rules.sites.items():
             if site.get("dynamic"):
@@ -72,9 +76,13 @@ class ScoreEvaluator:
                 distance = min((distances.get(p, 100000) for p in regions), default=100000)
                 dw = w["distance_weights"][distance] if distance < len(w["distance_weights"]) else 0.0
                 supply_weight = w["supply_weights"]["supplied" if t.token_id in supplied[t.owner_country] else "unsupplied"]
-                reserve = len(s.positions[zone(t.owner_country, "RESERVE_" + rules.units[t.definition_id]["kind"])])
+                kind = rules.units[t.definition_id]["kind"]
+                reserve = len(s.positions[zone(t.owner_country, "RESERVE_" + kind)])
+                if (excluded_unit and t.owner_country == excluded_unit.owner_country
+                        and kind == rules.units[excluded_unit.definition_id]["kind"]):
+                    reserve += 1
                 resource = 1.0 if distance == 0 else (1.0 if reserve else w["supply_weights"]["no_reserve_expansion"])
-                strength = w["military_weights"][rules.units[t.definition_id]["kind"]] * dw * supply_weight * resource
+                strength = w["military_weights"][kind] * dw * supply_weight * resource
                 influences.append({"token": t.token_id, "site": site_id, "distance": distance,
                                    "score_influence": strength, "military_influence": strength, "supply_weight": supply_weight})
                 if sign(t.owner_country) > 0:
@@ -102,45 +110,43 @@ class ScoreEvaluator:
                                  "friendly": friendly, "hostile": hostile, "advantage": advantage, "value": value})
             map_value += value
         cards, resources = 0.0, 0.0
+        legal = LegalActionGenerator(rules)
+        card_weights = w["card_value_weights"]
         for c in TURN_ORDER:
             hand = s.positions[zone(c, "HAND")]
             for token_id in hand:
                 card = rules.cards[s.tokens[token_id].definition_id]
                 if card.get("simulation_unknown"):
-                    intrinsic = w["card_value_weights"]["unknown"]
+                    intrinsic = card_weights["unknown"]
                 else:
-                    intrinsic = 0.0
+                    # A deployable ability contributes once, through its card or its active replicas.
+                    deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
+                    copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
+                    intrinsic = copies * card_weights["ability_ready"]
                     for instruction in card["effects"]:
                         operation = instruction.get("operation", instruction)
                         multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
-                        intrinsic += w["card_value_weights"].get(operation["type"], w["card_value_weights"].get(instruction["type"], 0)) * multiplier
-                    first = card["effects"][0] if card["effects"] else None
-                    effective = first.get("operation", first) if first else None
-                    if effective and effective["type"] in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "ELIMINATE", "DISCARD"):
-                        from .rules import LegalActionGenerator
-                        if not LegalActionGenerator(rules).targets(s, c, effective):
-                            intrinsic *= w["unusable_card_weight"]
+                        intrinsic += card_weights.get(operation["type"], card_weights.get(instruction["type"], 0)) * multiplier
+                    if not legal.can_start_card(s, c, card):
+                        intrinsic *= w["unusable_card_weight"]
                 cards += sign(c) * intrinsic
             # Status source and its ability replicas represent the same resource: count replicas only.
             for t in s.tokens.values():
                 if t.owner_country == c and t.token_type == "ABILITY" and t.position_id == zone(c, "ABILITY_READY"):
-                    cards += sign(c) * w["card_value_weights"]["ability_ready"]
+                    cards += sign(c) * card_weights["ability_ready"]
             if not s.positions[zone(c, "DECK")]:
                 resources -= sign(c) * w["resource_penalties"]["empty_deck"]
         terminal = 2 if s.winner == team else -2 if s.winner == enemy else 0
         return PositionValue(float(actual), map_value, cards, resources, actual + map_value + cards + resources,
                              terminal, tuple(point_values), tuple(influences))
 
-    def supply_marginal(self, processor, country, token_id):
-        belief = simulation_from_observation(self.rules, observation(processor, (country,)))
+    def supply_marginal(self, client, country, token_id):
+        belief = simulation_from_observation(self.rules, client.observe())
         before = self._value(belief, country).map_value
-        state = belief.state
-        token = state.tokens[token_id]
-        if token.token_type != "UNIT" or token.position_id not in belief.rules.regions:
+        token = belief.state.tokens.get(token_id)
+        if not token or token.token_type != "UNIT" or token.position_id not in belief.rules.regions:
             raise CoreError("Marginal analysis requires a visible board unit")
-        from .operations import outcome
-        belief.executor.transfer(state, token_id, zone(token.owner_country, "RESERVE_" + belief.rules.units[token.definition_id]["kind"]), outcome("INTERNAL"))
-        after = self._value(CommandProcessor(belief.rules, state), country).map_value
+        after = self._value(belief, country, excluded_unit=token).map_value
         return before - after  # Diagnostic only; never summed into total again.
 
 
@@ -150,18 +156,22 @@ class SimulationIncomplete(CoreError):
 
 class OneStepPlanner:
     def __init__(self, rules, weights):
-        self.rules, self.evaluator = rules, ScoreEvaluator(rules, weights)
+        self.evaluator = ScoreEvaluator(rules, weights)
 
-    def rank(self, processor, country):
-        view = observation(processor, (country,))
-        root = simulation_from_observation(self.rules, view)
+    def rank(self, client, country):
+        root = simulation_from_observation(self.evaluator.rules, client.observe())
         before = self.evaluator._value(root, country)
         results = []
-        for command in processor.legal_commands((country,)):
+        for command in client.legal_commands():
+            if command["actor"] != country:
+                continue
             nodes = [0]
             candidate = CommandProcessor(root.rules, root.state)
-            candidate.submit(command, (country,))
+            simulated_seat = CoreAPI(candidate, (country,))
             try:
+                if command not in simulated_seat.legal_commands():
+                    raise SimulationIncomplete("Action cannot be represented from this observation")
+                simulated_seat.submit(command)
                 value, choices = self._finish(candidate, country, nodes)
                 results.append({"command": deepcopy(command), "complete": True, "nodes": nodes[0], "weights_digest": digest(self.evaluator.weights),
                                 "actual_vp_delta": value.actual_vp - before.actual_vp,
@@ -170,7 +180,7 @@ class OneStepPlanner:
                                 "resource_delta": value.resource_adjustment - before.resource_adjustment,
                                 "q": value.total - before.total, "terminal_rank": value.terminal_rank,
                                 "continuations": choices})
-            except SimulationIncomplete as e:
+            except (SimulationIncomplete, ResolutionBudgetExceeded) as e:
                 results.append({"command": deepcopy(command), "complete": False, "reason": str(e), "q": None, "nodes": nodes[0]})
         return sorted(results, key=lambda r: (r["complete"], r.get("terminal_rank", -3), r["q"] if r["q"] is not None else float("-inf")), reverse=True)
 
@@ -187,9 +197,9 @@ class OneStepPlanner:
             return self.evaluator._value(processor, country), []
         actor = processor.state.decision.required_country
         branches = []
-        for command in processor.legal_commands((actor,)):
+        for command in CoreAPI(processor, (actor,)).legal_commands():
             branch = CommandProcessor(processor.rules, processor.state)
-            branch.submit(command, (actor,))
+            CoreAPI(branch, (actor,)).submit(command)
             value, trail = self._finish(branch, country, nodes)
             branches.append((value, [command] + trail))
         if not branches:
@@ -197,13 +207,13 @@ class OneStepPlanner:
         key = lambda item: (item[0].terminal_rank, item[0].total)
         return (max if processor.rules.team(actor) == processor.rules.team(country) else min)(branches, key=key)
 
-    def choose(self, processor, country):
-        if processor.state.decision:
-            options = processor.legal_commands((country,))
+    def choose(self, client, country):
+        if client.observe()["decision"]:
+            options = [command for command in client.legal_commands() if command["actor"] == country]
             if not options:
                 raise CoreError("AI does not control this decision")
             return options[0]
-        candidates = [c for c in self.rank(processor, country) if c["complete"]]
+        candidates = [c for c in self.rank(client, country) if c["complete"]]
         if not candidates:
             raise SimulationIncomplete("No complete candidate within configured budget")
         return deepcopy(candidates[0]["command"])

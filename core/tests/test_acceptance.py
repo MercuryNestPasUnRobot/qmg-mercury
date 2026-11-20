@@ -384,7 +384,7 @@ def test_browser_forms_share_core_and_continue_after_restart(tmp_path, data, wei
 
 def test_browser_ai_executes_and_records_the_same_core_command(tmp_path, data, weights):
     session = Workbench(tmp_path, RuleSet(deepcopy(data)), weights)
-    expected = session.planner.choose(session.processor, "germany")
+    expected = session.planner.choose(session.human, "germany")
     with http(session) as connection:
         _, page = request(connection, "GET")
         path, fields = Forms(page).forms["让 AI 执行一步"]

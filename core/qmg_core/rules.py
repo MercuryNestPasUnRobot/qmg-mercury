@@ -1,7 +1,7 @@
 from collections import deque
 from copy import deepcopy
 
-from .definitions import CONNECTION_USES
+from .definitions import CONNECTION_USES, TARGETED_OPERATIONS
 from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, ZoneRegistry, zone, shuffle
 
 
@@ -75,12 +75,14 @@ class SupplyResolver:
     def __init__(self, rules):
         self.rules, self.graph = rules, MapGraph(rules)
 
-    def supplied(self, state, country):
+    def supplied(self, state, country, *, units=None):
+        if units is None:
+            units = board_units(self.rules, state)
         modifiers = RuleModifierResolver(self.rules).resolve(state, country)
         if any(m["kind"] == "always_supplied" for m in modifiers):
-            return {t.token_id for t in board_units(self.rules, state, country)}
+            return {t.token_id for t in units if t.owner_country == country}
         share = self.rules.settings["allied_supply"]
-        pieces = [t for t in board_units(self.rules, state) if t.owner_country == country or
+        pieces = [t for t in units if t.owner_country == country or
                   (share and self.rules.team(t.owner_country) == self.rules.team(country))]
         occupied = {t.position_id for t in pieces}
         sources = {r["id"] for r in self.rules.regions.values() if r.get("supply_source_for") == country}
@@ -109,6 +111,19 @@ class LegalActionGenerator:
             if requirement["kind"] == "phase" and state.turn.phase != requirement["phase"]:
                 return False
         return True
+
+    def can_start_card(self, state, country, card):
+        if card.get("simulation_unknown") or not self.requirements_met(state, country, card.get("requirements", [])):
+            return False
+        if not card["effects"]:
+            return True
+        first = card["effects"][0]
+        effect = first["operation"] if first["type"] == "CHOOSE" else first
+        if effect["type"] not in TARGETED_OPERATIONS:
+            return True
+        selected = effect.get("destination", effect.get("target", effect.get("target_token", "$choice")))
+        targets = self.targets(state, country, effect)
+        return bool(targets) and (selected == "$choice" or selected in targets)
 
     def targets(self, state, country, op):
         kind = op["type"]
@@ -168,7 +183,8 @@ class LegalActionGenerator:
                 positions = [op["destination"]] if op["destination"] in positions else []
             result = set()
             for position in positions:
-                if position == token.position_id:
+                # A card enters resolution only as part of a play or ability activation.
+                if position == token.position_id or position == "RESOLUTION":
                     continue
                 try:
                     validate_token_position(self.rules, state, token, position)

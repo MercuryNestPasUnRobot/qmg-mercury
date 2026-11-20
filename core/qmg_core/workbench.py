@@ -67,13 +67,14 @@ class Workbench:
                 expected = next((c for c in self.ai_choices if c["actor"] == actor and c["expected_version"] == view["version"]), None)
                 planned = next((c for c in available if expected and c["option"] == expected["option"]), None)
                 self.ai_choices = [c for c in self.ai_choices if c["expected_version"] > view["version"]] if planned else []
-                command = planned or self.planner.choose(self.processor, actor)
+                command = planned or self.planner.choose(client, actor)
             else:
-                ranked = self.planner.rank(self.processor, actor)
+                ranked = self.planner.rank(client, actor)
                 best = next((candidate for candidate in ranked if candidate["complete"]), None)
                 if best is None:
                     raise SimulationIncomplete("当前预算内没有完成模拟的行动。")
-                command, self.ai_choices = best["command"], best["continuations"]
+                command = best["command"]
+                self.ai_choices = [choice for choice in best["continuations"] if choice["actor"] == actor]
             client.submit(command)
         elif fields["action"] == "human":
             commands = self.human.legal_commands()

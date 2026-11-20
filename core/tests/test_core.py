@@ -94,6 +94,38 @@ def test_gui_and_ai_commands_have_identical_authority_results(data):
     assert p.records == q.records
 
 
+def test_seat_clients_can_only_move_objects_through_a_legal_operation(data, weights):
+    player, ai_game = make(data), make(data)
+    human, ai = CoreAPI(player, ('germany',)), CoreAPI(ai_game, ('germany',))
+    unauthorized_move = {'type': 'TRANSFER', 'actor': 'germany', 'expected_version': 0,
+                         'token': 'germany-army-1', 'destination': 'B'}
+    for client in (human, ai):
+        before = client.observe()
+        with pytest.raises(CoreError, match='Unauthorized'):
+            client.submit(unauthorized_move)
+        legal = next(c for c in client.legal_commands() if c.get('card') == 'g-build')
+        with pytest.raises(CoreError, match='Unauthorized'):
+            client.submit({**legal, 'destination': 'D'})
+        assert client.observe() == before
+
+    class AIReadOnlySeat:
+        observe = ai.observe
+        legal_commands = ai.legal_commands
+
+    planner = OneStepPlanner(ai_game.rules, weights)
+    candidates = planner.rank(AIReadOnlySeat(), 'germany')
+    build = next(row for row in candidates if row['command'].get('card') == 'g-build')
+    assert build['complete'] and not ai_game.records and not player.records
+    for client in (human, ai):
+        client.submit(build['command'])
+        client.submit(next(c for c in client.legal_commands() if c.get('option') == 'B'))
+    assert human.observe() == ai.observe()
+    assert player.records == ai_game.records
+    built = next(record for record in player.records if record['operation_type'] == 'BUILD_ARMY')
+    assert built['outcome']['changes'] == [
+        {'token_id': 'germany-army-1', 'from': 'germany:RESERVE_ARMY', 'to': 'B'}]
+
+
 def test_build_and_recruit_use_distinct_eligibility(data):
     move_initial(data, 'germany-army-0', 'germany:RESERVE_ARMY')
     p = make(data)
@@ -202,6 +234,58 @@ def test_source_removal_invalidates_remaining_ability_effects(data):
     assert p.state.scores['axis'] == 0
     assert p.state.tokens['ability:g-status:g-extra'].position_id == 'germany:OBJECT_POOL'
     assert any(r['operation_type'] == 'ABILITY_INVALIDATED' for r in p.records)
+
+
+def test_source_removed_during_announcement_abandons_pending_operation(tmp_path, data):
+    move_initial(data, 'g-status', 'germany:STATUS')
+    primary = next(a for a in data['abilities'] if a['id'] == 'g-extra')
+    primary.update(activation_mode='AUTO', discard_cost=0, effects=[
+        {'type': 'ELIMINATE', 'target_token': 'united-kingdom-army-0'}])
+    defender = next(a for a in data['abilities'] if a['id'] == 'uk-prevent')
+    defender.update(activation_mode='OPTIONAL', effects=[
+        {'type': 'TRANSFER', 'token': 'g-status', 'destination': 'germany:DISCARD'}])
+    checkpoint, journal = tmp_path / 'state.json', tmp_path / 'ops.jsonl'
+    p = make(data, checkpoint_path=checkpoint, logger=OperationLogger(journal))
+    play(p, 'g-battle')
+    choose(p, 'B')
+    assert p.state.decision.required_country == 'united-kingdom'
+    pending, = p.state.announcements
+    resumed = SaveRepository.resume(checkpoint, p.rules, journal)
+    choose(resumed, 'use')
+    assert not resumed.state.announcements and not resumed.state.stack
+    assert resumed.state.tokens['united-kingdom-army-0'].position_id == 'E'
+    invalidated = next(r for r in resumed.records if r['operation_type'] == 'ABILITY_INVALIDATED')
+    assert invalidated['outcome']['context']['abandoned_announcements'] == [pending]
+    assert SaveRepository.recover(checkpoint, p.rules, journal).state == resumed.state
+
+
+def test_invalid_followup_does_not_offer_a_response_or_consume_cost(data):
+    defeat = {'type': 'ELIMINATE', 'target_token': 'united-kingdom-army-0'}
+    card(data, 'g-battle')['effects'] = [
+        {'type': 'TRANSFER', 'token': 'united-kingdom-army-0', 'destination': 'united-kingdom:RESERVE_ARMY'},
+        defeat,
+    ]
+    defense = next(a for a in data['abilities'] if a['id'] == 'uk-prevent')
+    defense.update(activation_mode='OPTIONAL', discard_cost=1)
+    p = make(data)
+    play(p, 'g-battle')
+    assert not p.state.decision and not p.state.announcements
+    assert 'uk-hidden' in p.state.positions['united-kingdom:HAND']
+    assert not any(r['operation_type'] == 'ANNOUNCE' for r in p.records)
+    assert next(r for r in p.records if r['operation_type'] == 'ELIMINATE')['outcome']['success'] is False
+
+
+def test_transfer_cannot_bypass_play_and_put_an_unframed_card_in_resolution(data):
+    card(data, 'g-chain')['effects'] = [
+        {'type': 'GAIN_VP', 'amount': 1},
+        {'type': 'TRANSFER', 'token': 'g-build', 'destination': 'RESOLUTION'},
+    ]
+    p = make(data)
+    play(p, 'g-chain')
+    assert not p.state.stack and not p.state.positions['RESOLUTION']
+    assert p.state.tokens['g-build'].position_id == 'germany:HAND'
+    transfer = next(record for record in p.records if record['operation_type'] == 'TRANSFER')
+    assert not transfer['outcome']['success'] and not transfer['outcome']['changes']
 
 
 def test_redeploy_recomputes_targets_and_preserves_unit_identity(data):
@@ -376,8 +460,8 @@ def test_hidden_information_and_draw_simulations_do_not_cheat(data, weights):
     text = json.dumps(observation(p, ('germany',)))
     assert 'uk-hidden' not in text and 'g-deck-1' not in text and 'uk-secret' not in text
     before = p.state.to_dict()
-    ranked_p = OneStepPlanner(p.rules, weights).rank(p, 'germany')
-    ranked_q = OneStepPlanner(q.rules, weights).rank(q, 'germany')
+    ranked_p = OneStepPlanner(p.rules, weights).rank(CoreAPI(p, ('germany',)), 'germany')
+    ranked_q = OneStepPlanner(q.rules, weights).rank(CoreAPI(q, ('germany',)), 'germany')
     assert ranked_p == ranked_q
     draw = next(r for r in ranked_p if r['command'].get('card') == 'g-draw')
     assert draw['complete']
@@ -388,7 +472,7 @@ def test_terminal_victory_outranks_all_heuristics(data, weights):
     data['settings']['victory_margin'] = 10
     weights['card_value_weights']['ability_ready'] = 10**12
     p = make(data)
-    candidates = OneStepPlanner(p.rules, weights).rank(p, 'germany')
+    candidates = OneStepPlanner(p.rules, weights).rank(CoreAPI(p, ('germany',)), 'germany')
     assert candidates[0]['command']['card'] == 'g-vp'
     assert candidates[0]['terminal_rank'] == 2
 
@@ -397,23 +481,61 @@ def test_influence_is_explainable_and_garrison_survives_zero_reserves(data, weig
     data['initial_tokens'] = [t for t in data['initial_tokens'] if not (t['owner_country'] == 'germany' and t['position_id'] == 'germany:RESERVE_ARMY')]
     p = make(data)
     evaluator = ScoreEvaluator(p.rules, weights)
-    value = evaluator.evaluate(p, 'germany')
+    value = evaluator.evaluate(CoreAPI(p, ('germany',)), 'germany')
     home = next(s for s in value.score_points if s['site'] == 'g-home')
     assert home['control'] == 1 and home['value'] > 0
     influence = next(i for i in value.token_influence if i['token'] == 'germany-army-0' and i['site'] == 'g-home')
     assert influence['score_influence'] == 1
     assert value.total == value.actual_vp + value.map_value + value.card_value + value.resource_adjustment
     before = p.state.to_dict()
-    assert isinstance(evaluator.supply_marginal(p, 'germany', 'germany-navy-0'), float)
+    assert isinstance(evaluator.supply_marginal(CoreAPI(p, ('germany',)), 'germany', 'germany-navy-0'), float)
     assert p.state.to_dict() == before
 
 
 def test_simulation_budget_never_scores_partial_card(data, weights):
     weights['max_simulation_nodes'] = 1
     p = make(data)
-    candidates = OneStepPlanner(p.rules, weights).rank(p, 'germany')
+    candidates = OneStepPlanner(p.rules, weights).rank(CoreAPI(p, ('germany',)), 'germany')
     chain = next(c for c in candidates if c['command'].get('card') == 'g-chain')
     assert not chain['complete'] and chain['q'] is None
+
+
+def test_simulation_failure_is_local_to_one_candidate(data, weights):
+    card(data, 'g-chain')['effects'] = [
+        {'type': 'TRANSFER', 'token': 'uk-hidden', 'expected_from': 'united-kingdom:HAND',
+         'destination': 'united-kingdom:DISCARD'}
+    ]
+    card(data, 'g-draw')['effects'] = [{'type': 'DRAW', 'count': 0}] * 12
+    data['settings']['max_atomic_steps'] = 10
+    p = make(data)
+    before = p.state
+    choices = OneStepPlanner(p.rules, weights).rank(CoreAPI(p, ('germany',)), 'germany')
+    assert p.state == before and not p.records
+    by_card = {row['command'].get('card'): row for row in choices}
+    assert by_card['g-build']['complete']
+    for key in ('g-chain', 'g-draw'):
+        assert not by_card[key]['complete'] and by_card[key]['q'] is None
+    assert 'observation' in by_card['g-chain']['reason']
+    assert 'budget' in by_card['g-draw']['reason']
+    assert 'uk-hidden' not in json.dumps(choices)
+
+
+def test_hand_potential_uses_exact_opening_targets_and_deployment(data, weights):
+    first = {'type': 'BUILD_ARMY', 'target': 'B'}
+    card(data, 'g-chain')['effects'] = [first]
+    p = make(data)
+    seat = CoreAPI(p, ('germany',))
+    before = ScoreEvaluator(p.rules, weights).evaluate(seat, 'germany').card_value
+    assert any(c.get('card') == 'g-chain' for c in seat.legal_commands())
+    play(p, 'g-status')
+    assert ScoreEvaluator(p.rules, weights).evaluate(seat, 'germany').card_value == pytest.approx(before)
+    first['target'] = 'D'
+    q = make(data)
+    seat = CoreAPI(q, ('germany',))
+    assert not any(c.get('card') == 'g-chain' for c in seat.legal_commands())
+    unusable = ScoreEvaluator(q.rules, weights).evaluate(seat, 'germany').card_value
+    lost = weights['card_value_weights']['BUILD_ARMY'] * (1 - weights['unusable_card_weight'])
+    assert before - unusable == pytest.approx(lost)
 
 
 def test_seeded_command_sequences_preserve_invariants_and_replay(tmp_path, data):
@@ -552,10 +674,10 @@ def test_already_collected_vp_is_not_a_future_scoring_opportunity(data, weights)
     data['settings']['max_rounds'] = 1
     p = make(data)
     p.submit(p.legal_commands(('germany',))[0], ('germany',))  # Supply
-    before = ScoreEvaluator(p.rules, weights).evaluate(p, 'germany')
+    before = ScoreEvaluator(p.rules, weights).evaluate(CoreAPI(p, ('germany',)), 'germany')
     assert next(s for s in before.score_points if s['site'] == 'g-home')['baseline_vp'] == 1
     p.submit(p.legal_commands(('germany',))[0], ('germany',))  # Victory
-    after = ScoreEvaluator(p.rules, weights).evaluate(p, 'germany')
+    after = ScoreEvaluator(p.rules, weights).evaluate(CoreAPI(p, ('germany',)), 'germany')
     assert after.actual_vp == 1
     assert next(s for s in after.score_points if s['site'] == 'g-home')['baseline_vp'] == 0
 
