@@ -19,4 +19,6 @@ if (mode === 'setup') {
 else if (mode === 'demo') run(existsSync(local) ? local : base, ['-m', 'qmg_core']);
 else if (mode === 'play') run(existsSync(local) ? local : base, ['-m', 'qmg_core.workbench', ...process.argv.slice(3)]);
 else if (mode === 'data') run(existsSync(local) ? local : base, ['-m', 'qmg_core.catalog', ...process.argv.slice(3)]);
+else if (mode === 'migrate') run(existsSync(local) ? local : base, ['-m', 'qmg_core.migration', ...process.argv.slice(3)]);
+else if (mode === 'verify-content') run(existsSync(local) ? local : base, ['-m', 'qmg_core.content_verify', ...process.argv.slice(3)]);
 else throw new Error('Unknown core action');

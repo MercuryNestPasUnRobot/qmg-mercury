@@ -6,7 +6,30 @@ from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, Zo
 
 
 def auxiliary_reserves(rules):
-    return {zone(force, f"RESERVE_{kind}") for force in rules.auxiliary_forces for kind in ("ARMY", "NAVY")}
+    positions = {zone(force, f"RESERVE_{kind}") for force in rules.auxiliary_forces for kind in ("ARMY", "NAVY")}
+    if any(u["kind"] == "AIR" for u in rules.units.values()):
+        positions.update(zone(force, "RESERVE_AIR") for force in rules.force_controllers)
+    if rules.settings.get("temporary_status_disable"):
+        positions.update(zone(force, "DISABLED_STATUS") for force in rules.countries)
+    return positions
+
+
+def deployed_zones(rules, token):
+    kinds = ("STATUS", "RESPONSE", "HAND") if rules.cards[token.definition_id].get("legacy_kind") == "bolster" else (
+        "STATUS", "RESPONSE")
+    return {zone(token.owner_country, kind) for kind in kinds}
+
+
+def status_enabled(rules, state, source):
+    if source.position_id != zone(source.owner_country, "STATUS"):
+        return False
+    current = TURN_ORDER[state.turn.country_index]
+    if rules.team(source.owner_country) == rules.team(current):
+        return True
+    return not any(t.token_type == "CARD" and t.owner_country == current
+                   and t.position_id == zone(current, "STATUS") and any(
+                       m["kind"] == "ignore_enemy_statuses" for m in rules.cards[t.definition_id].get("modifiers", []))
+                   for t in state.tokens.values())
 
 
 class RuleModifierResolver:
@@ -14,11 +37,26 @@ class RuleModifierResolver:
         self.rules = rules
 
     def resolve(self, state, country):
+        force = country
         country = self.rules.force_controllers[country]
         result = []
         for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
-            if token.token_type == "CARD" and token.position_id == zone(token.owner_country, "STATUS"):
+            if token.token_type == "CARD" and status_enabled(self.rules, state, token):
                 for modifier in self.rules.cards[token.definition_id].get("modifiers", []):
+                    if self.rules.cards[token.definition_id].get("content_condition"):
+                        from .content_effects import condition_met
+                        if not condition_met(self.rules, state, token.owner_country,
+                                             self.rules.cards[token.definition_id]["content_condition"]):
+                            continue
+                    if modifier["kind"] == "supply_sharing" and force not in modifier["forces"]:
+                        continue
+                    if occupied := modifier.get("enemy_occupied_region"):
+                        if not any(t.position_id == occupied and self.rules.units[t.definition_id]["kind"] == "ARMY"
+                                   and self.rules.team(t.owner_country) != self.rules.team(force)
+                                   for t in board_units(self.rules, state)):
+                            continue
+                    if modifier.get("force", force) != force or modifier.get("team", self.rules.team(force)) != self.rules.team(force):
+                        continue
                     if modifier.get("scope", "owner") == "all" or token.owner_country == country:
                         result.append(deepcopy(modifier))
         return result
@@ -36,6 +74,11 @@ class MapGraph:
             edge = tuple(sorted((connection["a"], connection["b"])))
             edges.setdefault(edge, set()).update(connection.get("movement_or_supply_tags", CONNECTION_USES))
         if state is not None and country is not None:
+            for strait in self.rules.settings.get("straits", []):
+                axis = any(t.position_id == strait["land"] and self.rules.units[t.definition_id]["kind"] == "ARMY"
+                           and self.rules.team(t.owner_country) == "axis" for t in board_units(self.rules, state))
+                if (self.rules.team(country) == "axis") == axis:
+                    edges.setdefault(tuple(sorted(strait["seas"])), set()).update(CONNECTION_USES)
             for m in RuleModifierResolver(self.rules).resolve(state, country):
                 if m["kind"] == "connection":
                     edge = tuple(sorted((m["a"], m["b"])))
@@ -76,6 +119,43 @@ def board_units(rules, state, country=None):
                    and (country is None or t.owner_country == country)), key=lambda token: token.token_id)
 
 
+def capture_turn_start(rules, state):
+    if rules.settings.get("record_turn_start"):
+        state.turn_start = {
+            "units": {token.token_id: token.position_id for token in board_units(rules, state)},
+            "adjacency": {country: {region: sorted(neighbors) for region, neighbors in
+                                    MapGraph(rules).adjacency(state, country).items()}
+                          for country in rules.force_controllers},
+        }
+
+
+def home_regions(rules, state, force):
+    homes = {r["id"] for r in rules.regions.values() if r.get("home_country") == force}
+    for modifier in RuleModifierResolver(rules).resolve(state, force):
+        if modifier["kind"] == "home":
+            homes = {modifier["region"]}
+    return homes
+
+
+def active_unit_rule(state, token_id, definition):
+    return any(t.token_type == "RULE" and t.source_token_id == token_id and t.definition_id == definition
+               and t.position_id in (zone(t.owner_country, "RESPONSE"), "RESOLUTION")
+               for t in state.tokens.values())
+
+
+def unit_rule_matches(rules, state, token, mode):
+    if active_unit_rule(state, token.token_id, "unit-" + mode):
+        return True
+    from .content_effects import unit_matches
+    for response in state.tokens.values():
+        if response.token_type != "RULE" or response.position_id not in (zone(response.owner_country, "RESPONSE"), "RESOLUTION"):
+            continue
+        area = rules.abilities[response.definition_id].get("area_rule")
+        if area and area["mode"] == mode and unit_matches(rules, state, response.owner_country, token, area["filter"]):
+            return True
+    return False
+
+
 class SupplyResolver:
     def __init__(self, rules):
         self.rules, self.graph = rules, MapGraph(rules)
@@ -84,14 +164,57 @@ class SupplyResolver:
         if units is None:
             units = board_units(self.rules, state)
         modifiers = RuleModifierResolver(self.rules).resolve(state, country)
-        if any(m["kind"] == "always_supplied" for m in modifiers):
-            return {t.token_id for t in units if t.owner_country == country}
+        always = {t.token_id for t in units if t.owner_country == country and any(
+            m["kind"] == "always_supplied" and self.rules.units[t.definition_id]["kind"].lower()
+            in m.get("kinds", ("army", "navy", "air")) for m in modifiers)}
+        always.update(t.token_id for t in units if t.owner_country == country
+                      and unit_rule_matches(self.rules, state, t, "supply"))
         share = self.rules.settings["allied_supply"]
+        groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
+        if self.rules.settings.get("surface_supply"):
+            network = {country}
+            while True:
+                expanded = network | {force for group in groups if network.intersection(group) for force in group}
+                if expanded == network:
+                    break
+                network = expanded
+            if share:
+                network.update(force for force in self.rules.force_controllers if self.rules.team(force) == self.rules.team(country))
+            pieces = [t for t in units if t.owner_country in network and self.rules.units[t.definition_id]["kind"] != "AIR"]
+            seeded, occupied = set(), set()
+            adjacency = self.graph.adjacency(state, country, "supply")
+            for token in pieces:
+                token_modifiers = RuleModifierResolver(self.rules).resolve(state, token.owner_country)
+                automatic = unit_rule_matches(self.rules, state, token, "supply") or any(
+                    m["kind"] == "always_supplied" and self.rules.units[token.definition_id]["kind"].lower()
+                    in m.get("kinds", ("army", "navy", "air")) for m in token_modifiers)
+                army = self.rules.units[token.definition_id]["kind"] == "ARMY"
+                if automatic or army or any(t.position_id in adjacency[token.position_id] and
+                    self.rules.units[t.definition_id]["kind"] == "ARMY" and
+                    self.rules.team(t.owner_country) == self.rules.team(country) for t in units):
+                    occupied.add(token.position_id)
+                sources = home_regions(self.rules, state, token.owner_country)
+                sources.update(m["region"] for m in token_modifiers if m["kind"] == "supply_source")
+                sources.difference_update(m["region"] for m in token_modifiers if m["kind"] == "deny_supply_source")
+                if automatic or army and token.position_id in sources:
+                    seeded.add(token.position_id)
+            reached, queue = seeded.copy(), deque(sorted(seeded))
+            while queue:
+                for region in adjacency[queue.popleft()]:
+                    if region in occupied and region not in reached:
+                        reached.add(region)
+                        queue.append(region)
+            return always | {t.token_id for t in units if t.owner_country == country and t.position_id in reached}
         pieces = [t for t in units if t.owner_country == country or
-                  (share and self.rules.team(t.owner_country) == self.rules.team(country))]
-        occupied = {t.position_id for t in pieces}
+                  ((share or any(t.owner_country in group for group in groups))
+                   and self.rules.team(t.owner_country) == self.rules.team(country))]
+        occupied = {t.position_id for t in pieces if self.rules.units[t.definition_id]["kind"] != "AIR"}
         sources = {r["id"] for r in self.rules.regions.values() if r.get("supply_source_for") == country}
+        if any(m["kind"] == "home" for m in modifiers):
+            sources.difference_update(r["id"] for r in self.rules.regions.values() if r.get("home_country") == country)
+            sources.update(home_regions(self.rules, state, country))
         sources.update(m["region"] for m in modifiers if m["kind"] == "supply_source")
+        sources.difference_update(m["region"] for m in modifiers if m["kind"] == "deny_supply_source")
         reached = sources & occupied
         queue = deque(sorted(reached))
         adjacency = self.graph.adjacency(state, country, "supply")
@@ -100,7 +223,7 @@ class SupplyResolver:
                 if n in occupied and n not in reached:
                     reached.add(n)
                     queue.append(n)
-        return {t.token_id for t in pieces if t.owner_country == country and t.position_id in reached}
+        return always | {t.token_id for t in pieces if t.owner_country == country and t.position_id in reached}
 
     def supplied_for_seat(self, state, country, units):
         return {token_id for force in self.rules.controlled_forces(country)
@@ -122,12 +245,25 @@ class LegalActionGenerator:
         return True
 
     def can_start_card(self, state, country, card):
+        if card.get("legacy_kind") in ("bolster", "air-power"):
+            return False
+        if card.get("implementation", {}).get("status") == "blocked":
+            return False
+        if "content_condition" in card:
+            from .content_effects import condition_met
+            if not condition_met(self.rules, state, country, card["content_condition"]):
+                return False
         if card.get("simulation_unknown") or not self.requirements_met(state, country, card.get("requirements", [])):
             return False
+        if card.get("play_as"):
+            return any(self.targets(state, country, {"type": mode}) for mode in card["play_as"])
         if not card["effects"]:
             return True
         first = card["effects"][0]
         effect = first["operation"] if first["type"] == "CHOOSE" else first
+        if effect["type"] == "CARD_EFFECT":
+            from .content_effects import can_begin
+            return can_begin(self.rules, state, country, effect["effect"])
         if effect["type"] == "REDEPLOY":
             return self.rules.force_controllers.get(effect.get("force", country)) == country
         if effect["type"] not in TARGETED_OPERATIONS:
@@ -138,9 +274,18 @@ class LegalActionGenerator:
 
     def targets(self, state, country, op):
         kind = op["type"]
+        if op.get("expected_victim"):
+            victim = state.tokens.get(op["expected_victim"])
+            if victim is None or victim.position_id != op.get("target"):
+                return []
+        if "effect_constraints" in op:
+            from .content_effects import target_regions
+            return target_regions(self.rules, state, country, op["effect_constraints"])
         if kind in FORCE_OPERATIONS:
             force = op.get("force", country)
-            if self.rules.force_controllers.get(force) != country:
+            controller = self.rules.force_controllers.get(force)
+            if controller != country and not (op.get("allied_effect") is True and controller in self.rules.countries
+                                               and self.rules.team(force) == self.rules.team(country)):
                 return []
         if kind in CONSTRUCTION:
             unit_kind = op.get("unit_kind", "NAVY" if kind == "BUILD_NAVY" else "ARMY")
@@ -150,8 +295,8 @@ class LegalActionGenerator:
             expected_terrain = "LAND" if unit_kind == "ARMY" else "SEA"
             units = board_units(self.rules, state)
             supplied = self.supply.supplied(state, force)
-            origins = {t.position_id for t in units if t.token_id in supplied}
-            homes = {r["id"] for r in self.rules.regions.values() if r.get("home_country") == force}
+            origins = {t.position_id for t in units if t.token_id in supplied and self.rules.units[t.definition_id]["kind"] != "AIR"}
+            homes = home_regions(self.rules, state, force)
             modifiers = RuleModifierResolver(self.rules).resolve(state, force)
             extra = {m["region"] for m in modifiers if m["kind"] == "build_region" and m["unit_kind"] == unit_kind}
             adjacency = self.graph.adjacency(state, country, "build")
@@ -160,26 +305,35 @@ class LegalActionGenerator:
                 if definition["type"] != expected_terrain:
                     continue
                 present = [t for t in units if t.position_id == region]
-                if any(self.rules.team(t.owner_country) != self.rules.team(country) or t.owner_country == force for t in present):
+                if any(self.rules.team(t.owner_country) != self.rules.team(country) or
+                       (t.owner_country == force and self.rules.units[t.definition_id]["kind"] == unit_kind) for t in present):
                     continue
                 neighbors = adjacency[region]
                 reachable = region in homes or bool(neighbors & origins) or region in extra
+                if unit_kind == "ARMY" and any(m["kind"] == "recruit_region" and m["region"] == region for m in modifiers):
+                    reachable = True
                 if kind == "RECRUIT":
-                    reachable = region in homes or bool(neighbors & homes)
+                    reachable = self.rules.settings.get("free_recruit", False) or region in homes or bool(neighbors & homes)
+                elif self.rules.settings.get("naval_army_base") and unit_kind == "NAVY":
+                    reachable = reachable and any(t.position_id in neighbors and
+                        self.rules.units[t.definition_id]["kind"] == "ARMY" and
+                        self.rules.team(t.owner_country) == self.rules.team(country) for t in units)
                 if reachable:
                     result.append(region)
             return sorted(result)
         if kind in BATTLES:
             terrain = "LAND" if kind == "LAND_BATTLE" else "SEA"
             supplied = self.supply.supplied(state, force)
-            origins = {t.position_id for t in board_units(self.rules, state, force) if t.token_id in supplied}
+            origins = {t.position_id for t in board_units(self.rules, state, force) if t.token_id in supplied
+                       and self.rules.units[t.definition_id]["kind"] != "AIR"}
             adjacency = self.graph.adjacency(state, country, "battle")
             result = []
             for region, d in self.rules.regions.items():
                 if d["type"] != terrain or not (adjacency[region] & origins):
                     continue
                 occupants = [t for t in board_units(self.rules, state) if t.position_id == region]
-                if not any(self.rules.team(t.owner_country) == self.rules.team(country) for t in occupants):
+                if not any(self.rules.team(t.owner_country) == self.rules.team(country)
+                           and self.rules.units[t.definition_id]["kind"] != "AIR" for t in occupants):
                     result.append(region)
             return sorted(result)
         if kind == "ELIMINATE":
@@ -218,18 +372,19 @@ def validate_token_position(rules, state, token, position):
         kind = rules.units[token.definition_id]["kind"]
         if position in rules.regions:
             terrain = "LAND" if kind == "ARMY" else "SEA"
-            if rules.regions[position]["type"] != terrain:
+            if kind != "AIR" and rules.regions[position]["type"] != terrain:
                 raise CoreError("Unit terrain mismatch")
             for occupant_id in state.positions[position]:
                 occupant = state.tokens[occupant_id]
                 if occupant.token_type == "UNIT" and occupant_id != token.token_id and (
-                    occupant.owner_country == country or rules.team(occupant.owner_country) != rules.team(country)
+                    (occupant.owner_country == country and rules.units[occupant.definition_id]["kind"] == kind)
+                    or rules.team(occupant.owner_country) != rules.team(country)
                 ):
                     raise CoreError("Illegal hostile coexistence or duplicate national unit")
         elif position != zone(country, f"RESERVE_{kind}"):
             raise CoreError("Invalid reserve")
     elif token.token_type == "CARD":
-        if position not in {"RESOLUTION", *(zone(country, kind) for kind in ("DECK", "HAND", "DISCARD", "STATUS", "RESPONSE", "SET_ASIDE", "OBJECT_POOL"))}:
+        if position not in {"RESOLUTION", *(zone(country, kind) for kind in ("DECK", "HAND", "DISCARD", "STATUS", "DISABLED_STATUS", "RESPONSE", "SET_ASIDE", "OBJECT_POOL"))}:
             raise CoreError("Invalid card zone")
     elif token.token_type == "SCORE_SOURCE":
         dormant = zone(country, "SCORE_DORMANT") if country else "SCORE_DORMANT"
@@ -237,6 +392,9 @@ def validate_token_position(rules, state, token, position):
             raise CoreError("Invalid dynamic score source")
     elif token.token_type == "ABILITY":
         raise CoreError("Ability positions follow their source card and activation lifecycle")
+    elif token.token_type == "RULE":
+        if position not in (zone(country, "OBJECT_POOL"), zone(country, "RESPONSE"), zone(country, "ABILITY_READY")):
+            raise CoreError("Rule object position must follow its response lifecycle")
 
 
 def validate_state(rules, state, *, legacy_snapshot=False):
@@ -287,18 +445,31 @@ def validate_state(rules, state, *, legacy_snapshot=False):
                 raise CoreError("Invalid ability lifecycle zone")
             if t.position_id == "RESOLUTION" and not any(f.context.get("ability_token") == key for f in state.stack):
                 raise CoreError("Ability in resolution needs an active frame")
-            resolving_response = (source.position_id == "RESOLUTION" and rules.cards[source.definition_id]["type"] == "RESPONSE"
+            resolving_response = (source.position_id == "RESOLUTION" and
+                                  (rules.cards[source.definition_id]["type"] == "RESPONSE" or
+                                   rules.cards[source.definition_id].get("legacy_kind") == "bolster")
                                   and any(frame.source_card_id == source.token_id and frame.context.get("ability_token") == t.token_id
                                           for frame in state.stack))
-            if source.position_id not in (zone(t.owner_country, "STATUS"), zone(t.owner_country, "RESPONSE")) and not resolving_response and t.position_id not in (zone(t.owner_country, "ABILITY_INACTIVE"), zone(t.owner_country, "OBJECT_POOL")):
+            if source.position_id not in deployed_zones(rules, source) and not resolving_response and t.position_id not in (zone(t.owner_country, "ABILITY_INACTIVE"), zone(t.owner_country, "OBJECT_POOL")):
                 raise CoreError("Orphan active ability")
+        elif t.token_type == "RULE":
+            source = state.tokens.get(t.source_token_id)
+            definitions = ([*rules.settings.get("unit_responses", []), *rules.settings.get("turn_opportunities", {})] if source and source.token_type == "UNIT" else
+                           rules.settings.get("area_responses", {}).get(source.definition_id, []) if source else [])
+            if (source is None or t.definition_id not in definitions
+                    or t.owner_country != rules.force_controllers[source.owner_country]):
+                raise CoreError("Invalid unit response")
+            if t.position_id not in (zone(t.owner_country, "OBJECT_POOL"), zone(t.owner_country, "RESPONSE"), "RESOLUTION", zone(t.owner_country, "ABILITY_READY")):
+                raise CoreError("Invalid unit response position")
+            if t.position_id == "RESOLUTION" and not any(f.context.get("ability_token") == key for f in state.stack):
+                raise CoreError("Unit response needs a resolution frame")
         elif t.token_type == "SCORE_SOURCE":
             if t.definition_id not in rules.sites:
                 raise CoreError("Invalid dynamic score source")
             validate_token_position(rules, state, t, t.position_id)
         else:
             raise CoreError("Unknown token type")
-    if state.turn.phase not in (*("Setup",), "Play", "Supply", "Victory", "Discard", "Draw") or not 0 <= state.turn.country_index < 6:
+    if state.turn.phase not in ("Setup", *rules.phases) or not 0 <= state.turn.country_index < 6:
         raise CoreError("Invalid turn")
     if any(type(v) is not int for v in state.scores.values()) or state.winner not in (None, "axis", "allies", "draw"):
         raise CoreError("Invalid score/result")
@@ -320,7 +491,7 @@ def validate_state(rules, state, *, legacy_snapshot=False):
 
 
 def initial_abilities(rules, source, include_pool=False):
-    active = source.position_id in (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
+    active = source.position_id in deployed_zones(rules, source)
     roots = rules.cards[source.definition_id].get("abilities", [])
     capacity = sum(rules.abilities[key].get("copies", 1) for key in roots)
     pool = zone(source.owner_country, "OBJECT_POOL")
@@ -345,10 +516,23 @@ def initial_inventory(rules, projected):
             if source.definition_id not in rules.cards:
                 raise CoreError("Unknown initial card definition")
             slots.extend(initial_abilities(rules, source, include_pool=True))
+            slots.extend(Token(f"rule:{source.token_id}:{definition}", definition, "RULE", source.owner_country,
+                               zone(source.owner_country, "OBJECT_POOL"), source.token_id)
+                         for definition in rules.settings.get("area_responses", {}).get(source.definition_id, []))
+        if not projected and source.token_type == "UNIT":
+            owner = rules.force_controllers[source.owner_country]
+            slots.extend(Token(f"rule:{source.token_id}:{definition}", definition, "RULE", owner,
+                               zone(owner, "OBJECT_POOL"), source.token_id)
+                         for definition in rules.settings.get("unit_responses", []))
         for slot in slots:
             if slot.token_id in tokens:
                 raise CoreError("Duplicate object in initial inventory")
             tokens[slot.token_id] = slot
+    for definition, force in ({} if projected else rules.settings.get("turn_opportunities", {})).items():
+        source = next(t for t in tokens.values() if t.token_type == "UNIT" and t.owner_country == force)
+        owner = rules.force_controllers[force]
+        token = Token("opportunity:" + definition, definition, "RULE", owner, zone(owner, "ABILITY_READY"), source.token_id)
+        tokens[token.token_id] = token
     return tokens
 
 
@@ -376,4 +560,5 @@ def initialize(rules, seed=1, game_id="fixture-game"):
         if len(positions[hand]) < rules.settings["setup_discard"]:
             raise CoreError(f"Not enough cards for setup: {country}")
     validate_state(rules, state)
+    capture_turn_start(rules, state)
     return state

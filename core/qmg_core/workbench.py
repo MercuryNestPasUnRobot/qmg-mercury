@@ -27,7 +27,7 @@ CARD_NAMES = {
     "g-return": "接续响应",
     "uk-guard": "自动阻止", "uk-secret": "计分示例", "uk-other": "抽牌示例",
 }
-PHASE_NAMES = {"Setup": "开局", "Play": "出牌", "Supply": "补给", "Victory": "计分",
+PHASE_NAMES = {"Setup": "开局", "Play": "出牌", "Air": "空军", "Supply": "补给", "Victory": "计分",
                "Discard": "弃牌", "Draw": "抽牌"}
 ZONE_NAMES = {"DECK": "牌库", "HAND": "手牌", "DISCARD": "弃牌", "STATUS": "状态",
               "RESPONSE": "响应", "RESERVE_ARMY": "陆军预备", "RESERVE_NAVY": "海军预备"}
@@ -93,6 +93,7 @@ class Workbench:
         seat = TURN_ORDER[clock["country_index"]]
         tokens = view["tokens"]
         commands = self.human.legal_commands()
+        content_label = "本地转录内容" if self.processor.rules.data.get("source_pack") else "合成机制场景"
 
         def token_name(token_id):
             token = tokens.get(token_id)
@@ -102,7 +103,8 @@ class Workbench:
             if token["token_type"] == "UNIT":
                 force = token["owner_country"]
                 owner = self.processor.rules.auxiliary_forces.get(force, {}).get("name", COUNTRY_NAMES.get(force, force))
-                return escape(f"{owner} · {'陆军' if self.processor.rules.units[definition]['kind'] == 'ARMY' else '海军'}")
+                unit_name = {"ARMY": "陆军", "NAVY": "海军", "AIR": "空军"}[self.processor.rules.units[definition]["kind"]]
+                return escape(f"{owner} · {unit_name}")
             card = self.processor.rules.cards.get(definition, {})
             return escape(card.get("title") or CARD_NAMES.get(definition, definition))
 
@@ -134,6 +136,14 @@ class Workbench:
                 options.append(button("human", label, i))
             elif command["type"] == "END_PHASE":
                 options.append(button("human", "结束阶段", i))
+            elif command["type"] == "USE_STATUS":
+                options.append(button("human", f'发动 {token_name(command["card"])}', i))
+            elif command["type"] == "ACTIVATE_CARD":
+                options.append(button("human", f'响应 {token_name(command["card"])}', i))
+            elif command["type"] == "USE_AIR":
+                options.append(button("human", f'空军行动 {COUNTRY_NAMES.get(command["force"], command["force"])}', i))
+            elif command["type"] == "REALLOCATE":
+                options.append(button("human", "调配资源", i))
         decision = view["decision"]
         waiting = f'等待 {COUNTRY_NAMES[decision["required_country"]]} 选择' if decision else "本阶段行动"
         if decision and "decision_type" in decision:
@@ -175,7 +185,7 @@ button{{cursor:pointer}}button:hover,button:focus-visible{{background:#38596a}}.
 ul{{margin:8px 0;padding-left:20px;line-height:1.65}}[role=alert]{{color:#ffd294}}
 @media(max-width:740px){{.layout{{grid-template-columns:1fr}}main{{padding:12px}}}}
 </style></head><body><main>
-<header><div><h1>Mercury Core 验收台</h1><p>合成机制场景 · 德国席位 · 状态版本 {view["version"]}</p></div>
+<header><div><h1>Mercury Core 验收台</h1><p>{content_label} · 德国席位 · 状态版本 {view["version"]}</p></div>
 <div>第 {clock["round_id"]} 轮 · {COUNTRY_NAMES[seat]} · {PHASE_NAMES[clock["phase"]]}<br>
 轴心 {scores["axis"]} VP · 同盟 {scores["allies"]} VP {winner}</div></header>
 <div class="layout"><div class="stack"><section><h2>地区和合法目标</h2><div class="map">{"".join(board)}</div></section>

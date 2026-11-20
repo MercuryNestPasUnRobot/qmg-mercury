@@ -2,13 +2,13 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
-from .model import CoreError, TURN_ORDER, digest
+from .model import CoreError, TURN_ORDER, PHASES, digest
 
 CONSTRUCTION = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT"}
 BATTLES = {"LAND_BATTLE", "SEA_BATTLE"}
 FORCE_OPERATIONS = CONSTRUCTION | BATTLES
 TARGETED_OPERATIONS = FORCE_OPERATIONS | {"ELIMINATE", "DISCARD", "TRANSFER"}
-OPERATIONS = TARGETED_OPERATIONS | {"CREATE", "DRAW", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY"}
+OPERATIONS = TARGETED_OPERATIONS | {"CREATE", "DRAW", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY", "CARD_EFFECT"}
 CONNECTION_USES = frozenset({"supply", "build", "battle"})
 
 
@@ -54,6 +54,21 @@ class RuleSet:
                 ability.setdefault("on_settle", []).append(
                     {"type": "CREATE", "token_type": "ABILITY", "definition": listener, "zone": "RESPONSE", "same_copy": True})
         self.settings = deepcopy(data["settings"])
+        self.phases = ("Play", "Air", *PHASES[1:]) if self.settings.get("air_phase") else PHASES
+        if any(key not in self.abilities for key in self.settings.get("unit_responses", [])):
+            raise CoreError("Unknown temporary unit response")
+        opportunities = self.settings.get("turn_opportunities", {})
+        if not isinstance(opportunities, dict) or any(key not in self.abilities or force not in self.force_controllers
+                                                     for key, force in opportunities.items()):
+            raise CoreError("Invalid turn opportunity inventory")
+        area = self.settings.get("area_responses", {})
+        if not isinstance(area, dict) or any(key not in self.cards or not isinstance(values, list)
+                or any(value not in self.abilities for value in values) for key, values in area.items()):
+            raise CoreError("Invalid area response inventory")
+        for strait in self.settings.get("straits", []):
+            if (strait.get("land") not in self.regions or len(strait.get("seas", [])) != 2
+                    or any(p not in self.regions or self.regions[p]["type"] != "SEA" for p in strait["seas"])):
+                raise CoreError("Invalid strait definition")
         staging = self.settings.get("staging_countries", [])
         if not isinstance(staging, list) or any(not isinstance(country, str) or country not in TURN_ORDER for country in staging):
             raise CoreError("Invalid staging countries")
@@ -75,7 +90,7 @@ class RuleSet:
             ):
                 raise CoreError("Invalid region")
         for u in self.units.values():
-            if u["kind"] not in ("ARMY", "NAVY"):
+            if u["kind"] not in ("ARMY", "NAVY", "AIR"):
                 raise CoreError("Invalid unit kind")
         for card in self.cards.values():
             if card["country"] not in self.countries or card["type"] not in ("EVENT", "STATUS", "RESPONSE"):
@@ -84,11 +99,19 @@ class RuleSet:
                 raise CoreError("Card title must be non-empty text")
             if card["failure_policy"] not in ("stop", "continue"):
                 raise CoreError("Explicit card failure policy required")
+            if "play_as" in card and (not isinstance(card["play_as"], list) or not card["play_as"]
+                                     or any(mode not in CONSTRUCTION - {"RECRUIT"} | BATTLES for mode in card["play_as"])):
+                raise CoreError("Invalid alternate play modes")
             if "after" in card and card["after"] not in ("origin", "delete"):
                 raise CoreError("Invalid card settlement")
             self._programs(card)
             if any(a not in self.abilities for a in card.get("abilities", [])):
                 raise CoreError("Unknown ability")
+            if card.get("active_ability") and card["active_ability"] not in card.get("abilities", []):
+                raise CoreError("Active ability must belong to the card")
+            if "content_condition" in card:
+                from .content_effects import validate_condition
+                validate_condition(self, card["content_condition"])
             if card["type"] == "RESPONSE" and (card["effects"] or not card.get("abilities")) and not card.get("simulation_unknown"):
                 raise CoreError("Face-down responses must define their effects on abilities")
             for req in card.get("requirements", []):
@@ -99,14 +122,21 @@ class RuleSet:
                 if req["kind"] == "occupied" and req["region"] not in self.regions:
                     raise CoreError("Invalid requirement region")
             for m in card.get("modifiers", []):
-                if m.get("kind") not in ("connection", "supply_source", "always_supplied", "build_region", "score_bonus", "ability_cost") or m.get("scope", "owner") not in ("owner", "all"):
+                if m.get("kind") not in ("connection", "supply_source", "deny_supply_source", "home",
+                                        "always_supplied", "build_region", "score_bonus", "ability_cost",
+                                        "economic_adjustment", "supply_sharing", "recruit_region",
+                                        "ignore_enemy_statuses", "reallocate_cost", "reallocate_discard") or m.get("scope", "owner") not in ("owner", "all"):
                     raise CoreError("Unknown rule modifier or scope")
                 if m["kind"] == "connection" and (m["a"] not in self.regions or m["b"] not in self.regions or type(m["enabled"]) is not bool):
                     raise CoreError("Invalid connection modifier")
                 if m["kind"] == "connection":
                     self._connection_uses(m)
-                if m["kind"] in ("supply_source", "build_region") and m["region"] not in self.regions:
+                if m["kind"] in ("supply_source", "deny_supply_source", "home", "build_region", "recruit_region") and m["region"] not in self.regions:
                     raise CoreError("Invalid modifier region")
+                if "force" in m and m["force"] not in self.force_controllers:
+                    raise CoreError("Invalid modifier force")
+                if "team" in m and m["team"] not in ("axis", "allies"):
+                    raise CoreError("Invalid modifier team")
                 if m["kind"] == "build_region" and m["unit_kind"] not in ("ARMY", "NAVY"):
                     raise CoreError("Invalid build modifier")
                 if m["kind"] in ("score_bonus", "ability_cost") and type(m["amount"]) is not int:
@@ -124,15 +154,24 @@ class RuleSet:
                 raise CoreError("Explicit ability priority and nonnegative cost required")
             self._programs(ability)
             trigger = ability["trigger"]
+            if "card_trigger" in trigger:
+                from .content_triggers import supported_trigger, validate_trigger
+                if not supported_trigger(trigger["card_trigger"]) and ability["effects"]:
+                    raise CoreError(f"Unimplemented transcribed trigger: {ability['id']}")
+                if supported_trigger(trigger["card_trigger"]):
+                    validate_trigger(self, trigger["card_trigger"])
+                if not set(ability.get("listener_scope", ["STATUS", "RESPONSE"])) <= {"STATUS", "RESPONSE", "HAND"}:
+                    raise CoreError("Unsupported listener scope")
+                continue
             if not set(trigger) <= {"operation_type", "announced_type", "actor", "target_owner", "source_definition_id", "turn_start"} or trigger.get("actor", "any") not in ("self", "enemy", "any") or trigger.get("target_owner", "self") != "self":
                 raise CoreError("Unsupported trigger predicate")
             if "turn_start" in trigger and (trigger["operation_type"] != "BEGIN_PHASE" or type(trigger["turn_start"]) is not bool):
                 raise CoreError("turn_start is a phase entry predicate")
             if "source_definition_id" in trigger and trigger["source_definition_id"] not in self.cards and trigger["source_definition_id"] not in self.abilities:
                 raise CoreError("Unknown trigger source definition")
-            if trigger["operation_type"] not in OPERATIONS | {"PLAY_CARD", "ANNOUNCE", "BEGIN_PHASE", "END_PHASE", "TURN_END", "OBJECT_SETTLED", "CHECK_SUPPLY", "CHECK_SCORE", "CHECK_DISCARD"}:
+            if trigger["operation_type"] not in OPERATIONS | {"PLAY_CARD", "USE_STATUS", "ANNOUNCE", "BEGIN_PHASE", "END_PHASE", "TURN_END", "OBJECT_SETTLED", "CHECK_SUPPLY", "CHECK_SCORE", "CHECK_DISCARD"}:
                 raise CoreError("Unsupported listener checkpoint")
-            if not set(ability.get("listener_scope", ["STATUS", "RESPONSE"])) <= {"STATUS", "RESPONSE"}:
+            if not set(ability.get("listener_scope", ["STATUS", "RESPONSE"])) <= {"STATUS", "RESPONSE", "HAND"}:
                 raise CoreError("Unsupported listener scope")
         for site in self.sites.values():
             if site["region"] not in self.regions or type(site["vp"]) is not int or site["vp"] < 0:
@@ -207,6 +246,11 @@ class RuleSet:
                 self._effects([op["operation"]])
                 if op["operation"]["type"] not in TARGETED_OPERATIONS:
                     raise CoreError("Unsupported target choice operation")
+            if op["type"] == "CARD_EFFECT":
+                from .content_effects import validate_effect
+                if not isinstance(op.get("effect"), dict):
+                    raise CoreError("Card effect must be a definition")
+                validate_effect(self, op["effect"])
             if op["type"] == "GAIN_VP" and type(op.get("amount")) is not int:
                 raise CoreError("Invalid VP amount")
             if op["type"] == "DRAW" and (type(op.get("count", 1)) is not int or op.get("count", 1) < 0):

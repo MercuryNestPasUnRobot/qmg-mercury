@@ -13,7 +13,8 @@
   },
   "military_weights": {
     "ARMY": 1,
-    "NAVY": 0.8
+    "NAVY": 0.8,
+    "AIR": 0.5
   },
   "expansion_weight": 0.5,
   "threat_weight": 0.5,
@@ -28,6 +29,7 @@
     "DRAW": 0.3,
     "GAIN_VP": 0.1,
     "TRANSFER": 0.1,
+    "CARD_EFFECT": 0.2,
     "BUILD_ARMY": 1,
     "BUILD_NAVY": 0.8,
     "RECRUIT": 1,

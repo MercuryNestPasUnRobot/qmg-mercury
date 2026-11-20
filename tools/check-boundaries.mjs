@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
-const bad = files.filter(p => /^(legacy|resources\/upstream|node_modules|dist|\.cache|\.runtime)\//.test(p) || /(^|\/)\.venv\//.test(p) || /(^|\/)\.env(?:\.|$)/.test(p));
+const bad = files.filter(p => /^(legacy|local-content|resources\/upstream|node_modules|dist|\.cache|\.runtime)\//.test(p) || /(^|\/)\.venv\//.test(p) || /(^|\/)\.env(?:\.|$)/.test(p));
 if (bad.length) throw new Error(`Local-only files in Git index: ${bad.join(', ')}`);
 async function scan(dir) {
   for (const item of await readdir(dir, { withFileTypes: true })) {

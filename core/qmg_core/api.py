@@ -6,7 +6,7 @@ from .engine import CommandProcessor
 from .definitions import RuleSet
 from .rules import MapGraph, initial_abilities
 
-PUBLIC_ZONES = {"DISCARD", "STATUS", "RESERVE_ARMY", "RESERVE_NAVY"}
+PUBLIC_ZONES = {"DISCARD", "STATUS", "DISABLED_STATUS", "RESERVE_ARMY", "RESERVE_NAVY", "RESERVE_AIR"}
 
 
 def _visible_position(position, rules, controlled):
@@ -83,7 +83,8 @@ def observation(processor, controlled_countries):
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
             "tokens": visible, "positions": positions, "turn": deepcopy(s.turn.__dict__),
             "scores": dict(s.scores), "winner": s.winner, "decision": decision,
-            "resolution_depth": len(s.stack), "resolution": resolution, "history": history}
+            "resolution_depth": len(s.stack), "resolution": resolution, "history": history,
+            **({"turn_start": deepcopy(s.turn_start)} if s.turn_start else {})}
 
 
 class CoreAPI:
@@ -148,7 +149,8 @@ def simulation_from_observation(rules, view):
                 tokens[replica.token_id] = replica
                 positions[replica.position_id].append(replica.token_id)
     state = GameState(view["game_id"], rules.version, tokens, positions, TurnClock(**view["turn"]),
-                      deepcopy(view["scores"]), 1, version=view["version"], winner=view["winner"])
+                      deepcopy(view["scores"]), 1, version=view["version"], winner=view["winner"],
+                      turn_start=deepcopy(view.get("turn_start", {})))
     if zone(TURN_ORDER[0], "OBJECT_POOL") not in positions:
         from .operations import OperationExecutor
         from .persistence import upgrade_object_pools

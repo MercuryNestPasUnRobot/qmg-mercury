@@ -2,6 +2,8 @@
 /legacy/
 # Third-party reference code stays local; provenance and indices are versioned
 /resources/upstream/
+# User transcriptions and derived catalogs stay on this machine.
+/local-content/
 /node_modules/
 /dist/
 /.cache/
