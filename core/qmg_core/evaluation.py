@@ -92,6 +92,7 @@ class ScoreEvaluator:
             advantage = max(-1.0, min(1.0, (friendly - hostile) / w["saturation"]))
             controllers = [t for t in pieces if t.position_id in regions
                            and rules.force_controllers[t.owner_country] in site["countries"] and
+                           rules.units[t.definition_id]["kind"] != "AIR" and
                            (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
             control = sign(controllers[0].owner_country) if controllers else 0
             relevant = {rules.force_controllers[t.owner_country] for t in controllers} if controllers else set(site["countries"])

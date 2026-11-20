@@ -1,6 +1,6 @@
 # QMG Mercury · 战场军需官重建
 
-本仓库是 2026-11-19 启动的独立重建项目。Python Core 支持统一 Token 位置、地图与补给查询、串行结算、阻塞选择、能力触发、日志重放及确定性单步 AI 评价。浏览器验收台可运行原创机制场景，包含暗置响应、回合末对象恢复和存档续跑。正式游戏内容包与完整产品界面另属内容和客户端阶段。
+本仓库是 2026-11-19 启动的独立重建项目。Python Core 支持统一 Token 位置、地图与补给查询、串行结算、阻塞选择、能力触发、日志重放及确定性单步 AI 评价。浏览器验收台可运行原创机制场景及本地转录卡库，包含空军、暗置响应、回合末对象恢复和存档续跑。整套转录仅留本地；完整产品界面仍属客户端阶段。
 
 ## 开始运行
 
@@ -22,6 +22,7 @@ npm run core:play
 | --- | --- |
 | [Core 实现与验收](docs/core/implementation-v0.1.md) | 架构职责、API、测试映射、临时工程选择及未定规则 |
 | [固定内容和卡牌存储](docs/core/implementation-v0.1.md#固定内容和卡牌存储) | SQLite 数据库、卡牌效果声明、构建命令及对局日志边界 |
+| [本地整套转录卡库](docs/core/transcribed-content.md) | 276 个定义、380 张牌、导出/迁移/运行命令、来源与验证边界 |
 | [对象池与回合末响应的测试](core/tests/test_object_lifecycle.py) | 核对无限次、一次性和限次副本的 ID、区域移动与中途重放。可运行 `npm run core:test -- tests/test_object_lifecycle.py` |
 | [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
 | `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |

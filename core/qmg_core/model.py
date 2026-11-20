@@ -88,9 +88,13 @@ class GameState:
     serial: int = 0
     winner: str | None = None
     announcements: dict = field(default_factory=dict)
+    turn_start: dict = field(default_factory=dict)
 
     def to_dict(self):
-        return asdict(self)
+        data = asdict(self)
+        if not self.turn_start:
+            del data["turn_start"]
+        return data
 
     @classmethod
     def from_dict(cls, value):

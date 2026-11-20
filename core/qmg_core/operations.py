@@ -1,7 +1,7 @@
 """Atomic rule semantics. All physical changes use ZoneRegistry.transfer."""
 from .definitions import BATTLES, CONSTRUCTION, FORCE_OPERATIONS
-from .model import CoreError, TURN_ORDER, PHASES, ZoneRegistry, zone
-from .rules import board_units, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver
+from .model import CoreError, TURN_ORDER, ZoneRegistry, zone
+from .rules import board_units, capture_turn_start, deployed_zones, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver, unit_rule_matches
 
 
 PREVENTABLE = FORCE_OPERATIONS | {"ELIMINATE"}
@@ -18,7 +18,8 @@ class ScoreResolver:
     def sites(self, state, country):
         pieces = board_units(self.rules, state)
         supplied = SupplyResolver(self.rules).supplied_for_seat(state, country, pieces)
-        units = [piece for piece in pieces if self.rules.force_controllers[piece.owner_country] == country]
+        units = [piece for piece in pieces if self.rules.force_controllers[piece.owner_country] == country
+                 and self.rules.units[piece.definition_id]["kind"] != "AIR"]
         result = {}
         for site_id, site in self.rules.sites.items():
             if site.get("dynamic", False):
@@ -61,7 +62,12 @@ class OperationExecutor:
         result["changes"].append(change)
         source = state.tokens[token_id]
         if source.token_type == "CARD":
-            deployed = (zone(source.owner_country, "STATUS"), zone(source.owner_country, "RESPONSE"))
+            if change["from"] == zone(source.owner_country, "HAND"):
+                for frame in state.stack:
+                    acquired = frame.context.get("search_tokens", [])
+                    if token_id in acquired:
+                        acquired.remove(token_id)
+            deployed = deployed_zones(self.rules, source)
             if destination in deployed and change["from"] not in deployed:
                 for replica in initial_abilities(self.rules, source):
                     if replica.token_id in state.tokens and state.tokens[replica.token_id].position_id != replica.position_id:
@@ -95,6 +101,8 @@ class OperationExecutor:
             token = state.tokens.get(op.get("target_token"))
             if not token or token.token_type != "UNIT" or token.position_id not in self.rules.regions:
                 return "Victim no longer on board"
+            if token.position_id != op.get("expected_from", token.position_id):
+                return "Victim has left the recorded region"
             if op.get("reason") == "unsupplied":
                 if token.token_id in SupplyResolver(self.rules).supplied(state, token.owner_country):
                     return "Supply restored before removal"
@@ -102,6 +110,10 @@ class OperationExecutor:
                 return "Elimination victim not eligible"
         elif op.get("target") not in self.legal.targets(state, country, op):
             return "Battle no longer legal" if kind in BATTLES else "Target no longer legal"
+        if kind in BATTLES and op.get("target_token"):
+            from .air import victim_options
+            if op["target_token"] not in victim_options(self.rules, state, op):
+                return "Selected battle victim no longer eligible"
         return None
 
     def execute(self, state, op, frame):
@@ -113,15 +125,32 @@ class OperationExecutor:
         if kind in CONSTRUCTION:
             target = op.get("target")
             unit_kind = op.get("unit_kind", "NAVY" if kind == "BUILD_NAVY" else "ARMY")
-            token_id = state.positions[zone(op.get("force", country), f"RESERVE_{unit_kind}")][0]
+            force = op.get("force", country)
+            if kind == "BUILD_ARMY" and any(m["kind"] == "recruit_region" and m["region"] == target
+                                           for m in RuleModifierResolver(self.rules).resolve(state, force)):
+                result["event"] = "RECRUIT"
+            token_id = state.positions[zone(force, f"RESERVE_{unit_kind}")][0]
             self.transfer(state, token_id, target, result)
         elif kind in BATTLES:
-            victims = [t for t in board_units(self.rules, state) if t.position_id == op["target"]]
+            unit_kind = "ARMY" if kind == "LAND_BATTLE" else "NAVY"
+            exact = op.get("target_token", op.get("expected_victim"))
+            victims = [t for t in board_units(self.rules, state) if t.position_id == op["target"]
+                       and self.rules.units[t.definition_id]["kind"] == unit_kind and
+                       (not exact or t.token_id == exact) and self.rules.team(t.owner_country) != self.rules.team(country)]
+            result["context"]["attacked_units"] = [t.token_id for t in victims]
+            victims = [t for t in victims if not unit_rule_matches(self.rules, state, t, "protection")]
+            result["context"]["removed_supplied"] = {
+                t.token_id: t.token_id in SupplyResolver(self.rules).supplied(state, t.owner_country)
+                for t in victims}
             for t in victims:
                 self.transfer(state, t.token_id, zone(t.owner_country, "RESERVE_" + self.rules.units[t.definition_id]["kind"]), result)
             result["context"]["victims"] = [t.token_id for t in victims]
         elif kind == "ELIMINATE":
             token = state.tokens[op["target_token"]]
+            if unit_rule_matches(self.rules, state, token, "protection"):
+                return outcome(kind, prevented=True)
+            result["context"]["removed_supplied"] = {
+                token.token_id: token.token_id in SupplyResolver(self.rules).supplied(state, token.owner_country)}
             self.transfer(state, token.token_id, zone(token.owner_country, "RESERVE_" + self.rules.units[token.definition_id]["kind"]), result)
         elif kind == "CREATE":
             source_id = None
@@ -171,7 +200,7 @@ class OperationExecutor:
             amount = op["amount"]
             if type(amount) is not int:
                 raise CoreError("VP must be an integer")
-            self.gain(state, country, amount, result)
+            self.gain(state, op.get("score_country", country), amount, result)
             if not any(active.context.get("closing_turn") for active in state.stack):
                 ScoreResolver(self.rules).terminal(state)
         elif kind == "CANCEL":
@@ -194,6 +223,8 @@ class OperationExecutor:
                     state.turn.round_id += 1
                     scoring.terminal(state, round_end=True)
             state.turn.phase = op["phase"]
+            if op.get("advance_country"):
+                capture_turn_start(self.rules, state)
         else:
             raise CoreError(f"Unsupported executor operation: {kind}")
         return result
@@ -224,7 +255,7 @@ class TurnController:
                    {"type": "BEGIN_PHASE", "phase": "Play", "turn_start": True,
                     "turn_end": True, "advance_country": True}]
         else:
-            next_phase = PHASES[PHASES.index(phase) + 1]
+            next_phase = self.rules.phases[self.rules.phases.index(phase) + 1]
             ops.append({"type": "BEGIN_PHASE", "phase": next_phase})
             if next_phase == "Supply":
                 ops.append({"type": "CHECK_SUPPLY"})
