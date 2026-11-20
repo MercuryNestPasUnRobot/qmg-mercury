@@ -353,7 +353,10 @@ def initialize(rules, seed=1, game_id="fixture-game"):
     state = GameState(game_id, rules.version, tokens, positions, TurnClock(plays_remaining=rules.settings["plays_per_turn"]), {"axis": 0, "allies": 0}, seed)
     for country in TURN_ORDER:
         deck = zone(country, "DECK")
+        hand = zone(country, "HAND")
         for token_id in positions[deck][:rules.settings["initial_hand"]]:
-            ZoneRegistry.transfer(state, token_id, zone(country, "HAND"))
+            ZoneRegistry.transfer(state, token_id, hand)
+        if len(positions[hand]) < rules.settings["setup_discard"]:
+            raise CoreError(f"Not enough cards for setup: {country}")
     validate_state(rules, state)
     return state

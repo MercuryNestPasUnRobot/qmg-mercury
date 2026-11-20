@@ -106,8 +106,6 @@ class CommandProcessor:
         count = rules.settings["setup_discard"]
         if count:
             state = obj._state
-            if any(len(state.positions[zone(c, "HAND")]) < count for c in TURN_ORDER):
-                raise CoreError("Not enough cards for setup")
             state.turn.phase = "Setup"
             state.stack.append(CardInterpreter.frame(state, TURN_ORDER[0], None, [{"type": "SETUP_DONE"}]))
             for country in reversed(TURN_ORDER):

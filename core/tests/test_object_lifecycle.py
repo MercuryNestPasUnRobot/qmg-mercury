@@ -4,8 +4,9 @@ from dataclasses import replace
 import pytest
 
 from conftest import card, choose, finish_choices, make, move_initial, play
-from qmg_core import CoreError, OperationLogger, SaveRepository, observation, validate_state
+from qmg_core import CoreError, OperationLogger, RuleSet, SaveRepository, observation, validate_state
 from qmg_core.api import simulation_from_observation
+from qmg_core.catalog import ContentCatalog
 from qmg_core.model import TURN_ORDER, ZoneRegistry
 from qmg_core.engine import CommandProcessor
 
@@ -58,7 +59,8 @@ def test_two_independent_uses_wait_resolve_recreate_and_repeat(tmp_path, data):
     configure(data, copies=2, renewal=True)
     # Keep this exercise's hand between seat turns.
     data["settings"].update(hand_limit=12, victory_margin=0, deck_exhaustion_vp=0)
-    p = make(data)
+    catalog = ContentCatalog.build(RuleSet(data), tmp_path / "content" / "rules.sqlite3")
+    p = CommandProcessor.create(RuleSet.load(catalog))
     originals = set(p.state.positions["germany:ABILITY_READY"])
     assert len(originals) == 2
     play(p, "g-battle")

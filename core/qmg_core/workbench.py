@@ -8,7 +8,7 @@ from uuid import uuid4
 import json
 
 from .api import CoreAPI
-from .definitions import RuleSet
+from .catalog import ContentCatalog
 from .engine import CommandProcessor
 from .evaluation import OneStepPlanner, SimulationIncomplete
 from .model import CoreError, TURN_ORDER, zone
@@ -17,6 +17,7 @@ from .persistence import OperationLogger, SaveRepository
 
 SEAT = ("germany",)
 DATA = Path(__file__).resolve().parent.parent / "data"
+CATALOG_CACHE = DATA.parent.parent / ".cache" / "core-data"
 COUNTRY_NAMES = dict(zip(TURN_ORDER, ("德国", "英国", "日本", "苏联", "意大利", "美国")))
 CARD_NAMES = {
     "g-build": "部署陆军", "g-chain": "计分与部署", "g-battle": "陆战演练",
@@ -101,7 +102,8 @@ class Workbench:
             if token["token_type"] == "UNIT":
                 owner = COUNTRY_NAMES[token["owner_country"]]
                 return escape(f"{owner} · {'陆军' if self.processor.rules.units[definition]['kind'] == 'ARMY' else '海军'}")
-            return escape(CARD_NAMES.get(definition, definition))
+            card = self.processor.rules.cards.get(definition, {})
+            return escape(card.get("title") or CARD_NAMES.get(definition, definition))
 
         def button(action, label, index=None):
             choice = "" if index is None else f'<input type="hidden" name="choice" value="{index}">'
@@ -238,8 +240,14 @@ def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=5184)
     parser.add_argument("--save-dir", type=Path, default=Path("../.cache/core-workbench"))
+    parser.add_argument("--catalog", type=Path, help="Read a compiled SQLite rules catalog")
     args = parser.parse_args()
-    rules = RuleSet.load(DATA / "architecture_fixture.json")
+    save_directory = args.save_dir.resolve()
+    content_path = args.catalog.resolve() if args.catalog else CATALOG_CACHE
+    if save_directory.is_relative_to(DATA) or content_path.is_relative_to(save_directory):
+        parser.error("Keep the rules catalog outside the match save directory")
+    rules = (ContentCatalog.load(args.catalog) if args.catalog else
+             ContentCatalog.cached(DATA / "architecture_fixture.json", CATALOG_CACHE))
     weights = json.loads((DATA / "evaluation_weights.json").read_text(encoding="utf-8"))
     with make_server(Workbench(args.save_dir, rules, weights), args.port) as server:
         print(f"Mercury Core: http://127.0.0.1:{server.server_port}", flush=True)

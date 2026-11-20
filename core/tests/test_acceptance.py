@@ -12,6 +12,7 @@ import pytest
 
 from conftest import card, choose, finish_choices, make, move_initial, play
 from qmg_core import CoreError, MapGraph, OperationLogger, RuleSet, SaveRepository, SupplyResolver, observation
+from qmg_core.catalog import ContentCatalog
 from qmg_core.model import TURN_ORDER, zone
 from qmg_core.workbench import Workbench, make_server
 
@@ -395,15 +396,17 @@ def test_browser_ai_executes_and_records_the_same_core_command(tmp_path, data, w
 
 
 def test_browser_default_turn_end_response_survives_restart(tmp_path, data, weights):
-    rules = RuleSet(data)
-    session = Workbench(tmp_path, rules, weights)
+    card(data, "g-restore")["title"] = "盖放接续响应"
+    catalog = ContentCatalog.build(RuleSet(data), tmp_path / "catalog" / "rules.sqlite3")
+    save_directory = tmp_path / "match"
+    session = Workbench(save_directory, RuleSet.load(catalog), weights)
     with http(session) as connection:
         def click(label):
             _, page = request(connection, "GET")
             path, fields = Forms(page).forms[label]
             assert request(connection, "POST", path, fields)[0] == 303
 
-        click("盖放回合末恢复")
+        click("盖放接续响应")
         while session.processor.state.turn.phase != "Draw":
             click("结束阶段")
             while session.processor.state.decision:
@@ -423,7 +426,7 @@ def test_browser_default_turn_end_response_survives_restart(tmp_path, data, weig
         assert {"token_id": "g-return", "from": zone("germany", "SET_ASIDE"), "to": zone("germany", "RESPONSE")} in settled["outcome"]["changes"]
         assert {"token_id": "g-return", "from": zone("germany", "RESPONSE"), "to": "RESOLUTION"} in reveal["outcome"]["changes"]
         assert settled["sequence_id"] < reveal["sequence_id"]
-    resumed = Workbench(tmp_path, rules, weights)
+    resumed = Workbench(save_directory, RuleSet.load(catalog), weights)
     with http(resumed) as connection:
         _, page = request(connection, "GET")
         assert "选择 B" in Forms(page).forms and "选择 C" in Forms(page).forms

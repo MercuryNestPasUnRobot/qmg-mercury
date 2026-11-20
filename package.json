@@ -10,6 +10,7 @@
     "core:test": "node tools/core.mjs test",
     "core:demo": "node tools/core.mjs demo",
     "core:play": "node tools/core.mjs play",
+    "core:data": "node tools/core.mjs data",
     "dev": "node --watch src/server.ts",
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.build.json",

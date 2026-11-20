@@ -66,12 +66,13 @@ class RuleSet:
         for card in self.cards.values():
             if card["country"] not in self.countries or card["type"] not in ("EVENT", "STATUS", "RESPONSE"):
                 raise CoreError("Invalid card")
+            if "title" in card and (not isinstance(card["title"], str) or not card["title"].strip()):
+                raise CoreError("Card title must be non-empty text")
             if card["failure_policy"] not in ("stop", "continue"):
                 raise CoreError("Explicit card failure policy required")
             if "after" in card and card["after"] not in ("origin", "delete"):
                 raise CoreError("Invalid card settlement")
-            self._effects(card["effects"])
-            self._completion_transfers(card.get("on_settle", []))
+            self._programs(card)
             if any(a not in self.abilities for a in card.get("abilities", [])):
                 raise CoreError("Unknown ability")
             if card["type"] == "RESPONSE" and (card["effects"] or not card.get("abilities")) and not card.get("simulation_unknown"):
@@ -107,8 +108,7 @@ class RuleSet:
                 raise CoreError("Pool capacity must be a positive integer")
             if type(ability["priority"]) is not int or type(ability.get("discard_cost", 0)) is not int or ability.get("discard_cost", 0) < 0:
                 raise CoreError("Explicit ability priority and nonnegative cost required")
-            self._effects(ability["effects"])
-            self._completion_transfers(ability.get("on_settle", []))
+            self._programs(ability)
             trigger = ability["trigger"]
             if not set(trigger) <= {"operation_type", "announced_type", "actor", "target_owner", "source_definition_id", "turn_start"} or trigger.get("actor", "any") not in ("self", "enemy", "any") or trigger.get("target_owner", "self") != "self":
                 raise CoreError("Unsupported trigger predicate")
@@ -173,7 +173,11 @@ class RuleSet:
 
     @classmethod
     def load(cls, path):
-        return cls(json.loads(Path(path).read_text(encoding="utf-8")))
+        path = Path(path)
+        if path.suffix.lower() in (".sqlite", ".sqlite3", ".db"):
+            from .catalog import ContentCatalog
+            return ContentCatalog.load(path)
+        return cls(json.loads(path.read_text(encoding="utf-8")))
 
     def team(self, country):
         return self.countries[country]["team"]
@@ -218,7 +222,17 @@ class RuleSet:
             if op["type"] in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE") and op.get("target") != "$choice" and op.get("target") not in self.regions:
                 raise CoreError("Unknown target region")
 
-    def _completion_transfers(self, effects):
-        self._effects(effects)
-        if any(effect["type"] not in ("TRANSFER", "CREATE") or effect.get("destination") == "$choice" for effect in effects):
-            raise CoreError("Settlement requires a concrete transfer or creation")
+    def _programs(self, definition):
+        for stage in ("effects", "on_settle"):
+            effects = definition.get(stage, [] if stage == "on_settle" else None)
+            context = f"{definition['id']}.{stage}"
+            if not isinstance(effects, list):
+                raise CoreError(f"{context} must be an ordered list")
+            for index, effect in enumerate(effects):
+                try:
+                    self._effects([effect])
+                    if stage == "on_settle" and (effect["type"] not in ("TRANSFER", "CREATE")
+                                                 or effect.get("destination") == "$choice"):
+                        raise CoreError("Settlement requires a concrete transfer or creation")
+                except (KeyError, TypeError, AttributeError, CoreError) as error:
+                    raise CoreError(f"{context}[{index}]: {error}") from error
