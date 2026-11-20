@@ -96,7 +96,7 @@ def compile_transcriptions(export):
             ability_id = "use-" + key
             definition["abilities"].append(ability_id)
             ability = {"id": ability_id, "activation_mode": "OPTIONAL",
-                       "after": "origin" if kind == "status" else "delete", "priority": 100 + index,
+                       "after": "origin" if kind == "status" else "delete", "priority": 100,
                        "trigger": {"operation_type": "CARD_EVENT", "card_trigger": trigger},
                        "effects": [instruction(effect) for effect in effects] if not gaps else []}
             if kind == "bolster":

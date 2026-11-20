@@ -341,6 +341,19 @@ def available_options(rules, state, country, effect, context=None):
 def can_begin(rules, state, country, effect, context=None):
     if not condition_met(rules, state, country, effect.get("when")):
         return False
+    context = context or {}
+    event = context.get("event", {})
+    kind = effect["type"]
+    if kind == "eliminate-built-unit":
+        return built_target(rules, state, context) is not None
+    if kind == "eliminate-air-superiority-attacker":
+        return superiority_attacker(rules, state, event) is not None
+    if kind in ("disable-triggered-status", "discard-triggered-status"):
+        source = state.tokens.get(event.get("source_token_id"))
+        return source is not None and source.position_id == zone(source.owner_country, "STATUS")
+    if kind == "prevent-removal":
+        announced = state.announcements.get(event.get("announcement_id"))
+        return bool(announced and not announced["cancelled"])
     if effect["type"] in ("build", "recruit", "choose-space", "battle", "choose-unit", "choose-one", "battle-series",
                           "stage-bolster", "play-from-zone", "recover-discard", "discard-response", "discard-status", "air-action"):
         return bool(available_options(rules, state, country, effect, context)) or effect.get("optional", False)
@@ -349,6 +362,21 @@ def can_begin(rules, state, country, effect, context=None):
     if effect["type"] == "choose-country":
         return bool(available_options(rules, state, country, effect, context)) or effect.get("skipIfNoTarget", False)
     return True
+
+
+def built_target(rules, state, context):
+    for change in context.get("event_outcome", {}).get("changes", []):
+        token = state.tokens[change["token_id"]]
+        if token.token_type == "UNIT" and change["to"] in rules.regions and token.position_id == change["to"]:
+            return token.token_id
+    return None
+
+
+def superiority_attacker(rules, state, event):
+    token = state.tokens.get(event.get("attacker_token"))
+    if token and token.position_id in rules.regions and token.position_id == event.get("air_origin", token.position_id):
+        return token
+    return None
 
 
 def execute_effect(engine, state, frame, op):
@@ -373,9 +401,9 @@ def execute_effect(engine, state, frame, op):
             {"type": "AIR_ACTION_SELECTED", "effect": effect}, op["operation_id"]), False
     if kind == "eliminate-air-superiority-attacker":
         event = frame.context.get("event", {})
-        token = state.tokens.get(event.get("attacker_token"))
-        if token is None or token.position_id not in rules.regions:
-            return outcome_failure("ELIMINATE", "Air attacker is no longer on board"), False
+        token = superiority_attacker(rules, state, event)
+        if token is None:
+            return outcome_failure("ELIMINATE", "Air attacker has left the recorded region"), False
         frame.remaining_operations.append({"type": "ELIMINATE", "target_token": token.token_id, "allow_friendly": True})
         return outcome("EFFECT_EXPANDED"), False
     if kind == "forbid-air-defense-this-turn":
@@ -544,9 +572,7 @@ def execute_effect(engine, state, frame, op):
                 engine.executor.transfer(state, response.token_id, zone(owner, "RESPONSE"), result)
         return result, True
     if kind == "eliminate-built-unit":
-        event = frame.context.get("event_outcome", {})
-        target = next((c["token_id"] for c in event.get("changes", [])
-                       if c["to"] in rules.regions and state.tokens[c["token_id"]].token_type == "UNIT"), None)
+        target = built_target(rules, state, frame.context)
         if target is None:
             return outcome_failure("ELIMINATE", "No recorded built unit"), False
         frame.remaining_operations.append({"type": "ELIMINATE", "target_token": target, "allow_friendly": True})

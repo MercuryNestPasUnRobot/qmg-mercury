@@ -115,8 +115,12 @@ def test_turn_end_response_restores_original_unit_and_listener_finishes_before_n
     assert restoration["sequence_id"] < bonus["sequence_id"] < transition["sequence_id"]
     assert restoration["outcome"]["changes"] == [
         {"token_id": "germany-army-2", "from": "germany:RESERVE_ARMY", "to": "B"},
-        {"token_id": "ability:g-status:g-extra", "from": "germany:ABILITY_READY", "to": "germany:ABILITY_PENDING"},
     ]
+    queued = next(r for r in records if any(
+        move == {"token_id": "ability:g-status:g-extra", "from": "germany:ABILITY_READY", "to": "germany:ABILITY_PENDING"}
+        for move in r["outcome"]["changes"]))
+    assert queued["operation_type"] == "RESPONSE_QUEUED"
+    assert restoration["sequence_id"] < queued["sequence_id"] < bonus["sequence_id"]
     assert SaveRepository.recover(checkpoint, p.rules, journal).state.to_dict() == resumed.state.to_dict()
 
 
@@ -415,7 +419,7 @@ def test_browser_default_turn_end_response_survives_restart(tmp_path, data, weig
                 choices = Forms(page).forms
                 click(next(label for label, (_, fields) in choices.items() if fields["action"] == "human"))
         click("结束阶段")
-        click("使用能力")
+        click("发动 盖放接续响应")
         assert session.processor.state.turn.turn_id == 1
         assert session.processor.state.tokens["g-restore"].position_id == zone("germany", "DISCARD")
         assert session.processor.state.tokens["g-return"].position_id == "RESOLUTION"
