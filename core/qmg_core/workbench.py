@@ -129,10 +129,16 @@ class Workbench:
         hand = view["positions"][zone(SEAT[0], "HAND")]["tokens"]
         plays = {c["card"]: i for i, c in enumerate(commands) if c["type"] == "PLAY_CARD"}
         hand_view = [button("human", token_name(t), plays[t]) if t in plays else f'<span class="card">{token_name(t)}</span>' for t in hand]
+        decision = view["decision"]
+        response_sources = (decision or {}).get("response_sources", {})
         options = []
         for i, command in enumerate(commands):
             if command["type"] == "CHOOSE" and command["option"] not in regions:
-                label = {"use": "使用能力", "decline": "放弃能力"}.get(command["option"], token_name(command["option"]))
+                option = command["option"]
+                if option in response_sources:
+                    label = f'发动 {token_name(response_sources[option])}'
+                else:
+                    label = {"use": "使用能力", "decline": "放弃能力"}.get(option, token_name(option))
                 options.append(button("human", label, i))
             elif command["type"] == "END_PHASE":
                 options.append(button("human", "结束阶段", i))
@@ -144,10 +150,9 @@ class Workbench:
                 options.append(button("human", f'空军行动 {COUNTRY_NAMES.get(command["force"], command["force"])}', i))
             elif command["type"] == "REALLOCATE":
                 options.append(button("human", "调配资源", i))
-        decision = view["decision"]
         waiting = f'等待 {COUNTRY_NAMES[decision["required_country"]]} 选择' if decision else "本阶段行动"
         if decision and "decision_type" in decision:
-            kind = {"ABILITY": "使用或放弃能力", "COST": "选择支付牌", "TARGET": "选择合法目标",
+            kind = {"ABILITY": "使用或放弃能力", "RESPONSE_ORDER": "选择先发动的响应", "COST": "选择支付牌", "TARGET": "选择合法目标",
                     "REDEPLOY_TARGET": "选择重新部署地区", "REDEPLOY_UNIT": "选择重新部署单位"}.get(decision["decision_type"], "")
             waiting += f" · {kind}" if kind else ""
         resolution = " → ".join(token_name(frame["source"]) for frame in view["resolution"])

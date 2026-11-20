@@ -80,7 +80,8 @@ def execute_air(engine, state, frame, op):
         elif action == "marshal":
             engine.executor.transfer(state, attacker, target, result)
         event = {"type": "AIR_ACTION_FINISHED", "air_action": action, "force": force,
-                 "target": target, "attacker_token": attacker, "victim": victim}
+                 "target": target, "attacker_token": attacker, "victim": victim,
+                 "air_origin": state.tokens[attacker].position_id if attacker else None}
         frame.remaining_operations.append(event)
         if action == "superiority" and victim:
             frame.remaining_operations.append({"type": "ELIMINATE", "target_token": victim,

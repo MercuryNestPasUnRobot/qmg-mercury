@@ -2,7 +2,7 @@ from collections import deque
 from copy import deepcopy
 
 from .definitions import BATTLES, CONNECTION_USES, CONSTRUCTION, FORCE_OPERATIONS, TARGETED_OPERATIONS
-from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, ZoneRegistry, zone, shuffle
+from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, zone, shuffle
 
 
 def auxiliary_reserves(rules):
@@ -483,6 +483,16 @@ def validate_state(rules, state, *, legacy_snapshot=False):
             raise CoreError("Invalid resolution lineage")
         if frame.source_card_id and (frame.source_card_id not in state.tokens or state.tokens[frame.source_card_id].token_type != "CARD"):
             raise CoreError("Invalid frame source")
+        if "response_candidates" in frame.context:
+            candidates = frame.context["response_candidates"]
+            if (not isinstance(candidates, list) or any(not isinstance(key, str) for key in candidates)
+                    or len(candidates) != len(set(candidates))
+                    or any(key not in state.tokens or state.tokens[key].token_type not in ("ABILITY", "RULE") for key in candidates)
+                    or not isinstance(frame.context.get("event"), dict)
+                    or not isinstance(frame.context.get("event_outcome"), dict)):
+                raise CoreError("Invalid response window")
+            if frame.source_card_id is not None or type(frame.context.get("active_response_used", False)) is not bool:
+                raise CoreError("Invalid response window owner or usage")
     if state.decision and (state.decision.resolution_id not in frame_ids or not state.decision.legal_options or
                            state.decision.required_country not in rules.countries):
         raise CoreError("Unresumable decision")
@@ -537,6 +547,8 @@ def initial_inventory(rules, projected):
 
 
 def initialize(rules, seed=1, game_id="fixture-game"):
+    from .operations import OperationExecutor, outcome
+
     positions = {p: [] for p in rules.regions}
     positions.update({zone(c, z): [] for c in TURN_ORDER for z in ZONES})
     positions.update({position: [] for position in sorted(auxiliary_reserves(rules))})
@@ -552,11 +564,13 @@ def initialize(rules, seed=1, game_id="fixture-game"):
         deck = zone(country, "DECK")
         positions[deck], seed = shuffle(positions[deck], seed & 0xFFFFFFFF)
     state = GameState(game_id, rules.version, tokens, positions, TurnClock(plays_remaining=rules.settings["plays_per_turn"]), {"axis": 0, "allies": 0}, seed)
+    executor = OperationExecutor(rules)
+    deal = outcome("INITIAL_DEAL")
     for country in TURN_ORDER:
         deck = zone(country, "DECK")
         hand = zone(country, "HAND")
         for token_id in positions[deck][:rules.settings["initial_hand"]]:
-            ZoneRegistry.transfer(state, token_id, hand)
+            executor.transfer(state, token_id, hand, deal)
         if len(positions[hand]) < rules.settings["setup_discard"]:
             raise CoreError(f"Not enough cards for setup: {country}")
     validate_state(rules, state)

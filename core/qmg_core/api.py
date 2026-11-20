@@ -72,6 +72,11 @@ def observation(processor, controlled_countries):
             decision.update(decision_id=s.decision.decision_id, decision_type=s.decision.decision_type,
                             legal_options=list(s.decision.legal_options), optional_flag=s.decision.optional_flag,
                             operation_type=s.decision.continuation["type"])
+            if s.decision.continuation["type"] == "RESPONSE_SELECTED":
+                candidates = s.decision.continuation["candidates"]
+                decision["response_sources"] = {
+                    "use" if len(candidates) == 1 else key: s.tokens[key].source_token_id for key in candidates
+                }
     resolution = []
     for frame in s.stack:
         ability_id = frame.context.get("ability_token")

@@ -1,8 +1,9 @@
 """One serial executor shared by human clients and AI. No callbacks execute data."""
 from copy import deepcopy
+from dataclasses import replace
 
 from .model import CoreError, DecisionRequest, ResolutionFrame, TURN_ORDER, digest, zone
-from .rules import LegalActionGenerator, SupplyResolver, board_units, deployed_zones, initialize, status_enabled, validate_state
+from .rules import LegalActionGenerator, SupplyResolver, board_units, initialize, status_enabled, validate_state
 from .operations import BATTLES, PREVENTABLE, OperationExecutor, ScoreResolver, TurnController, outcome, outcome_failure
 
 
@@ -21,13 +22,11 @@ class AbilityScanner:
     def __init__(self, rules):
         self.rules = rules
 
-    def scan(self, state, op, result, source_frame, executor):
-        if not result["success"] or state.winner:
-            return
+    def candidates(self, state, op, result, tokens):
         matches = []
         reserved = {f.context.get("ability_token") for f in state.stack}
         selected = set()
-        for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
+        for token in tokens:
             if token.token_type not in ("ABILITY", "RULE") or token.token_id in reserved or token.position_id not in (
                     zone(token.owner_country, "ABILITY_READY"), zone(token.owner_country, "RESPONSE")):
                 continue
@@ -38,7 +37,8 @@ class AbilityScanner:
             source_definition = self.rules.cards.get(source.definition_id, {})
             if source_definition.get("implementation", {}).get("status") == "blocked":
                 continue
-            if token.token_type == "ABILITY" and source_definition.get("type") == "STATUS" and not status_enabled(self.rules, state, source):
+            if (token.token_type == "ABILITY" and not ability.get("system_response")
+                    and source_definition.get("type") == "STATUS" and not status_enabled(self.rules, state, source)):
                 continue
             if token.token_type != "RULE" and source.position_id not in {zone(token.owner_country, z) for z in ability.get("listener_scope", ("STATUS", "RESPONSE"))}:
                 continue
@@ -82,23 +82,112 @@ class AbilityScanner:
                     continue
                 selected.add(group)
             matches.append((ability["priority"], token.token_id, token, ability))
-        # Priorities are content data, not inferred official response precedence.
-        priorities = {(priority, ability["id"]) for priority, _, _, ability in matches}
-        if len({priority for priority, _ in priorities}) != len(priorities):
-            raise CoreError("Ambiguous simultaneous ability priorities; content must specify an order")
-        frames = []
-        for _, _, token, ability in sorted(matches):
-            if token.position_id == zone(token.owner_country, "ABILITY_READY"):
-                executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_PENDING"), result)
-            source_id = None if token.token_type == "RULE" else token.source_token_id
-            frames.append(CardInterpreter.frame(state, token.owner_country, source_id,
-                          [{"type": "ACTIVATE_ABILITY"}], source_frame.resolution_id if source_frame else None,
-                          {"ability_token": token.token_id, "origin": token.position_id,
-                           "bound_source": token.source_token_id,
-                           "failure_policy": self.rules.cards[state.tokens[token.source_token_id].definition_id]["failure_policy"]
-                           if token.token_type == "ABILITY" else "stop",
-                           "event": deepcopy(op), "event_outcome": deepcopy(result)}))
-        state.stack.extend(reversed(frames))
+        return matches
+
+    def scan(self, state, op, result, source_frame):
+        if not result["success"] or state.winner:
+            return
+        matches = self.candidates(state, op, result, sorted(state.tokens.values(), key=lambda token: token.token_id))
+        if not matches:
+            return
+        # A candidate remains in its own zone until selected. It can answer a nested
+        # event while this window is suspended, and its live position is checked again.
+        active = TURN_ORDER[state.turn.country_index]
+        window = CardInterpreter.frame(
+            state, active, None, [{"type": "NEXT_RESPONSE"}], source_frame.resolution_id if source_frame else None,
+            {"event": op, "event_outcome": result, "response_candidates": [key for _, key, _, _ in matches]},
+        )
+        state.stack.append(window)
+
+    def groups(self, state, window):
+        active = state.turn.country_index
+        groups = {}
+        for key in window.context["response_candidates"]:
+            token = state.tokens[key]
+            ability = self.rules.abilities[token.definition_id]
+            optional = ability["activation_mode"] == "OPTIONAL"
+            seat_order = (TURN_ORDER.index(token.owner_country) - active) % len(TURN_ORDER)
+            order = (ability["priority"], seat_order, optional)
+            groups.setdefault(order, []).append(token)
+        return [groups[key] for key in sorted(groups)]
+
+    def eligible(self, state, window, tokens, executor):
+        event, result = window.context["event"], window.context["event_outcome"]
+        if event["type"] == "ANNOUNCE":
+            announced = state.announcements.get(event["announcement_id"])
+            if not announced or announced["cancelled"] or executor.target_failure(
+                    state, {**event, "type": event["announced_type"]}):
+                return []
+        if event["type"] in ("CARD_DECLARED", "ECONOMIC_PLAY", "ECONOMIC_TARGET"):
+            parent = next((f for f in state.stack if f.resolution_id == event["resolution_id"]), None)
+            if parent is None or parent.context.get("invalidated") or parent.context.get("effect_cancelled") or (
+                    parent.context.get("economic", {}).get("cancelled")):
+                return []
+        active = TURN_ORDER[state.turn.country_index]
+        return [token for _, _, token, ability in self.candidates(state, event, result, tokens)
+                if not (window.context.get("active_response_used") and token.owner_country == active and
+                        ability["activation_mode"] == "OPTIONAL")
+                and self.can_activate(state, window, token, executor)]
+
+    def can_activate(self, state, frame, token, executor):
+        from .content_effects import can_begin, condition_met, event_effect
+        from .definitions import TARGETED_OPERATIONS
+        ability = self.rules.abilities[token.definition_id]
+        if ability.get("system_response"):
+            return True
+        source = state.tokens[token.source_token_id]
+        country = token.owner_country
+        card = self.rules.cards.get(source.definition_id, {})
+        if not condition_met(self.rules, state, country, card.get("content_condition")):
+            return False
+        hand_costs = [key for key in state.positions[zone(country, "HAND")] if key != source.token_id]
+        if len(hand_costs) < executor.activation_cost(state, token):
+            return False
+        if ability["activation_mode"] == "AUTO":
+            return True
+        context = {**frame.context, "excluded_card": source.token_id, "ability_token": token.token_id,
+                   "bound_source": source.token_id}
+        candidate = replace(frame, actor_country=country, context=context)
+        for step in ability["effects"]:
+            if step["type"] == "CARD_EFFECT":
+                effect = event_effect(step["effect"], candidate)
+                chooser = effect.get("chooser", country)
+                if not can_begin(self.rules, state, chooser, effect, context):
+                    return False
+                # These payments do not move units or change map rules. Check the
+                # first real effect before asking the player to pay for it.
+                if effect["type"] in ("discard-hand", "discard-top", "discard-top-per-unit"):
+                    continue
+                return True
+            template = step.get("operation", step)
+            if template["type"] == "CANCEL":
+                operation = CommandProcessor._resolve(template, candidate)
+                announcement = state.announcements.get(operation["announcement_id"])
+                return bool(announcement and not announcement["cancelled"])
+            if template["type"] in TARGETED_OPERATIONS:
+                operation = CommandProcessor._resolve(template, candidate)
+                if step["type"] == "CHOOSE":
+                    return bool(executor.legal.targets(state, country, operation))
+                if operation["type"] in PREVENTABLE:
+                    return executor.target_failure(state, {**operation, "actor_country": country}) is None
+                return operation.get("destination", operation.get("target_token")) in executor.legal.targets(
+                    state, country, operation)
+            return True
+        return True
+
+    def open_frame(self, state, window, token, executor, result):
+        origin = token.position_id
+        if origin == zone(token.owner_country, "ABILITY_READY"):
+            executor.transfer(state, token.token_id, zone(token.owner_country, "ABILITY_PENDING"), result)
+        source = state.tokens[token.source_token_id]
+        source_id = source.token_id if token.token_type == "ABILITY" else None
+        state.stack.append(CardInterpreter.frame(
+            state, token.owner_country, source_id, [{"type": "ACTIVATE_SELECTED", "use": True}],
+            window.resolution_id,
+            {"ability_token": token.token_id, "origin": origin, "bound_source": source.token_id,
+             "failure_policy": self.rules.cards[source.definition_id]["failure_policy"] if source_id else "stop",
+             "event": window.context["event"], "event_outcome": window.context["event_outcome"]},
+        ))
 
 
 class CommandProcessor:
@@ -145,6 +234,8 @@ class CommandProcessor:
             legacy_changes = upgrade_object_pools(draft, self.rules, self.executor)
         result = apply(draft)
         result["changes"][:0] = legacy_changes
+        if "response_country" in result["context"]:
+            operation["actor_country"] = result["context"]["response_country"]
         if draft.winner and not self._state.winner:
             self._close_terminal_resolution(draft, result)
         draft.version += 1
@@ -193,8 +284,16 @@ class CommandProcessor:
         s = self._state
         if s.winner:
             return []
+        active = TURN_ORDER[s.turn.country_index]
+        decision_frame = s.stack[-1] if s.decision else None
+        consumed_interrupt = decision_frame and (
+            decision_frame.context.get("active_response_used")
+            if "response_candidates" in decision_frame.context else
+            decision_frame.context.get("active_interrupt_at") == s.decision.originating_operation_id
+        )
         interrupts = []
-        if s.turn.phase != "Setup" and sum(f.context.get("interrupt_anchor", False) for f in s.stack) < 4:
+        if (s.turn.phase != "Setup" and (s.decision or not s.stack)
+                and sum(f.context.get("interrupt_anchor", False) for f in s.stack) < 4):
             reserved = {f.context.get("ability_token") for f in s.stack}
             for token in s.tokens.values():
                 if (token.token_type != "ABILITY" or token.owner_country not in controlled_countries
@@ -208,12 +307,18 @@ class CommandProcessor:
                     continue
                 if trigger.get("ownTurnOnly") and TURN_ORDER[s.turn.country_index] != token.owner_country:
                     continue
-                if source.position_id not in deployed_zones(self.rules, source):
+                if token.owner_country == active and consumed_interrupt:
+                    continue
+                if source.position_id not in {zone(token.owner_country, kind) for kind in ability.get("listener_scope", ("STATUS", "RESPONSE"))}:
                     continue
                 if card["type"] == "STATUS" and not status_enabled(self.rules, s, source):
                     continue
-                interrupts.append({"type": "ACTIVATE_CARD", "actor": token.owner_country,
-                                   "expected_version": s.version, "card": source.token_id})
+                candidate = ResolutionFrame("", source.token_id, token.owner_country, [])
+                if AbilityScanner(self.rules).can_activate(s, candidate, token, self.executor):
+                    command = {"type": "ACTIVATE_CARD", "actor": token.owner_country,
+                               "expected_version": s.version, "card": source.token_id}
+                    if command not in interrupts:
+                        interrupts.append(command)
         if s.decision:
             d = s.decision
             if d.required_country not in controlled_countries:
@@ -285,6 +390,12 @@ class CommandProcessor:
                     t.position_id == zone(country, "ABILITY_READY") and
                     self.rules.abilities[t.definition_id]["trigger"].get("card_trigger", {}).get("type") == "any-time")
                 parent_id = s.stack[-1].resolution_id if s.stack else None
+                if s.decision and country == TURN_ORDER[s.turn.country_index]:
+                    pending = s.stack[-1]
+                    if "response_candidates" in pending.context:
+                        pending.context["active_response_used"] = True
+                    else:
+                        pending.context["active_interrupt_at"] = s.decision.originating_operation_id
                 context = {"interrupt_anchor": True, "suspended_decision": deepcopy(s.decision.__dict__) if s.decision else None}
                 anchor = CardInterpreter.frame(s, country, None, [{"type": "RESTORE_INTERRUPTED_DECISION"}],
                                                parent_id, context=context)
@@ -304,7 +415,7 @@ class CommandProcessor:
                 continuation = deepcopy(d.continuation)
                 if continuation["type"] == "ACTIVATE_SELECTED":
                     continuation["use"] = option == "use"
-                elif continuation["type"] in ("CARD_EFFECT_SELECTED", "PAYMENT_SELECTED", "ORDER_DECK_SELECTED", "RETURN_CARD_SELECTED", "BATTLE_ORDER_SELECTED", "COUNTRY_LOSS_SELECTED",
+                elif continuation["type"] in ("RESPONSE_SELECTED", "CARD_EFFECT_SELECTED", "PAYMENT_SELECTED", "ORDER_DECK_SELECTED", "RETURN_CARD_SELECTED", "BATTLE_ORDER_SELECTED", "COUNTRY_LOSS_SELECTED",
                                                "BATTLE_VICTIM_SELECTED", "AIR_ACTION_SELECTED", "AIR_DEFENSE_SELECTED", "AIR_COUNTER_SELECTED", "AIR_REBASE_SELECTED", "REALLOCATION_SELECTED", "EXTRA_MODE_SELECTED"):
                     continuation["choice"] = option
                 elif continuation["type"] == "REDEPLOY_SELECTED":
@@ -350,12 +461,12 @@ class CommandProcessor:
                 s.stack.append(frame)
                 result["context"]["resolution_id"] = frame.resolution_id
                 s.turn.plays_remaining -= 1
-                AbilityScanner(self.rules).scan(s, op, result, frame, self.executor)
+                AbilityScanner(self.rules).scan(s, op, result, frame)
                 return result
             country, operations, result = TurnController(self.rules).next_phase(s)
             frame = CardInterpreter.frame(s, country, None, operations, context={"closing_turn": result["context"]["phase"] == "Draw"})
             s.stack.append(frame)
-            AbilityScanner(self.rules).scan(s, op, result, frame, self.executor)
+            AbilityScanner(self.rules).scan(s, op, result, frame)
             return result
         self._commit(op, apply)
         if auto_resolve:
@@ -370,6 +481,50 @@ class CommandProcessor:
         s.decision = DecisionRequest(s.new_id("decision"), frame.actor_country, kind, list(options),
                                      operation_id, frame.resolution_id, optional, deepcopy(continuation))
         return outcome("DECISION_REQUESTED", decision_type=kind)
+
+    def _next_response(self, state, window, op):
+        scanner = AbilityScanner(self.rules)
+        remaining = window.context["response_candidates"]
+        for group in scanner.groups(state, window):
+            eligible = scanner.eligible(state, window, group, self.executor)
+            if not eligible:
+                for token in group:
+                    remaining.remove(token.token_id)
+                continue
+            first = eligible[0]
+            window.actor_country = first.owner_country
+            if self.rules.abilities[first.definition_id]["activation_mode"] == "AUTO":
+                remaining.remove(first.token_id)
+                window.remaining_operations.append({"type": "NEXT_RESPONSE"})
+                result = outcome("RESPONSE_QUEUED", response_country=first.owner_country)
+                scanner.open_frame(state, window, first, self.executor, result)
+                return result
+            keys = [token.token_id for token in eligible]
+            options = ["decline", "use"] if len(keys) == 1 else ["decline", *keys]
+            result = self._request(state, window, "ABILITY" if len(keys) == 1 else "RESPONSE_ORDER", options,
+                                   {"type": "RESPONSE_SELECTED", "candidates": keys,
+                                    "group": [token.token_id for token in group]}, op["operation_id"], optional=True)
+            result["context"]["response_country"] = first.owner_country
+            return result
+        return outcome("RESPONSES_FINISHED")
+
+    def _select_response(self, state, window, op):
+        remaining = window.context["response_candidates"]
+        window.remaining_operations.append({"type": "NEXT_RESPONSE"})
+        if op["choice"] == "decline":
+            window.context["response_candidates"] = [key for key in remaining if key not in op["group"]]
+            return outcome("ABILITY_DECLINED")
+        key = op["candidates"][0] if op["choice"] == "use" else op["choice"]
+        token = state.tokens[key]
+        remaining.remove(key)
+        scanner = AbilityScanner(self.rules)
+        if not scanner.eligible(state, window, [token], self.executor):
+            return outcome("RESPONSE_NO_LONGER_LEGAL")
+        if token.owner_country == TURN_ORDER[state.turn.country_index]:
+            window.context["active_response_used"] = True
+        result = outcome("RESPONSE_QUEUED")
+        scanner.open_frame(state, window, token, self.executor, result)
+        return result
 
     @staticmethod
     def _resolve(value, frame):
@@ -442,7 +597,8 @@ class CommandProcessor:
                     ability = self.rules.abilities[t.definition_id]
                     if s.tokens[t.source_token_id].position_id == "RESOLUTION":
                         settled_definition = s.tokens[t.source_token_id].definition_id
-                        self.executor.settle_card(s, t.source_token_id, zone(t.owner_country, "RESPONSE"), "DISCARD", result)
+                        source_origin = f.context.get("source_origin", zone(t.owner_country, "RESPONSE"))
+                        self.executor.settle_card(s, t.source_token_id, source_origin, "DISCARD", result)
                         completed_object = True
                         on_settle = ability.get("on_settle", ())
                     elif t.position_id == "RESOLUTION":
@@ -474,7 +630,7 @@ class CommandProcessor:
                             result["context"].setdefault("output_failures", []).append(output["context"]["reason"])
                     parent = next((frame for frame in s.stack if frame.resolution_id == f.parent_resolution_id), None)
                     result["context"]["settled_definition"] = settled_definition
-                    AbilityScanner(self.rules).scan(s, {**op, "type": "OBJECT_SETTLED", "settled_definition": settled_definition}, result, parent, self.executor)
+                    AbilityScanner(self.rules).scan(s, {**op, "type": "OBJECT_SETTLED", "settled_definition": settled_definition}, result, parent)
                 return result
             f.remaining_operations.pop()
             f.current_step += 1
@@ -496,7 +652,7 @@ class CommandProcessor:
                     f.remaining_operations.append({**raw, "rule_checkpoint": True})
                     event = {**op, "type": "RULE_USE", "rule_kinds": rule_kinds, "rule_force": op.get("force", actor)}
                     result = outcome("RULE_USE", kinds=rule_kinds)
-                    AbilityScanner(self.rules).scan(s, event, result, f, self.executor)
+                    AbilityScanner(self.rules).scan(s, event, result, f)
                     return result
             if op["type"] in BATTLES and not op.get("target_token") and not op.get("expected_victim"):
                 from .air import victim_options
@@ -517,7 +673,7 @@ class CommandProcessor:
                 f.remaining_operations.append({**raw, "announcement_id": announcement})
                 announced = {**op, "type": "ANNOUNCE", "announced_type": op["type"], "announcement_id": announcement}
                 result = outcome("ANNOUNCE", announced_type=op["type"], announcement_id=announcement)
-                AbilityScanner(self.rules).scan(s, announced, result, f, self.executor)
+                AbilityScanner(self.rules).scan(s, announced, result, f)
                 return result
             if op["type"] in PREVENTABLE and "announcement_id" in op:
                 if s.announcements.pop(op["announcement_id"])["cancelled"]:
@@ -546,12 +702,16 @@ class CommandProcessor:
                         if (air.owner_country, air.position_id) in removed:
                             s.stack.append(CardInterpreter.frame(s, self.rules.force_controllers[air.owner_country], None,
                                 [{"type": "CHECK_AIR_BASE", "air": air.token_id}], f.resolution_id))
-                AbilityScanner(self.rules).scan(s, op, result, f, self.executor)
+                AbilityScanner(self.rules).scan(s, op, result, f)
             return result
         return self._commit(op, apply)
 
     def _execute(self, s, f, op):
         kind, country = op["type"], f.actor_country
+        if kind == "NEXT_RESPONSE":
+            return self._next_response(s, f, op), False
+        if kind == "RESPONSE_SELECTED":
+            return self._select_response(s, f, op), False
         if kind.startswith("AIR_") or kind in ("BATTLE_VICTIM_SELECTED", "BATTLE_AIR_WINDOW", "CHECK_AIR_BASE"):
             from .air import execute_air
             return execute_air(self, s, f, op)
@@ -569,6 +729,8 @@ class CommandProcessor:
                 return outcome("INTERRUPTED_CHOICE_INVALIDATED"), False
             continuation = deepcopy(saved["continuation"])
             choice_kind = continuation["type"]
+            if choice_kind == "RESPONSE_SELECTED":
+                return self._next_response(s, parent, op), False
             if choice_kind == "ACTIVATE_SELECTED":
                 token = s.tokens[parent.context["ability_token"]]
                 cost = self.executor.activation_cost(s, token)
@@ -664,7 +826,7 @@ class CommandProcessor:
                 parent.remaining_operations.clear()
                 return outcome("INTERRUPTED_CHOICE_INVALIDATED"), False
             return self._request(s, parent, saved["decision_type"], options, continuation,
-                                 op["operation_id"], saved["optional_flag"]), False
+                                 saved["originating_operation_id"], saved["optional_flag"]), False
         if kind == "PLAY_EXTRA_CARD":
             token = s.tokens[op["token"]]
             definition = self.rules.cards[token.definition_id]
@@ -771,7 +933,7 @@ class CommandProcessor:
             token = s.tokens[f.context["ability_token"]]
             ability = self.rules.abilities[token.definition_id]
             cost = self.executor.activation_cost(s, token)
-            hand = s.positions[zone(country, "HAND")]
+            hand = [key for key in s.positions[zone(country, "HAND")] if key != f.source_card_id]
             if kind == "ACTIVATE_ABILITY" and ability["activation_mode"] == "OPTIONAL":
                 first = ability["effects"][0] if ability["effects"] else None
                 available = True
@@ -791,6 +953,7 @@ class CommandProcessor:
                 return result, False
             # Costs are selected, not automatically taken from hidden cards.
             f.context["cost_tokens"] = []
+            f.context["source_origin"] = s.tokens[token.source_token_id].position_id
             sequence = [{"type": "SELECT_COST"} for _ in range(cost)]
             sequence += [{"type": "ABILITY_PAID"}] + deepcopy(ability["effects"])
             source = self.rules.cards.get(s.tokens[f.source_card_id].definition_id, {}) if f.source_card_id else {}
@@ -813,7 +976,7 @@ class CommandProcessor:
             return outcome(kind), True
         if kind == "SELECT_COST":
             selected = f.context["cost_tokens"]
-            options = [t for t in s.positions[zone(country, "HAND")] if t not in selected]
+            options = [t for t in s.positions[zone(country, "HAND")] if t not in selected and t != f.source_card_id]
             return self._request(s, f, "COST", options, {"type": "COST_SELECTED"}, op["operation_id"]), False
         if kind == "COST_SELECTED":
             f.context["cost_tokens"].append(op["target_token"])

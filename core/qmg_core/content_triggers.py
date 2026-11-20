@@ -140,7 +140,6 @@ def matches_trigger(rules, state, listener, trigger, op, result):
             (relation == "enemy" and (actor is None or rules.team(actor) == rules.team(owner))) or
             (relation in rules.countries and actor != relation)):
         return False
-    physical = None
     if kind == "battle-space":
         if event not in BATTLES:
             return False
@@ -218,7 +217,7 @@ def matches_trigger(rules, state, listener, trigger, op, result):
     force = op.get("force", actor)
     if trigger.get("attackers") and force not in trigger["attackers"]:
         return False
-    position = physical.position_id if physical else op["target"]
+    position = op["target"]
     if not _region_matches(rules, state, owner, trigger, position):
         return False
     if adjacent := trigger.get("adjacentSupplied"):

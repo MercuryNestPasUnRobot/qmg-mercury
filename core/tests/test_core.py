@@ -575,28 +575,21 @@ def test_failed_atomic_step_keeps_queue_counter_and_records(data):
     assert p.state.to_dict() == before and len(p.records) == count and p.record_head == head
 
 
-def test_explicit_priority_controls_nested_order_and_ambiguity_fails(data):
+@pytest.mark.parametrize("priorities, expected", [((10, 11), [2, 7]), ((11, 10), [7, 2]), ((10, 10), [2, 7])])
+def test_automatic_responses_follow_priority_and_resolve_ties(data, priorities, expected):
     move_initial(data, 'g-status', 'germany:STATUS')
     a = data['abilities'][0]
-    a.update(activation_mode='AUTO', discard_cost=0)
+    a.update(activation_mode='AUTO', discard_cost=0, priority=priorities[0])
     second = deepcopy(a)
-    second.update(id='g-second', priority=11, effects=[{'type': 'GAIN_VP', 'amount': 7}])
+    second.update(id='g-second', priority=priorities[1], effects=[{'type': 'GAIN_VP', 'amount': 7}])
     data['abilities'].append(second)
     card(data, 'g-status')['abilities'].append('g-second')
     p = make(data)
     play(p, 'g-battle'); choose(p, 'B')
     amounts = [r['outcome']['score_changes'][0]['amount'] for r in p.records if r['operation_type'] == 'GAIN_VP']
-    assert amounts == [2, 7]
+    assert amounts == expected
     parents = [r['parent_resolution_id'] for r in p.records if r['operation_type'] == 'GAIN_VP']
     assert all(parents) and len(set(parents)) == 1
-    second['priority'] = 10
-    p = make(data)
-    play(p, 'g-battle')
-    # The announced battle is committed, but the ambiguous battle checkpoint is not.
-    with pytest.raises(CoreError, match='Ambiguous'):
-        choose(p, 'B')
-    validate_state(p.rules, p.state)
-    assert not any(r['operation_type'] == 'LAND_BATTLE' for r in p.records)
 
 
 def test_declared_requirements_and_cost_modifiers_share_legality(data):

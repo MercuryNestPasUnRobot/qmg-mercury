@@ -49,6 +49,7 @@ class RuleSet:
                            {"operation_type": "BEGIN_PHASE", "actor": "self", "turn_start": True})
                 self.abilities[listener] = {
                     "id": listener, "trigger": trigger, "activation_mode": "AUTO", "after": "delete",
+                    "system_response": True,
                     "priority": ability["priority"], "effects": [
                         {"type": "CREATE", "token_type": "ABILITY", "definition": ability["id"], "zone": "ABILITY_READY", "same_copy": True}]}
                 ability.setdefault("on_settle", []).append(

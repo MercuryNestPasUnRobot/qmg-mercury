@@ -273,6 +273,14 @@ def test_local_transcription_export_preserves_all_cards_and_has_no_unimplemented
     p = CommandProcessor.create(rules)
     assert len(p.state.tokens) == len(rules.inventory)
     assert p.state.decision.required_country == TURN_ORDER[0]
+    opening_state = p.state
+    starters = [t for t in opening_state.tokens.values() if t.token_type == "CARD"
+                and t.position_id == f"{t.owner_country}:HAND"
+                and rules.cards[t.definition_id].get("legacy_kind") == "bolster"]
+    assert starters, "The fixed seed should deal real hand listeners"
+    for source in starters:
+        assert any(t.source_token_id == source.token_id and t.position_id == f"{source.owner_country}:ABILITY_READY"
+                   for t in opening_state.tokens.values())
     database = tmp_path / "content.sqlite3"
     ContentCatalog.build(rules, database)
     loaded = ContentCatalog.load(database)
