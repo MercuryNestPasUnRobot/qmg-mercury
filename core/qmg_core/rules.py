@@ -1,8 +1,12 @@
 from collections import deque
 from copy import deepcopy
 
-from .definitions import CONNECTION_USES, TARGETED_OPERATIONS
+from .definitions import BATTLES, CONNECTION_USES, CONSTRUCTION, FORCE_OPERATIONS, TARGETED_OPERATIONS
 from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, ZoneRegistry, zone, shuffle
+
+
+def auxiliary_reserves(rules):
+    return {zone(force, f"RESERVE_{kind}") for force in rules.auxiliary_forces for kind in ("ARMY", "NAVY")}
 
 
 class RuleModifierResolver:
@@ -10,6 +14,7 @@ class RuleModifierResolver:
         self.rules = rules
 
     def resolve(self, state, country):
+        country = self.rules.force_controllers[country]
         result = []
         for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
             if token.token_type == "CARD" and token.position_id == zone(token.owner_country, "STATUS"):
@@ -97,6 +102,10 @@ class SupplyResolver:
                     queue.append(n)
         return {t.token_id for t in pieces if t.owner_country == country and t.position_id in reached}
 
+    def supplied_for_seat(self, state, country, units):
+        return {token_id for force in self.rules.controlled_forces(country)
+                for token_id in self.supplied(state, force, units=units)}
+
 
 class LegalActionGenerator:
     def __init__(self, rules):
@@ -119,6 +128,8 @@ class LegalActionGenerator:
             return True
         first = card["effects"][0]
         effect = first["operation"] if first["type"] == "CHOOSE" else first
+        if effect["type"] == "REDEPLOY":
+            return self.rules.force_controllers.get(effect.get("force", country)) == country
         if effect["type"] not in TARGETED_OPERATIONS:
             return True
         selected = effect.get("destination", effect.get("target", effect.get("target_token", "$choice")))
@@ -127,17 +138,21 @@ class LegalActionGenerator:
 
     def targets(self, state, country, op):
         kind = op["type"]
-        if kind in ("BUILD_ARMY", "BUILD_NAVY", "RECRUIT"):
+        if kind in FORCE_OPERATIONS:
+            force = op.get("force", country)
+            if self.rules.force_controllers.get(force) != country:
+                return []
+        if kind in CONSTRUCTION:
             unit_kind = op.get("unit_kind", "NAVY" if kind == "BUILD_NAVY" else "ARMY")
-            reserve = state.positions[zone(country, f"RESERVE_{unit_kind}")]
+            reserve = state.positions[zone(force, f"RESERVE_{unit_kind}")]
             if not reserve:
                 return []
             expected_terrain = "LAND" if unit_kind == "ARMY" else "SEA"
             units = board_units(self.rules, state)
-            supplied = self.supply.supplied(state, country)
+            supplied = self.supply.supplied(state, force)
             origins = {t.position_id for t in units if t.token_id in supplied}
-            homes = {r["id"] for r in self.rules.regions.values() if r.get("home_country") == country}
-            modifiers = RuleModifierResolver(self.rules).resolve(state, country)
+            homes = {r["id"] for r in self.rules.regions.values() if r.get("home_country") == force}
+            modifiers = RuleModifierResolver(self.rules).resolve(state, force)
             extra = {m["region"] for m in modifiers if m["kind"] == "build_region" and m["unit_kind"] == unit_kind}
             adjacency = self.graph.adjacency(state, country, "build")
             result = []
@@ -145,7 +160,7 @@ class LegalActionGenerator:
                 if definition["type"] != expected_terrain:
                     continue
                 present = [t for t in units if t.position_id == region]
-                if any(self.rules.team(t.owner_country) != self.rules.team(country) or t.owner_country == country for t in present):
+                if any(self.rules.team(t.owner_country) != self.rules.team(country) or t.owner_country == force for t in present):
                     continue
                 neighbors = adjacency[region]
                 reachable = region in homes or bool(neighbors & origins) or region in extra
@@ -154,11 +169,10 @@ class LegalActionGenerator:
                 if reachable:
                     result.append(region)
             return sorted(result)
-        if kind in ("LAND_BATTLE", "SEA_BATTLE"):
-            unit_kind = "ARMY" if kind == "LAND_BATTLE" else "NAVY"
-            terrain = "LAND" if unit_kind == "ARMY" else "SEA"
-            supplied = self.supply.supplied(state, country)
-            origins = {t.position_id for t in board_units(self.rules, state, country) if t.token_id in supplied}
+        if kind in BATTLES:
+            terrain = "LAND" if kind == "LAND_BATTLE" else "SEA"
+            supplied = self.supply.supplied(state, force)
+            origins = {t.position_id for t in board_units(self.rules, state, force) if t.token_id in supplied}
             adjacency = self.graph.adjacency(state, country, "battle")
             result = []
             for region, d in self.rules.regions.items():
@@ -233,6 +247,7 @@ def validate_state(rules, state, *, legacy_snapshot=False):
     if any(type(v) is not int or v < 1 for v in (state.turn.round_id, state.turn.turn_id)) or type(state.turn.country_index) is not int or type(state.turn.plays_remaining) is not int or state.turn.plays_remaining < 0:
         raise CoreError("Invalid turn counters")
     expected_positions = set(rules.regions) | {"RESOLUTION", "SCORE_DORMANT"} | {zone(c, z) for c in TURN_ORDER for z in ZONES}
+    expected_positions.update(auxiliary_reserves(rules))
     expected_positions.update(zone(c, "SET_ASIDE") for c in rules.settings.get("staging_countries", ()))
     old_positions = expected_positions - {zone(c, "OBJECT_POOL") for c in TURN_ORDER}
     has_pool = set(state.positions) == expected_positions
@@ -249,7 +264,8 @@ def validate_state(rules, state, *, legacy_snapshot=False):
     if has_pool and state.tokens.keys() != rules.inventory.keys():
         raise CoreError("Closed object inventory mismatch")
     for key, t in state.tokens.items():
-        if key != t.token_id or (t.owner_country not in rules.countries and not (t.token_type == "SCORE_SOURCE" and t.owner_country is None)):
+        owners = rules.force_controllers if t.token_type == "UNIT" else rules.countries
+        if key != t.token_id or (t.owner_country not in owners and not (t.token_type == "SCORE_SOURCE" and t.owner_country is None)):
             raise CoreError("Invalid token identity/owner")
         slot = rules.inventory.get(key)
         if not slot or (slot.definition_id, slot.token_type, slot.owner_country, slot.source_token_id) != (
@@ -339,6 +355,7 @@ def initial_inventory(rules, projected):
 def initialize(rules, seed=1, game_id="fixture-game"):
     positions = {p: [] for p in rules.regions}
     positions.update({zone(c, z): [] for c in TURN_ORDER for z in ZONES})
+    positions.update({position: [] for position in sorted(auxiliary_reserves(rules))})
     positions.update({zone(c, "SET_ASIDE"): [] for c in rules.settings.get("staging_countries", ())})
     positions["RESOLUTION"] = []
     positions["SCORE_DORMANT"] = []

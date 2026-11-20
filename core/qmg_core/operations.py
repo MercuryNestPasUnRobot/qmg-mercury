@@ -1,11 +1,10 @@
 """Atomic rule semantics. All physical changes use ZoneRegistry.transfer."""
+from .definitions import BATTLES, CONSTRUCTION, FORCE_OPERATIONS
 from .model import CoreError, TURN_ORDER, PHASES, ZoneRegistry, zone
 from .rules import board_units, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver
 
 
-CONSTRUCTION = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT"}
-BATTLES = {"LAND_BATTLE", "SEA_BATTLE"}
-PREVENTABLE = CONSTRUCTION | BATTLES | {"ELIMINATE"}
+PREVENTABLE = FORCE_OPERATIONS | {"ELIMINATE"}
 
 
 def outcome(kind, **context):
@@ -17,8 +16,9 @@ class ScoreResolver:
         self.rules = rules
 
     def sites(self, state, country):
-        supplied = SupplyResolver(self.rules).supplied(state, country)
-        units = board_units(self.rules, state, country)
+        pieces = board_units(self.rules, state)
+        supplied = SupplyResolver(self.rules).supplied_for_seat(state, country, pieces)
+        units = [piece for piece in pieces if self.rules.force_controllers[piece.owner_country] == country]
         result = {}
         for site_id, site in self.rules.sites.items():
             if site.get("dynamic", False):
@@ -113,7 +113,7 @@ class OperationExecutor:
         if kind in CONSTRUCTION:
             target = op.get("target")
             unit_kind = op.get("unit_kind", "NAVY" if kind == "BUILD_NAVY" else "ARMY")
-            token_id = state.positions[zone(country, f"RESERVE_{unit_kind}")][0]
+            token_id = state.positions[zone(op.get("force", country), f"RESERVE_{unit_kind}")][0]
             self.transfer(state, token_id, target, result)
         elif kind in BATTLES:
             victims = [t for t in board_units(self.rules, state) if t.position_id == op["target"]]
