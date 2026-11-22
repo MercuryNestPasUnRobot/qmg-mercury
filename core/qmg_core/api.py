@@ -17,7 +17,7 @@ def _visible_position(position, rules, controlled):
             or (country in controlled and kind != "DECK"))
 
 
-def observation(processor, controlled_countries):
+def observation(processor, controlled_countries, *, include_history=True):
     rules, s = processor.rules, processor.state
     controlled = set(controlled_countries)
     if not controlled <= set(TURN_ORDER):
@@ -38,7 +38,7 @@ def observation(processor, controlled_countries):
     history = []
     revealed_sources = set()
     public_objects = set()
-    for record in processor.records:
+    for record in processor.records if include_history else ():
         source = record["source"]
         outcome = record["outcome"]
         if record["operation_type"] == "SET_RESPONSE":
@@ -100,8 +100,8 @@ class CoreAPI:
         self._processor = processor
         self.controlled_countries = tuple(controlled_countries)
 
-    def observe(self):
-        return observation(self._processor, self.controlled_countries)
+    def observe(self, *, include_history=True):
+        return observation(self._processor, self.controlled_countries, include_history=include_history)
 
     def legal_commands(self):
         return deepcopy(self._processor.legal_commands(self.controlled_countries))
@@ -117,9 +117,9 @@ class CoreAPI:
                                         if site["region"] == region and not site.get("dynamic"))}
                 for region, definition in rules.regions.items()}
 
-    def submit(self, command):
+    def submit(self, command, *, include_history=True):
         self._processor.submit(deepcopy(command), self.controlled_countries)
-        return self.observe()
+        return self.observe(include_history=include_history)
 
 
 def simulation_from_observation(rules, view):

@@ -26,6 +26,7 @@ npm run core:play
 | [对象池与回合末响应的测试](core/tests/test_object_lifecycle.py) | 核对无限次、一次性和限次副本的 ID、区域移动与中途重放。可运行 `npm run core:test -- tests/test_object_lifecycle.py` |
 | [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
 | [AI 测试版评分与方案](docs/ai/testing-v1.md) | Core 第一版基线、评分标准、三种策略及本地可行性对照 |
+| [六席 AI 对照测试](docs/ai/six-seat-test.md) | 完整六席对局、单次决策预算、评分日志与同种子换边 |
 | `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |
 | [旧项目分析](docs/legacy-analysis.md) | 实际进度、可复用模块、未完成事项和资源 |
 | [重建顺序](docs/restart-plan.md) | 新项目边界与后续最小里程碑 |

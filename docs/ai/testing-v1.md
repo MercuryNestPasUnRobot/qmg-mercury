@@ -42,3 +42,5 @@ B 与 C 参考 Forge 先用启发式筛选、用相同种子比较候选、在�
 ```powershell
 npm run core:ai-trial -- --catalog ../local-content/baselines/core-v1-preview/content.sqlite3 --output ../local-content/ai-tests/v1-opening-trial.json
 ```
+
+[六席 AI 对照测试](six-seat-test.md)记录 B 主线、A 回退、逐步评分日志和同种子换边对照的运行方式。
