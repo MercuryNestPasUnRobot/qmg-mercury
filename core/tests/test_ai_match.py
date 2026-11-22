@@ -20,7 +20,7 @@ def profile():
 def test_worker_uses_same_request_for_different_hidden_cards_and_deck_order(data):
     other = deepcopy(data)
     next(t for t in other["initial_tokens"] if t["token_id"] == "uk-hidden")["definition_id"] = "uk-other"
-    p, q = make(data), make(other, seed=1000)
+    p, q = make(data, game_id="s1"), make(other, seed=1000, game_id="s1000")
     assert p.state.positions["germany:DECK"] != q.state.positions["germany:DECK"]
     requests, results = [], []
     for engine in (p, q):
@@ -28,7 +28,7 @@ def test_worker_uses_same_request_for_different_hidden_cards_and_deck_order(data
         view = client.observe(include_history=False)
         command = next(c for c in client.legal_commands() if c.get("card") == "g-draw")
         search = DeadlineSearch(engine.rules, profile())
-        requests.append((search.data, view, command))
+        requests.append((search.data, {key: value for key, value in view.items() if key != "game_id"}, command))
         before = engine.state.to_dict()
         try:
             rows, status = search.run(view, [command], "germany", perf_counter() + 5)
@@ -48,7 +48,8 @@ def test_worker_uses_same_request_for_different_hidden_cards_and_deck_order(data
 def _stalled_worker(connection, data, weights):
     with connection:
         connection.send(("ready", None))
-        _, commands, _ = connection.recv()
+        view, commands, _ = connection.recv()
+        assert view["game_id"] == "ai-projection" and not view["history"]
         connection.send(("candidate", {"command": commands[0], "complete": True, "q": 1}))
         Event().wait()
 
@@ -59,6 +60,7 @@ def test_deadline_retains_complete_result_and_retires_stalled_worker(data, monke
     client = CoreAPI(engine, ("germany",))
     search = DeadlineSearch(engine.rules, profile())
     view = client.observe(include_history=False)
+    view["history"] = [{"source": "must-not-reach-worker"}]
     command = client.legal_commands()[0]
     try:
         rows, status = search.run(view, [command], "germany", perf_counter() + 2)

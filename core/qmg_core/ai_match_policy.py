@@ -184,7 +184,8 @@ class DeadlineSearch:
                 if self._receive(deadline)[0] != "ready":
                     raise RuntimeError("Unexpected search startup message")
                 self.ready = True
-            self.connection.send((view, commands, country))
+            # Run labels can encode the experiment's seed. The projection needs neither them nor a journal.
+            self.connection.send(({**view, "game_id": "ai-projection", "history": []}, commands, country))
             while True:
                 status, payload = self._receive(deadline)
                 if status == "candidate":
