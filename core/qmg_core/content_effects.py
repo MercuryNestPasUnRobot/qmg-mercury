@@ -346,6 +346,34 @@ def branch_can_begin(rules, state, country, effects, context=None):
     return True
 
 
+def active_program_can_begin(rules, state, country, program):
+    """Check the first executable action after costs without paying the costs."""
+    hand_costs = []
+    for step in program:
+        if step["type"] != "CARD_EFFECT":
+            return True  # Native programs use LegalActionGenerator's normal checks.
+        effect = step["effect"]
+        chooser = effect.get("chooser", country)
+        if not condition_met(rules, state, chooser, effect.get("when")):
+            continue
+        kind = effect["type"]
+        if kind in ("discard-top", "discard-hand", "discard-status"):
+            if not can_begin(rules, state, chooser, effect):
+                return False
+            if kind == "discard-hand" and effect["count"]:
+                hand_costs.append(effect)
+            continue
+        if can_begin(rules, state, chooser, effect):
+            return True
+        if kind == "play-from-zone" and effect["zone"] == "discard" and force_id(effect.get("target"), country) == country:
+            # A matching card in hand can enter the discard pile as the payment.
+            candidates = available_options(rules, state, country, {**effect, "zone": "hand"})
+            return any(not cost.get("kinds") or rules.cards[state.tokens[key].definition_id].get("legacy_kind") in cost["kinds"]
+                       for key in candidates for cost in hand_costs)
+        return False
+    return False
+
+
 def can_begin(rules, state, country, effect, context=None):
     if not condition_met(rules, state, country, effect.get("when")):
         return True  # The instruction itself is legal and will be skipped in order.

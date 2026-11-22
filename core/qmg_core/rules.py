@@ -264,7 +264,9 @@ class LegalActionGenerator:
         first = card["effects"][0]
         effect = first["operation"] if first["type"] == "CHOOSE" else first
         if effect["type"] == "CARD_EFFECT":
-            from .content_effects import can_begin
+            from .content_effects import active_program_can_begin, can_begin
+            if activating:
+                return active_program_can_begin(self.rules, state, country, card["effects"])
             effect = effect["effect"]
             return can_begin(self.rules, state, effect.get("chooser", country), effect)
         if effect["type"] == "REDEPLOY":

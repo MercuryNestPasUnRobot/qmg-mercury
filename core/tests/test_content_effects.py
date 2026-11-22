@@ -479,3 +479,28 @@ def test_new_search_resets_the_scope_even_when_the_player_takes_no_cards(data):
     choose(processor, "done")
     assert processor.state.tokens["g-deck-1"].position_id == "germany:HAND"
     assert processor.state.scores["axis"] == 2
+
+
+@pytest.mark.parametrize("available_in_hand", [False, True])
+def test_active_cost_needs_a_target_and_can_make_that_target_by_discarding(data, available_in_hand):
+    move_initial(data, "g-status", "germany:STATUS")
+    card(data, "g-status").update(legacy_kind="status", abilities=["active-cost"], active_ability="active-cost")
+    card(data, "g-build")["legacy_kind"] = "build-army" if available_in_hand else "event"
+    data["abilities"].append({"id": "active-cost", "activation_mode": "AUTO", "after": "origin", "priority": 19,
+        "trigger": {"operation_type": "USE_STATUS"}, "effects": [
+            instruction({"type": "discard-hand", "count": 1}),
+            instruction({"type": "play-from-zone", "zone": "discard", "kinds": ["build-army"]}),
+        ]})
+    processor = make(data)
+    client = CoreAPI(processor, ("germany",))
+    commands = [c for c in client.legal_commands() if c["type"] == "USE_STATUS"]
+    if not available_in_hand:
+        assert commands == [] and processor.state.turn.plays_remaining == 1
+        return
+    client.submit(commands[0])
+    choose(processor, "g-build")
+    choose(processor, "g-build")
+    choose(processor, "B")
+    assert processor.state.tokens["germany-army-1"].position_id == "B"
+    assert processor.state.tokens["g-build"].position_id == "germany:DISCARD"
+    assert processor.state.turn.plays_remaining == 0
