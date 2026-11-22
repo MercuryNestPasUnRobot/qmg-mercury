@@ -52,6 +52,15 @@ npm run core:play -- --catalog $catalog --save-dir ../.cache/transcribed-match
 
 `core:verify-content` 对每个定义检查开局可用操作、完成选择后的结算终止和实体守恒，另检查全部手牌监听器是否注册。没有开局目标和只检查注册的监听器会单独列出，不能把这项检查说成每张牌所有触发场景均已验收。
 
+逐牌比对及六席出牌验收可从项目根目录运行。命令读取迁移生成的 SQLite，报告留在本地内容目录。
+
+```powershell
+$catalog = (Get-Content local-content/legacy-2026-11-19/core/coverage.json -Raw | ConvertFrom-Json).catalog
+npm run core:audit-content -- ../local-content/legacy-2026-11-19/content.json $catalog --output ../local-content/legacy-2026-11-19/core/card-audit.json --runtime
+```
+
+逐牌报告比对实际传给结算器的指令和顺序，并记录嵌套分支、条件、监听、主动效果、被动规则和牌组顺序。`--runtime` 另外发牌并推进六个席位，追踪合法开局命令执行过的步骤，记录遇到的规则阻断，并为阶段监听准备从上一阶段进入的用例。对初始棋盘上无目标、未触发或仅注册的卡牌，仍需对应局面才能验证其完整行为。
+
 2026-11-20 本地验证：`npm run check` 通过 134 项 Core 测试和 4 项 Node 测试，1,725 个旧文件及 347 个上游参考文件完整性通过。整套开局检查为 186 个操作完成、50 个手牌监听器注册、40 个定义无开局目标，无运行异常；所有定义均已转换，380 个卡牌实例和原文往返校验通过。
 
 迁移报告当前无未实现指令，内容包保留旧 `verified` 与来源信息。规则参数沿用旧实现，开局 12 张、弃 5 张、手牌上限 7、20 轮、分差 30，牌库耗尽扣 1 分。常规转录响应使用同一优先级，响应顺序与每个时机的使用限制详见[响应时机验收](response-windows.md)。

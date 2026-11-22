@@ -244,12 +244,14 @@ class LegalActionGenerator:
                 return False
         return True
 
-    def can_start_card(self, state, country, card):
+    def can_start_card(self, state, country, card, *, activating=False):
         if card.get("legacy_kind") in ("bolster", "air-power"):
             return False
         if card.get("implementation", {}).get("status") == "blocked":
             return False
-        if "content_condition" in card:
+        # A deployed listener's condition belongs to its activation, not to placing the card.
+        placement = card.get("legacy_kind") in ("status", "response") and not activating
+        if "content_condition" in card and not placement:
             from .content_effects import condition_met
             if not condition_met(self.rules, state, country, card["content_condition"]):
                 return False
@@ -262,8 +264,11 @@ class LegalActionGenerator:
         first = card["effects"][0]
         effect = first["operation"] if first["type"] == "CHOOSE" else first
         if effect["type"] == "CARD_EFFECT":
-            from .content_effects import can_begin
-            return can_begin(self.rules, state, country, effect["effect"])
+            from .content_effects import active_program_can_begin, can_begin
+            if activating:
+                return active_program_can_begin(self.rules, state, country, card["effects"])
+            effect = effect["effect"]
+            return can_begin(self.rules, state, effect.get("chooser", country), effect)
         if effect["type"] == "REDEPLOY":
             return self.rules.force_controllers.get(effect.get("force", country)) == country
         if effect["type"] not in TARGETED_OPERATIONS:

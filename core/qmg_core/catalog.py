@@ -152,7 +152,11 @@ class ContentCatalog:
             checked = ContentCatalog.load(staging)
             if checked.fingerprint != rules.fingerprint:
                 raise CoreError("Catalog did not preserve the source rules")
-            os.link(staging, target)
+            if os.name == "nt":
+                # Windows rename atomically fails if the destination already exists.
+                staging.rename(target)
+            else:
+                os.link(staging, target)
         return target
 
     @staticmethod

@@ -10,7 +10,7 @@ from .model import TURN_ORDER, zone
 from .rules import initialize, validate_state
 
 
-def check_catalog(rules):
+def check_catalog(rules, *, trace=False):
     data = deepcopy(rules.data)
     data["settings"].update(initial_hand=0, setup_discard=0)
     smoke_rules = RuleSet(data)
@@ -41,22 +41,60 @@ def check_catalog(rules):
             if not commands:
                 row["result"] = "no-opening-target"
             else:
-                p.submit(commands[0], TURN_ORDER)
-                choices = 0
-                while p.state.decision and choices < 100:
-                    commands = [c for c in p.legal_commands(TURN_ORDER) if c["type"] == "CHOOSE"]
-                    preferred = next((c for c in commands if c["option"] in ("decline", "done", "pass", "confirm")), commands[0])
-                    p.submit(preferred, TURN_ORDER)
-                    choices += 1
-                if p.state.decision or p.state.stack:
-                    raise ValueError("Opening resolution failed to terminate: " + definition["id"])
-                if set(p.state.tokens) != set(smoke_rules.inventory):
-                    raise ValueError("Object inventory changed: " + definition["id"])
-                row.update(result="opening-operation-completed", choices=choices, operations=len(p.records))
+                cases = []
+                for command in commands if trace else commands[:1]:
+                    p = CommandProcessor(smoke_rules, state)
+                    p.submit(command, (country,))
+                    choices = settle_choices(p, take_optional=trace)
+                    finish = p.state
+                    if finish.stack or finish.announcements or finish.positions["RESOLUTION"]:
+                        raise ValueError("Opening resolution did not close: " + definition["id"])
+                    if finish.tokens.keys() != smoke_rules.inventory.keys():
+                        raise ValueError("Object inventory changed: " + definition["id"])
+                    case = {"command": command["type"], "choices": choices, "operations": len(p.records),
+                            "destination": finish.tokens[source.token_id].position_id}
+                    for field in ("play_as", "force"):
+                        if field in command:
+                            case[field] = command[field]
+                    if trace:
+                        case["effect_trace"] = [
+                            {"instruction": r["operation"]["effect"]["type"], "outcome": r["operation_type"]}
+                            for r in p.records if r["source"] == source.token_id and r["operation"]["type"] == "CARD_EFFECT"
+                        ]
+                        case["unsuccessful_steps"] = [
+                            {"operation": r["operation_type"], "reason": r["outcome"]["context"].get("reason"),
+                             "card": smoke_rules.inventory[r["source"]].definition_id if r["source"] else None}
+                            for r in p.records if not r["outcome"]["success"]
+                        ]
+                    cases.append(case)
+                result = ("opening-stopped-at-rule" if trace and all(case["unsuccessful_steps"] for case in cases)
+                          else "opening-operation-completed")
+                row.update(result=result, choices=cases[0]["choices"], operations=cases[0]["operations"])
+                if trace:
+                    row["cases"] = cases
         rows.append(row)
     return {"rules_digest": rules.fingerprint, "definitions": len(rows), "copies": sum(
         t.token_type == "CARD" for t in rules.inventory.values()), "scope": "opening-state smoke; listeners registered, not individually triggered",
         "results": {kind: sum(r["result"] == kind for r in rows) for kind in sorted({r["result"] for r in rows})}, "cards": rows}
+
+
+def settle_choices(processor, *, take_optional=False, preferred_listener=None, limit=100):
+    for count in range(limit + 1):
+        decision = processor.state.decision
+        if decision is None:
+            return count
+        if count == limit:
+            break
+        commands = [c for c in processor.legal_commands((decision.required_country,)) if c["type"] == "CHOOSE"]
+        pass_options = {"decline", "done", "pass", "cancel", "confirm"}
+        if preferred_listener is not None and decision.continuation["type"] == "RESPONSE_SELECTED":
+            candidates = decision.continuation["candidates"]
+            option = ("use" if len(candidates) == 1 else preferred_listener) if preferred_listener in candidates else "decline"
+            preferred = next(c for c in commands if c["option"] == option)
+        else:
+            preferred = next((c for c in commands if (c["option"] in pass_options) != take_optional), commands[0])
+        processor.submit(preferred, (decision.required_country,))
+    raise ValueError("Resolution exceeded the audit choice limit")
 
 
 def main():

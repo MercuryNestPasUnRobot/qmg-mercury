@@ -152,6 +152,8 @@ class AbilityScanner:
             if step["type"] == "CARD_EFFECT":
                 effect = event_effect(step["effect"], candidate)
                 chooser = effect.get("chooser", country)
+                if not condition_met(self.rules, state, chooser, effect.get("when")):
+                    continue
                 if not can_begin(self.rules, state, chooser, effect, context):
                     return False
                 # These payments do not move units or change map rules. Check the
@@ -364,7 +366,8 @@ class CommandProcessor:
                     continue
                 available = any(t.source_token_id == token_id and t.definition_id == active
                                 and t.position_id == zone(country, "ABILITY_READY") for t in s.tokens.values())
-                if available and self.legal.can_start_card(s, country, {**card, "effects": self.rules.abilities[active]["effects"]}):
+                if available and self.legal.can_start_card(
+                        s, country, {**card, "effects": self.rules.abilities[active]["effects"]}, activating=True):
                     commands.append({"type": "USE_STATUS", "actor": country, "expected_version": s.version, "card": token_id})
         return commands + interrupts
 
