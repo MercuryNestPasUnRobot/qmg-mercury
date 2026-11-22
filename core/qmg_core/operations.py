@@ -15,9 +15,11 @@ class ScoreResolver:
     def __init__(self, rules):
         self.rules = rules
 
-    def sites(self, state, country):
-        pieces = board_units(self.rules, state)
-        supplied = SupplyResolver(self.rules).supplied_for_seat(state, country, pieces)
+    def sites(self, state, country, *, pieces=None, supplied=None):
+        if pieces is None:
+            pieces = board_units(self.rules, state)
+        if supplied is None:
+            supplied = SupplyResolver(self.rules).supplied_for_seat(state, country, pieces)
         units = [piece for piece in pieces if self.rules.force_controllers[piece.owner_country] == country
                  and self.rules.units[piece.definition_id]["kind"] != "AIR"]
         result = {}

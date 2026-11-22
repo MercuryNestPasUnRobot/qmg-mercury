@@ -22,4 +22,5 @@ else if (mode === 'data') run(existsSync(local) ? local : base, ['-m', 'qmg_core
 else if (mode === 'migrate') run(existsSync(local) ? local : base, ['-m', 'qmg_core.migration', ...process.argv.slice(3)]);
 else if (mode === 'verify-content') run(existsSync(local) ? local : base, ['-m', 'qmg_core.content_verify', ...process.argv.slice(3)]);
 else if (mode === 'audit-content') run(existsSync(local) ? local : base, ['-m', 'qmg_core.content_audit', ...process.argv.slice(3)]);
+else if (mode === 'ai-trial') run(existsSync(local) ? local : base, ['-m', 'qmg_core.ai_trial', ...process.argv.slice(3)]);
 else throw new Error('Unknown core action');

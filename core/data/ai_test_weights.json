@@ -1,0 +1,48 @@
+{
+  "profile": "ai-test-v1-uncalibrated",
+  "seat_forecast": true,
+  "distance_weights": [1, 0.65, 0.3, 0.1],
+  "supply_weights": {
+    "supplied": 1,
+    "unsupplied": 0.25,
+    "no_reserve_expansion": 0.5
+  },
+  "military_weights": {"ARMY": 1, "NAVY": 0.8, "AIR": 0.5},
+  "expansion_weight": 0.5,
+  "threat_weight": 0.5,
+  "time_discount": 0.8,
+  "horizon": 3,
+  "saturation": 2,
+  "card_value_weights": {
+    "unknown": 0.2,
+    "ability_ready": 0.5,
+    "CHOOSE": 0.4,
+    "REDEPLOY": 0.5,
+    "DRAW": 0.3,
+    "GAIN_VP": 0.1,
+    "TRANSFER": 0.1,
+    "BUILD_ARMY": 1,
+    "BUILD_NAVY": 0.8,
+    "RECRUIT": 1,
+    "LAND_BATTLE": 0.7,
+    "SEA_BATTLE": 0.7
+  },
+  "effect_value_weights": {
+    "default": 0.2,
+    "points": 0.35,
+    "build": 0.8,
+    "recruit": 0.8,
+    "choose-space": 0.7,
+    "battle": 0.6,
+    "choose-unit": 0.6,
+    "air-action": 0.4,
+    "play-from-zone": 0.45,
+    "search-deck": 0.35,
+    "discard-hand": 0,
+    "discard-status": 0
+  },
+  "resource_penalties": {"empty_deck": 0.3},
+  "terminal_priority": "lexicographic-win-before-all-heuristics",
+  "max_simulation_nodes": 128,
+  "unusable_card_weight": 0.25
+}
