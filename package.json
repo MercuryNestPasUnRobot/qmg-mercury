@@ -17,6 +17,7 @@
     "core:audit-content": "node tools/core.mjs audit-content",
     "core:ai-trial": "node tools/core.mjs ai-trial",
     "core:ai-match": "node tools/core.mjs ai-match",
+    "core:replay": "node tools/core.mjs replay",
     "dev": "node --watch src/server.ts",
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.build.json",

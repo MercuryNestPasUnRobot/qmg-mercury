@@ -27,6 +27,7 @@ npm run core:play
 | [架构设计书原文](docs/core/architecture-baseline-v0.1.md) | 用户提供的 Architecture Baseline v0.1 |
 | [AI 测试版评分与方案](docs/ai/testing-v1.md) | Core 第一版基线、评分标准、三种策略及本地可行性对照 |
 | [六席 AI 对照测试](docs/ai/six-seat-test.md) | 完整六席对局、单次决策预算、评分日志与同种子换边 |
+| [Mercury 录像台](docs/ai/replay.md) | 在本机按批次回看地图、牌区、比分与 AI 候选 |
 | `core/qmg_core/`、`core/tests/` | 不依赖 GUI 的 Python Core 与规则/重放/信息边界测试 |
 | [旧项目分析](docs/legacy-analysis.md) | 实际进度、可复用模块、未完成事项和资源 |
 | [重建顺序](docs/restart-plan.md) | 新项目边界与后续最小里程碑 |
@@ -44,6 +45,7 @@ npm run doctor          # 环境、Git、内存及参考资料状态
 npm run core:test       # Python Core 机制、重放与 AI 边界
 npm run core:demo       # 无 GUI 运行多步结算、保存恢复与单步 AI
 npm run core:play       # 浏览器操作同一个 Core，支持中途续跑
+npm run core:replay -- --help  # 从已有对局日志重建本地录像
 npm run core:data -- --help   # 构建或检查固定内容数据库
 npm run legacy:verify   # 核验本机 1,725 个旧文件是否仍原样保留
 npm run refs:download   # 资源足够时下载/补齐锁定的 AI 源码

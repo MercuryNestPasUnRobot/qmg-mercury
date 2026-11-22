@@ -1,6 +1,7 @@
 """Run complete, headless six-seat pairs: bounded search vs the same pure rule policy."""
 from argparse import ArgumentParser
 from collections import Counter
+from datetime import datetime, timezone
 import json
 from math import ceil, isfinite
 from pathlib import Path
@@ -13,6 +14,7 @@ from .definitions import RuleSet
 from .engine import CommandProcessor
 from .evaluation import ScoreEvaluator
 from .model import CoreError, TURN_ORDER, digest
+from .replay import LIBRARY, ReplayBatch, replay_game
 
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -65,7 +67,8 @@ def play_game(rules, weights, *, seed, search_team, width, budget_ms, output, co
             "seats": sides, "decisions_by_seat": {seat: decisions[seat] for seat in TURN_ORDER},
             "modes": modes, "search_statuses": search_statuses, "over_budget": budget_misses,
             "latency_ms": {side: latency(values) for side, values in times.items()},
-            "seconds": round(perf_counter() - started, 3), "decision_log": log_path.name}, times
+            "seconds": round(perf_counter() - started, 3), "decision_log": log_path.name,
+            "record_head": processor.record_head}, times
 
 
 def latency(samples):
@@ -99,7 +102,7 @@ def summarize(games, times):
             "search_statuses": dict(sum((Counter(g["search_statuses"]) for g in games), Counter()))}
 
 
-def run_matches(rules, weights, *, seeds, output, width, budget_ms, command_limit=10000, report_game=None):
+def run_matches(rules, weights, *, seeds, output, width, budget_ms, command_limit=10000, report_game=None, replay=None):
     ScoreEvaluator(rules, weights)  # Validate configuration before the first live match.
     output.mkdir(parents=True, exist_ok=True)
     games, times = [], {"A": [], "B": []}
@@ -107,6 +110,8 @@ def run_matches(rules, weights, *, seeds, output, width, budget_ms, command_limi
               "budget_ms": budget_ms, "shortlist_width": width, "nodes_per_candidate": weights["max_simulation_nodes"],
               "strategy": {"A": "rules", "B": "shortlist-projected-settlement-with-A-fallback"},
               "games": games}
+    if replay is not None:
+        report["replay"] = {k: replay.info[k] for k in ("name", "ai_version", "ai_note", "date")}
     with (output / "summary.json").open("x", encoding="utf-8"):
         pass
     for seed in seeds:
@@ -120,6 +125,8 @@ def run_matches(rules, weights, *, seeds, output, width, budget_ms, command_limi
             pending_report = output / "summary.partial.json"
             pending_report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             pending_report.replace(output / "summary.json")
+            if replay is not None:
+                replay.add(game, replay_game(rules, game, output / game["decision_log"]))
             if report_game is not None:
                 report_game(game)
     return report
@@ -133,7 +140,11 @@ def main():
     parser.add_argument("--width", type=int, default=3)
     parser.add_argument("--nodes", type=int, default=16)
     parser.add_argument("--command-limit", type=int, default=10000)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--replay-library", type=Path, default=LIBRARY)
+    parser.add_argument("--name", help="Readable batch name in the replay library")
+    parser.add_argument("--ai-version", default="AI 试验版 v1")
+    parser.add_argument("--ai-note", default="B 预选后限时完整结算，A 分阶段规则评分。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:
         parser.error("Budget, shortlist width and command limit must be positive")
@@ -142,10 +153,17 @@ def main():
     rules = RuleSet.load(args.catalog or DATA / "architecture_fixture.json")
     weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
     weights["max_simulation_nodes"] = args.nodes
-    report = run_matches(rules, weights, seeds=args.seeds, output=args.output, width=args.width,
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    output = args.output or args.replay_library.parent / "ai-tests" / stamp
+    batch = ReplayBatch(args.replay_library, output, rules,
+                        name=args.name or f"六席 AI · {output.name}", version=args.ai_version, note=args.ai_note,
+                        settings={"budget_ms": args.budget_ms, "shortlist_width": args.width,
+                                  "nodes_per_candidate": args.nodes, "weights_digest": digest(weights)})
+    report = run_matches(rules, weights, seeds=args.seeds, output=output, width=args.width, replay=batch,
                          budget_ms=args.budget_ms, command_limit=args.command_limit,
                          report_game=lambda game: print(json.dumps(game), flush=True))
     print(json.dumps(report["metrics"]))
+    print(args.replay_library / "打开录像.html")
 
 
 if __name__ == "__main__":

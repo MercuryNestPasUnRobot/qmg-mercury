@@ -1,0 +1,47 @@
+<main class="player">
+  <header class="topbar">
+    <a class="back" href="../../打开录像.html">← 录像库</a>
+    <div class="match-heading"><h1 id="match-name">对局录像</h1><p id="match-info"></p></div>
+    <label class="reveal"><input type="checkbox" id="reveal"> 裁判视角</label>
+  </header>
+  <section class="controls" aria-label="播放控制">
+    <div class="transport">
+      <button id="first" title="跳到开局">开局</button>
+      <button id="prev" title="上一步（←）">← 上一步</button>
+      <button id="play" class="primary" title="播放或暂停（空格）">▶ 播放</button>
+      <button id="next" title="下一步（→）">下一步 →</button>
+      <button id="last" title="跳到终局">终局</button>
+      <label class="speed"><select id="speed" aria-label="播放速度"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+    </div>
+    <div class="seek"><input id="position" type="range" min="0" value="0" aria-label="录像进度"><output id="step"></output></div>
+    <label class="turn-jump">跳到回合 <select id="turns" aria-label="跳到回合"></select></label>
+  </section>
+  <div class="workspace">
+    <div class="main-column">
+      <section class="board-panel">
+        <header class="board-heading">
+          <div><h2>战区态势</h2><p id="clock"></p></div>
+          <div class="scoreboard"><div class="score axis"><span>轴心 VP</span><strong id="axis"></strong></div>
+          <div class="score allies"><span>同盟 VP</span><strong id="allies"></strong></div></div>
+        </header>
+        <nav class="theaters" id="theaters" aria-label="地图区域"></nav>
+        <div class="map-viewport" id="viewport">
+          <div class="map" id="map"><canvas id="routes" aria-hidden="true"></canvas><div id="regions"></div></div>
+        </div>
+        <div class="map-legend"><span>陆 陆军　海 海军　空 空军</span><span><b class="key changed"></b>本步变化</span><span><b class="key"></b>基础连接</span><a href="#card-zones">各国牌区 ↓</a></div>
+        <div id="region-detail" class="region-detail"></div>
+      </section>
+      <section class="table-panel" id="card-zones">
+        <header><h2>各国牌区</h2><p>点击状态牌查看牌文。裁判视角可翻看盖牌和当时 AI 的候选。</p></header>
+        <div id="seats" class="seats"></div>
+      </section>
+    </div>
+    <aside class="inspector" aria-label="当前步骤">
+      <section class="action-panel"><h2>这一步</h2><div id="action"></div></section>
+      <section class="events-panel"><h2>Core 结算</h2><div id="events"></div></section>
+      <section class="decision-panel"><h2>AI 怎么选</h2><div id="evaluation"></div></section>
+    </aside>
+  </div>
+  <dialog id="card-dialog"><div class="dialog-top"><h2 id="card-name"></h2><form method="dialog"><button aria-label="关闭">关闭</button></form></div>
+  <p id="card-text"></p></dialog>
+</main>
