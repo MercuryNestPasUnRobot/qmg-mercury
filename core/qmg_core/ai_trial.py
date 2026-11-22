@@ -7,6 +7,7 @@ from statistics import median
 from time import perf_counter
 
 from .api import CoreAPI
+from .ai_match_policy import CandidateView
 from .content_verify import settle_choices
 from .definitions import RuleSet
 from .engine import CommandProcessor
@@ -49,18 +50,6 @@ def priority(rules, visible, command):
         else:
             total += ACTION_PRIORITY.get(op["type"], 0.25)
     return total
-
-
-class CandidateView:
-    def __init__(self, view, commands):
-        self.view = view
-        self.commands = commands
-
-    def observe(self):
-        return self.view
-
-    def legal_commands(self):
-        return self.commands
 
 
 def compare_candidates(planner, client, seat, width):

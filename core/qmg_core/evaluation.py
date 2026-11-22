@@ -224,14 +224,21 @@ class SimulationIncomplete(CoreError):
     pass
 
 
+def candidate_key(row):
+    return (row["complete"], row.get("terminal_rank", -3),
+            row["q"] if row["q"] is not None else float("-inf"))
+
+
 class OneStepPlanner:
     def __init__(self, rules, weights):
         self.evaluator = ScoreEvaluator(rules, weights)
 
     def rank(self, client, country):
+        return sorted(self.iter_rank(client, country), key=candidate_key, reverse=True)
+
+    def iter_rank(self, client, country):
         root = simulation_from_observation(self.evaluator.rules, client.observe())
         before = self.evaluator._value(root, country)
-        results = []
         for command in client.legal_commands():
             if command["actor"] != country:
                 continue
@@ -241,37 +248,42 @@ class OneStepPlanner:
             try:
                 if command not in simulated_seat.legal_commands():
                     raise SimulationIncomplete("Action cannot be represented from this observation")
-                simulated_seat.submit(command)
+                simulated_seat.submit(command, include_history=False)
                 value, choices = self._finish(candidate, country, nodes)
-                results.append({"command": deepcopy(command), "complete": True, "nodes": nodes[0], "weights_digest": digest(self.evaluator.weights),
-                                "actual_vp_delta": value.actual_vp - before.actual_vp,
-                                "map_delta": value.map_value - before.map_value,
-                                "card_delta": value.card_value - before.card_value,
-                                "resource_delta": value.resource_adjustment - before.resource_adjustment,
-                                "q": value.total - before.total, "terminal_rank": value.terminal_rank,
-                                "continuations": choices})
+                yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
+                       "weights_digest": digest(self.evaluator.weights),
+                       "actual_vp_delta": value.actual_vp - before.actual_vp,
+                       "map_delta": value.map_value - before.map_value,
+                       "card_delta": value.card_value - before.card_value,
+                       "resource_delta": value.resource_adjustment - before.resource_adjustment,
+                       "q": value.total - before.total, "terminal_rank": value.terminal_rank,
+                       "continuations": [choice for choice, _ in choices],
+                       "choice_signatures": [signature for _, signature in choices]}
             except (SimulationIncomplete, ResolutionBudgetExceeded) as e:
-                results.append({"command": deepcopy(command), "complete": False, "reason": str(e), "q": None, "nodes": nodes[0]})
-        return sorted(results, key=lambda r: (r["complete"], r.get("terminal_rank", -3), r["q"] if r["q"] is not None else float("-inf")), reverse=True)
+                yield {"command": deepcopy(command), "complete": False,
+                       "reason": str(e), "q": None, "nodes": nodes[0]}
 
     def _finish(self, processor, country, nodes):
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
             raise SimulationIncomplete("Within-card choice budget exceeded; no partial score assigned")
-        if processor.state.winner:
+        state = processor.state
+        if state.winner:
             # Terminal positions may retain irrelevant pending frame cleanup.
             return self.evaluator._value(processor, country), []
-        if not processor.state.decision:
-            if processor.state.stack:
+        if not state.decision:
+            if state.stack:
                 raise SimulationIncomplete("Resolution not complete")
             return self.evaluator._value(processor, country), []
-        actor = processor.state.decision.required_country
+        decision = state.decision
+        actor = decision.required_country
+        signature = (decision.decision_type, decision.continuation["type"], sorted(decision.legal_options))
         branches = []
         for command in CoreAPI(processor, (actor,)).legal_commands():
-            branch = CommandProcessor(processor.rules, processor.state)
-            CoreAPI(branch, (actor,)).submit(command)
+            branch = CommandProcessor(processor.rules, state)
+            CoreAPI(branch, (actor,)).submit(command, include_history=False)
             value, trail = self._finish(branch, country, nodes)
-            branches.append((value, [command] + trail))
+            branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")
         key = lambda item: (item[0].terminal_rank, item[0].total)
