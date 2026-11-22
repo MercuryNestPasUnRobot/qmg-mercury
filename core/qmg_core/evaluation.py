@@ -9,6 +9,7 @@ from .api import CoreAPI, simulation_from_observation
 from .definitions import RuleSet
 from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
+from .operations import ScoreResolver
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 
 
@@ -32,6 +33,13 @@ class ScoreEvaluator:
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
                    *weights["resource_penalties"].values(), weights["time_discount"], weights["saturation"],
                    weights["expansion_weight"], weights["threat_weight"], weights["unusable_card_weight"]]
+        if type(weights.get("seat_forecast", False)) is not bool:
+            raise CoreError("Invalid seat forecast setting")
+        if "effect_value_weights" in weights:
+            effect_weights = weights["effect_value_weights"]
+            if not isinstance(effect_weights, dict) or not {"default", "points"} <= set(effect_weights):
+                raise CoreError("Effect values require default and points weights")
+            numbers.extend(effect_weights.values())
         if any(type(n) not in (int, float) or not isfinite(n) or n < 0 for n in numbers) or not 0 <= weights["time_discount"] <= 1:
             raise CoreError("Evaluation weights must be finite nonnegative values")
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
@@ -61,6 +69,14 @@ class ScoreEvaluator:
             pieces = [piece for piece in pieces if piece.token_id != excluded_unit.token_id]
         supply = SupplyResolver(rules)
         supplied = {force: supply.supplied(s, force, units=pieces) for force in rules.force_controllers}
+        distances_by_unit = {t.token_id: MapGraph(rules).distances(t.position_id, s, t.owner_country) for t in pieces}
+        opportunities = ()
+        seat_rates = {}
+        if w.get("seat_forecast"):
+            opportunities = scoring_opportunities(rules, s.turn)
+            for seat in TURN_ORDER:
+                supplied_for_seat = set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
+                seat_rates[seat] = ScoreResolver(rules).sites(s, seat, pieces=pieces, supplied=supplied_for_seat)
         point_values, influences, map_value = [], [], 0.0
         for site_id, site in rules.sites.items():
             if site.get("dynamic"):
@@ -72,7 +88,7 @@ class ScoreEvaluator:
                 continue
             friendly, hostile = 0.0, 0.0
             for t in pieces:
-                distances = MapGraph(rules).distances(t.position_id, s, t.owner_country)
+                distances = distances_by_unit[t.token_id]
                 distance = min((distances.get(p, 100000) for p in regions), default=100000)
                 dw = w["distance_weights"][distance] if distance < len(w["distance_weights"]) else 0.0
                 supply_weight = w["supply_weights"]["supplied" if t.token_id in supplied[t.owner_country] else "unsupplied"]
@@ -108,8 +124,12 @@ class ScoreEvaluator:
             expansion = advantage if not control else 0
             threat = max(0.0, -advantage) if control > 0 else -max(0.0, advantage) if control < 0 else 0.0
             value = baseline * (control + w["expansion_weight"] * expansion - w["threat_weight"] * threat)
-            point_values.append({"site": site_id, "baseline_vp": baseline, "control": control,
-                                 "friendly": friendly, "hostile": hostile, "advantage": advantage, "value": value})
+            diagnostic = {"site": site_id, "baseline_vp": baseline, "control": control,
+                          "friendly": friendly, "hostile": hostile, "advantage": advantage, "value": value}
+            if w.get("seat_forecast"):
+                diagnostic.update(forecast_site(site, site_id, seat_rates, opportunities, sign, advantage, w))
+                value = diagnostic["value"]
+            point_values.append(diagnostic)
             map_value += value
         cards, resources = 0.0, 0.0
         legal = LegalActionGenerator(rules)
@@ -128,7 +148,11 @@ class ScoreEvaluator:
                     for instruction in card["effects"]:
                         operation = instruction.get("operation", instruction)
                         multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
-                        intrinsic += card_weights.get(operation["type"], card_weights.get(instruction["type"], 0)) * multiplier
+                        if operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
+                            intrinsic += effect_potential(rules, s, c, operation["effect"], w["effect_value_weights"])
+                        else:
+                            intrinsic += card_weights.get(operation["type"], card_weights.get(instruction["type"], 0)) * multiplier
+                    intrinsic = max(0.0, intrinsic)
                     if not legal.can_start_card(s, c, card):
                         intrinsic *= w["unusable_card_weight"]
                 cards += sign(c) * intrinsic
@@ -150,6 +174,50 @@ class ScoreEvaluator:
             raise CoreError("Marginal analysis requires a visible board unit")
         after = self._value(belief, country, excluded_unit=token).map_value
         return before - after  # Diagnostic only; never summed into total again.
+
+
+def scoring_opportunities(rules, turn):
+    end = (rules.settings["max_rounds"] - turn.round_id + 1) * len(TURN_ORDER)
+    current = turn.country_index
+    first = current + (turn.phase in ("Victory", "Discard", "Draw"))
+    return tuple((index - current, TURN_ORDER[index % len(TURN_ORDER)]) for index in range(first, end))
+
+
+def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights):
+    """Discount when each scoring opportunity occurs, including gaps between seats."""
+    horizon = weights["horizon"]
+    discount = weights["time_discount"]
+    held = any(site_id in values for values in rates.values())
+    if held:
+        schedule = [(delay, seat, rates[seat][site_id]) for delay, seat in opportunities if site_id in rates[seat]][:horizon]
+        baseline = sum(vp * discount ** delay for delay, _, vp in schedule)
+        value = sum(vp * discount ** delay * sign(seat) *
+                    (1 - weights["threat_weight"] * max(0, -sign(seat) * advantage)) for delay, seat, vp in schedule)
+    else:
+        # A neutral site is a hypothetical opportunity for one seat. Multiplying
+        # it by every eligible seat would value the same future capture repeatedly.
+        eligible = next((seat for _, seat in opportunities if seat in site["countries"] and sign(seat) * advantage > 0), None)
+        schedule = [(delay, seat, site["vp"]) for delay, seat in opportunities if seat == eligible][:horizon]
+        baseline = sum(vp * discount ** delay for delay, _, vp in schedule)
+        value = baseline * weights["expansion_weight"] * advantage
+    return {"baseline_vp": baseline, "value": value, "opportunities": [
+        {"seat": seat, "delay": delay, "vp": vp, "projected_capture": not held} for delay, seat, vp in schedule
+    ]}
+
+
+def effect_potential(rules, state, seat, effect, weights):
+    from .content_effects import condition_met
+    if not condition_met(rules, state, seat, effect.get("when")):
+        return 0.0
+    kind = effect["type"]
+    if kind == "choose-one":
+        return max((sum(effect_potential(rules, state, seat, child, weights) for child in option["effects"])
+                    for option in effect["options"]), default=0.0)
+    if kind == "points":
+        award = effect["side"]
+        friendly = award in ("self", rules.team(seat))
+        return weights["points"] * effect["amount"] * (1 if friendly else -1)
+    return weights.get(kind, weights["default"])
 
 
 class SimulationIncomplete(CoreError):

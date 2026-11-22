@@ -30,7 +30,7 @@ def observation(processor, controlled_countries):
         if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind in ("SCORE_DORMANT", "SET_ASIDE", "OBJECT_POOL"))):
             positions[position]["count"] = 0
         if permitted:
-            known = [key for key in ids if s.tokens[key].token_type != "ABILITY" or
+            known = [key for key in ids if s.tokens[key].token_type not in ("ABILITY", "RULE") or
                      _visible_position(s.tokens[s.tokens[key].source_token_id].position_id, rules, controlled)]
             positions[position].update(tokens=known, count=len(known))
             for token_id in known:

@@ -15,6 +15,7 @@
     "core:migrate": "node tools/core.mjs migrate",
     "core:verify-content": "node tools/core.mjs verify-content",
     "core:audit-content": "node tools/core.mjs audit-content",
+    "core:ai-trial": "node tools/core.mjs ai-trial",
     "dev": "node --watch src/server.ts",
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.build.json",
