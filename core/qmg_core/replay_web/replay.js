@@ -43,12 +43,17 @@ const optionNames = {use: "使用能力", decline: "放弃", confirm: "确认", 
   skip: "跳过", discard: "弃牌", air: "空军", unit: "地面／海军单位"};
 const modeNames = {rules: "规则评分 A", search: "完整结算 B", plan: "沿用已评分的续步", forced: "唯一合法指令"};
 const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "no-comparable-commands":"无可比较的行动",
-  "matched-continuation":"续步吻合", "rules-only":"规则策略", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
+  "matched-continuation":"续步吻合", "matched-exchange":"调配方案与合法选项吻合",
+  "rules-only":"规则策略", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
 const shortReason = reason => ({
   "Action cannot be represented from this observation": "席位观察无法表示",
   "Within-card choice budget exceeded; no partial score assigned": "超过结算分支上限",
 })[reason] || statusNames[reason] || reason || "未完成";
 const signed = n => (n > 0 ? "+" : "") + Number(n).toFixed(Number.isInteger(n) ? 0 : 2);
+const exchangeDetails = plan => [
+  "出牌 " + signed(plan.play_score), "弃牌 " + signed(plan.discard_score), "牌库 " + signed(plan.deck_score),
+  "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining,
+].join(" · ");
 
 function mount(data) {
   const {frames, regions, edges, tokens, forces, game, batch} = data;
@@ -337,6 +342,7 @@ function mount(data) {
       } else {
         li.append(node("small", shortReason(c.reason)));
       }
+      if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
       list.append(li);
     }
     if (list.childElementCount) area.append(list);
@@ -344,8 +350,10 @@ function mount(data) {
     if (!list.childElementCount) details.open = true;
     const rules = node("ul", undefined, "candidate-list");
     for (const c of row.rule_scores) {
-      rules.append(node("li", commandLabel(c.command, false) + " · " + signed(c.rule_score) + (picked(c.command) ? " ✓" : ""),
-        picked(c.command) ? "picked" : ""));
+      const li = node("li", commandLabel(c.command, false) + " · " + signed(c.rule_score) + (picked(c.command) ? " ✓" : ""),
+        picked(c.command) ? "picked" : "");
+      if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
+      rules.append(li);
     }
     details.append(node("summary", "规则排序（" + row.rule_scores.length + " 项）"), rules);
     area.append(details);

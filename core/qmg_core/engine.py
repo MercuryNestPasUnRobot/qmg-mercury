@@ -816,13 +816,11 @@ class CommandProcessor:
                     options = ["pass"] + [t.token_id for t in air_units(self.rules, s, force)
                                           if t.token_id in supplied and t.position_id in neighbors]
             elif choice_kind == "REALLOCATION_SELECTED":
-                from .content_actions import reallocation_terms
-                cost, _ = reallocation_terms(self.rules, s, parent.actor_country)
+                from .content_actions import reallocation_payment_options
                 hand = s.positions[zone(parent.actor_country, "HAND")]
                 selected = [key for key in continuation["selected"] if key in hand]
                 continuation["selected"] = selected
-                options = [key for key in hand if key not in selected] if len(selected) < cost else ["confirm"]
-                options.append("cancel")
+                options = reallocation_payment_options(self.rules, s, parent.actor_country, selected)
             else:
                 options = self.legal.targets(s, parent.actor_country, continuation)
             if not options:

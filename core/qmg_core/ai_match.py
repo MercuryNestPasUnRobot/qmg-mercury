@@ -143,8 +143,8 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--replay-library", type=Path, default=LIBRARY)
     parser.add_argument("--name", help="Readable batch name in the replay library")
-    parser.add_argument("--ai-version", default="AI 试验版 v1")
-    parser.add_argument("--ai-note", default="B 预选后限时完整结算，A 分阶段规则评分。")
+    parser.add_argument("--ai-version", default="AI 试验版 v1.1")
+    parser.add_argument("--ai-note", default="B 限时结算，A 规则回退。资源调配按出牌、弃牌和陆海牌储备评分。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:
         parser.error("Budget, shortlist width and command limit must be positive")
