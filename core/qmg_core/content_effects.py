@@ -332,9 +332,10 @@ def available_options(rules, state, country, effect, context=None):
     if source:
         kinds = effect.get("kinds", [effect["kind"]] if kind == "recover-discard" and "kind" in effect else None)
         zones = [source, "DISABLED_STATUS"] if kind == "discard-status" and not effect.get("activeOnly") else [source]
-        return [key for source_zone in zones for key in state.positions.get(zone(target, source_zone), [])
-                if state.tokens[key].token_type == "CARD" and key != (context or {}).get("excluded_card") and
-                (kinds is None or rules.cards[state.tokens[key].definition_id].get("legacy_kind") in kinds)]
+        options = [key for source_zone in zones for key in state.positions.get(zone(target, source_zone), [])
+                   if state.tokens[key].token_type == "CARD" and key != (context or {}).get("excluded_card") and
+                   (kinds is None or rules.cards[state.tokens[key].definition_id].get("legacy_kind") in kinds)]
+        return sorted(options) if kind == "search-deck" and (context or {}).get("reallocation") else options
     return []
 
 

@@ -9,7 +9,8 @@ from .api import CoreAPI, simulation_from_observation
 from .definitions import RuleSet
 from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
-from .operations import ScoreResolver
+from .operations import ScoreResolver, outcome
+from .reallocation_scoring import payment_plans, price
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 
 
@@ -57,6 +58,23 @@ class ScoreEvaluator:
             raise CoreError("Incomplete resolution cannot receive a completed-action score")
         belief = simulation_from_observation(self.rules, view)
         return self._value(belief, country)
+
+    def hand_value(self, rules, state, country, card, legal):
+        w = self.weights
+        weights = w["card_value_weights"]
+        if card.get("simulation_unknown"):
+            return weights["unknown"]
+        deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
+        copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
+        value = copies * weights["ability_ready"]
+        for instruction in card["effects"]:
+            operation = instruction.get("operation", instruction)
+            multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
+            if operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
+                value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"])
+            else:
+                value += weights.get(operation["type"], weights.get(instruction["type"], 0)) * multiplier
+        return max(0.0, value) * (1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
 
     def _value(self, processor, country, *, excluded_unit=None):
         s, rules, w = processor.state, processor.rules, self.weights
@@ -138,24 +156,7 @@ class ScoreEvaluator:
             hand = s.positions[zone(c, "HAND")]
             for token_id in hand:
                 card = rules.cards[s.tokens[token_id].definition_id]
-                if card.get("simulation_unknown"):
-                    intrinsic = card_weights["unknown"]
-                else:
-                    # A deployable ability contributes once, through its card or its active replicas.
-                    deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
-                    copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
-                    intrinsic = copies * card_weights["ability_ready"]
-                    for instruction in card["effects"]:
-                        operation = instruction.get("operation", instruction)
-                        multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
-                        if operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
-                            intrinsic += effect_potential(rules, s, c, operation["effect"], w["effect_value_weights"])
-                        else:
-                            intrinsic += card_weights.get(operation["type"], card_weights.get(instruction["type"], 0)) * multiplier
-                    intrinsic = max(0.0, intrinsic)
-                    if not legal.can_start_card(s, c, card):
-                        intrinsic *= w["unusable_card_weight"]
-                cards += sign(c) * intrinsic
+                cards += sign(c) * self.hand_value(rules, s, c, card, legal)
             # Status source and its ability replicas represent the same resource: count replicas only.
             for t in s.tokens.values():
                 if t.owner_country == c and t.token_type == "ABILITY" and t.position_id == zone(c, "ABILITY_READY"):
@@ -237,15 +238,19 @@ class OneStepPlanner:
         return sorted(self.iter_rank(client, country), key=candidate_key, reverse=True)
 
     def iter_rank(self, client, country):
-        root = simulation_from_observation(self.evaluator.rules, client.observe())
+        view = client.observe()
+        root = simulation_from_observation(self.evaluator.rules, view)
         before = self.evaluator._value(root, country)
         for command in client.legal_commands():
             if command["actor"] != country:
                 continue
             nodes = [0]
-            candidate = CommandProcessor(root.rules, root.state)
-            simulated_seat = CoreAPI(candidate, (country,))
             try:
+                if command["type"] == "REALLOCATE":
+                    yield self._rank_exchange(root, view, country, command, nodes)
+                    continue
+                candidate = CommandProcessor(root.rules, root.state)
+                simulated_seat = CoreAPI(candidate, (country,))
                 if command not in simulated_seat.legal_commands():
                     raise SimulationIncomplete("Action cannot be represented from this observation")
                 simulated_seat.submit(command, include_history=False)
@@ -262,6 +267,59 @@ class OneStepPlanner:
             except (SimulationIncomplete, ResolutionBudgetExceeded) as e:
                 yield {"command": deepcopy(command), "complete": False,
                        "reason": str(e), "q": None, "nodes": nodes[0]}
+
+    def _rank_exchange(self, root, view, country, command, nodes):
+        """Evaluate the ordinary play of one representative of the estimated acquisition."""
+        state, rules = root.state, root.rules
+        legal = LegalActionGenerator(rules)
+
+        def hand_value(card):
+            return self.evaluator.hand_value(rules, state, country, card, legal)
+
+        plans = payment_plans(rules, view, country, lambda card: -hand_value(card))
+        plan = max(plans, key=lambda p: price(p, hand_value(rules.cards[p["definition"]]))["total"], default=None)
+        if plan is None:
+            raise SimulationIncomplete("No exchange plan from the seat's visible inventory")
+        hand, discard = zone(country, "HAND"), zone(country, "DISCARD")
+        target = plan["target"]
+        stock = root
+        if target is None:
+            # A catalog representative replaces one unknown deck slot. No real deck token is used.
+            projected = deepcopy(view)
+            positions = projected["positions"]
+            positions[zone(country, "DECK")]["count"] -= 1
+            target = "estimate:reallocation:" + country
+            projected["tokens"][target] = {"token_id": target, "definition_id": plan["definition"], "token_type": "CARD",
+                "owner_country": country, "source_token_id": None, "position_id": hand}
+            positions[hand]["tokens"].append(target)
+            positions[hand]["count"] += 1
+            stock = simulation_from_observation(self.evaluator.rules, projected)
+
+        post_payment = stock.state
+        changes = outcome("ESTIMATED_REALLOCATION")
+        for key in plan["payment"]:
+            stock.executor.transfer(post_payment, key, discard, changes)
+        if plan["source"] == "discard":
+            stock.executor.transfer(post_payment, target, hand, changes)
+        ordinary = CommandProcessor(stock.rules, post_payment)
+        before = self.evaluator._value(ordinary, country)
+        outcomes = []
+        for play in CoreAPI(ordinary, (country,)).legal_commands():
+            if play["type"] == "PLAY_CARD" and play.get("card") == target:
+                branch = CommandProcessor(ordinary.rules, ordinary.state)
+                CoreAPI(branch, (country,)).submit(play, include_history=False)
+                value, _ = self._finish(branch, country, nodes)
+                outcomes.append(value)
+        after = max(outcomes, key=lambda value: (value.terminal_rank, value.total), default=before)
+        plan = price(plan, after.total - before.total)
+        return {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
+                "weights_digest": digest(self.evaluator.weights),
+                "actual_vp_delta": after.actual_vp - before.actual_vp,
+                "map_delta": after.map_value - before.map_value,
+                "card_delta": after.card_value - before.card_value + plan["discard_score"],
+                "resource_delta": after.resource_adjustment - before.resource_adjustment + plan["deck_score"],
+                "q": plan["total"], "terminal_rank": 0,
+                "continuations": [], "choice_signatures": [], "reallocation": plan}
 
     def _finish(self, processor, country, nodes):
         nodes[0] += 1

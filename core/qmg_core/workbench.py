@@ -8,6 +8,7 @@ from uuid import uuid4
 import json
 
 from .api import CoreAPI
+from .ai_match_policy import RulePolicy
 from .catalog import ContentCatalog
 from .engine import CommandProcessor
 from .evaluation import OneStepPlanner, SimulationIncomplete
@@ -52,6 +53,7 @@ class Workbench:
             )
         self.human = CoreAPI(self.processor, SEAT)
         self.planner = OneStepPlanner(rules, weights)
+        self.rule_policy = RulePolicy(rules)
         self.ai_choices = []
 
     def act(self, fields):
@@ -66,9 +68,16 @@ class Workbench:
                 raise CoreError("当前没有可执行的指令。")
             if view["decision"]:
                 expected = next((c for c in self.ai_choices if c["actor"] == actor and c["expected_version"] == view["version"]), None)
-                planned = next((c for c in available if expected and c["option"] == expected["option"]), None)
+                planned = next((c for c in available if expected and c["type"] == "CHOOSE" and
+                                c["option"] == expected.get("option")), None)
                 self.ai_choices = [c for c in self.ai_choices if c["expected_version"] > view["version"]] if planned else []
-                command = planned or self.planner.choose(client, actor)
+                actor_view = client.observe(include_history=False)
+                if planned:
+                    command = planned
+                elif actor_view.get("reallocation"):
+                    command = self.rule_policy.rank(actor_view, available)[0]["command"]
+                else:
+                    command = self.planner.choose(client, actor)
             else:
                 ranked = self.planner.rank(client, actor)
                 best = next((candidate for candidate in ranked if candidate["complete"]), None)
@@ -98,6 +107,9 @@ class Workbench:
         def token_name(token_id):
             token = tokens.get(token_id)
             if not token:
+                definition = view.get("reallocation", {}).get("targets", {}).get(token_id)
+                if definition:
+                    return escape(self.processor.rules.cards[definition].get("title", definition))
                 return escape(token_id)
             definition = token["definition_id"]
             if token["token_type"] == "UNIT":
@@ -149,7 +161,8 @@ class Workbench:
             elif command["type"] == "USE_AIR":
                 options.append(button("human", f'空军行动 {COUNTRY_NAMES.get(command["force"], command["force"])}', i))
             elif command["type"] == "REALLOCATE":
-                options.append(button("human", "调配资源", i))
+                cost = view.get("reallocation", {}).get("cost", 3)
+                options.append(button("human", f"调配资源 · 弃 {cost} 找 1", i))
         waiting = f'等待 {COUNTRY_NAMES[decision["required_country"]]} 选择' if decision else "本阶段行动"
         if decision and "decision_type" in decision:
             kind = {"ABILITY": "使用或放弃能力", "RESPONSE_ORDER": "选择先发动的响应", "COST": "选择支付牌", "TARGET": "选择合法目标",

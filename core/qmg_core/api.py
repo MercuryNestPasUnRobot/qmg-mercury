@@ -1,5 +1,6 @@
 """Application boundary: projected observations and the same commands for every client."""
 from copy import deepcopy
+from collections import Counter
 
 from .model import CoreError, TURN_ORDER, Token, TurnClock, GameState, zone
 from .engine import CommandProcessor
@@ -15,6 +16,44 @@ def _visible_position(position, rules, controlled):
     country, _, kind = position.partition(":")
     return (position in rules.regions or position == "RESOLUTION" or kind in PUBLIC_ZONES
             or (country in controlled and kind != "DECK"))
+
+
+def _reallocation_view(rules, s, controlled, visible):
+    from .content_actions import BASIC_KINDS, reallocation_terms
+    from .air import opportunity
+
+    seat = TURN_ORDER[s.turn.country_index]
+    if seat not in controlled or s.turn.phase != "Play" or not rules.settings.get("reallocation"):
+        return None
+    decision = s.decision
+    own_exchange = decision and decision.required_country == seat and s.stack[-1].context.get("reallocation")
+    if not own_exchange and (s.stack or s.turn.plays_remaining != rules.settings["plays_per_turn"] or
+                             not opportunity(s, "reallocation-opportunity-" + seat)):
+        return None
+
+    def basic_kind(token):
+        if token["owner_country"] == seat and token["token_type"] == "CARD":
+            return rules.cards[token["definition_id"]].get("legacy_kind")
+        return None
+
+    # Infer only the active seat's aggregate composition from the fixed catalog
+    # and visible cards outside the deck. The real deck contents aren't traversed.
+    copies = Counter(map(basic_kind, rules.data["initial_tokens"]))
+    seen = Counter(map(basic_kind, visible.values()))
+    cost, discard = reallocation_terms(rules, s, seat)
+    result = {"cost": cost, "discard_allowed": discard,
+              "deck": {kind: max(0, copies[kind] - seen[kind]) for kind in BASIC_KINDS}}
+    if own_exchange:
+        continuation = decision.continuation
+        effect = continuation.get("effect", {})
+        if continuation["type"] == "REALLOCATION_SELECTED":
+            result["payment"] = continuation["selected"]
+        elif effect.get("type") == "choose-one":
+            result["sources"] = {option: effect["options"][int(option)]["label"] for option in decision.legal_options}
+        elif effect.get("type") in ("search-deck", "recover-discard"):
+            result["source"] = "deck" if effect["type"] == "search-deck" else "discard"
+            result["targets"] = {key: s.tokens[key].definition_id for key in sorted(decision.legal_options)}
+    return result
 
 
 def observation(processor, controlled_countries, *, include_history=True):
@@ -85,10 +124,12 @@ def observation(processor, controlled_countries, *, include_history=True):
         source = ability_id if ability_id in s.positions["RESOLUTION"] else frame.source_card_id
         if source in visible:
             resolution.append({"source": source, "country": frame.actor_country})
+    reallocation = _reallocation_view(rules, s, controlled, visible)
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
             "tokens": visible, "positions": positions, "turn": deepcopy(s.turn.__dict__),
             "scores": dict(s.scores), "winner": s.winner, "decision": decision,
             "resolution_depth": len(s.stack), "resolution": resolution, "history": history,
+            **({"reallocation": reallocation} if reallocation is not None else {}),
             **({"turn_start": deepcopy(s.turn_start)} if s.turn_start else {})}
 
 
