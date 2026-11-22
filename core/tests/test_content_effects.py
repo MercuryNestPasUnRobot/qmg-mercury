@@ -390,3 +390,92 @@ def test_extra_play_alternate_mode_executes_chosen_action_instead_of_empty_effec
     choose(p, "B")
     assert any(t.owner_country == "germany" and t.position_id == "B" for t in p.state.tokens.values())
     assert p.state.tokens["g-draw"].position_id == "germany:DISCARD" and p.state.turn.plays_remaining == 0
+
+
+@pytest.mark.parametrize("program", ["AB", "ABC", "ACA"])
+def test_combined_card_preserves_every_step_and_repeated_steps(data, program):
+    effects = {
+        "A": {"type": "points", "side": "self", "amount": 2},
+        "B": {"type": "choose-space", "action": "recruit", "kind": "army", "spaces": ["B"]},
+        "C": {"type": "discard-top", "target": "united-kingdom", "count": 1},
+    }
+    card(data, "g-chain")["effects"] = [instruction(effects[letter]) for letter in program]
+    processor = make(data)
+    play(processor, "g-chain")
+    if "B" in program:
+        assert processor.state.decision.legal_options == ["B"]
+        choose(processor, "B")
+        assert processor.state.tokens["germany-army-1"].position_id == "B"
+    if "C" in program:
+        assert processor.state.tokens["uk-deck"].position_id == "united-kingdom:DISCARD"
+    operations = {"A": "GAIN_VP", "B": "RECRUIT", "C": "TRANSFER"}
+    assert [r["operation_type"] for r in processor.records if r["operation_type"] in operations.values()] == [
+        operations[letter] for letter in program]
+    assert processor.state.scores["axis"] == 2 * program.count("A")
+
+
+@pytest.mark.parametrize("condition_met", [False, True])
+def test_step_condition_does_not_hide_card_or_skip_unconditional_suffix(data, condition_met):
+    if condition_met:
+        move_initial(data, "germany-army-1", "B")
+    condition = {"type": "unit-count", "filter": {"force": "self", "kind": "army", "spaces": ["B"]}, "min": 1}
+    card(data, "g-chain").update(effects=[
+        instruction({"type": "points", "side": "self", "amount": 3, "when": condition}),
+        instruction({"type": "points", "side": "self", "amount": 2})])
+    processor = make(data)
+    play(processor, "g-chain")
+    assert processor.state.scores["axis"] == (5 if condition_met else 2)
+    assert any(r["operation_type"] == "EFFECT_SKIPPED" for r in processor.records) != condition_met
+
+
+@pytest.mark.parametrize("condition_met", [False, True])
+def test_conditional_status_can_deploy_then_checks_the_condition_at_its_listener(data, condition_met):
+    if condition_met:
+        move_initial(data, "germany-army-1", "B")
+    condition = {"type": "unit-count", "filter": {"force": "self", "kind": "army", "spaces": ["B"]}, "min": 1}
+    card(data, "g-status").update(legacy_kind="status", content_condition=condition, abilities=["score-if-present"])
+    data["abilities"].append({"id": "score-if-present", "activation_mode": "OPTIONAL", "after": "origin", "priority": 19,
+        "trigger": {"operation_type": "CARD_EVENT", "card_trigger": {"type": "victory-start"}},
+        "effects": [instruction({"type": "points", "side": "self", "amount": 3})]})
+    processor = make(data)
+    play(processor, "g-status")
+    assert processor.state.tokens["g-status"].position_id == "germany:STATUS"
+    for _ in range(2):
+        processor.submit(next(c for c in processor.legal_commands(("germany",)) if c["type"] == "END_PHASE"), ("germany",))
+    if condition_met:
+        assert processor.state.decision.decision_type == "ABILITY"
+        choose(processor, "use")
+    else:
+        assert processor.state.decision is None
+    assert processor.state.scores["axis"] == (4 if condition_met else 1)
+
+
+def test_catalog_audit_detects_dropped_or_reordered_execution_even_when_source_metadata_matches(data):
+    from qmg_core.content_audit import compare_card
+    source = {"id": "g-chain", "kind": "event", "country": "germany", "name": "Compound test", "text": "Test",
+              "effects": [{"type": "points", "side": "self", "amount": amount} for amount in (2, 3, 2)]}
+    definition = card(data, "g-chain")
+    definition.update(legacy_kind=source["kind"], title=source["name"], text=source["text"], source_card=source,
+                      implementation={"status": "executable"}, effects=[instruction(e) for e in source["effects"]])
+    assert compare_card(source, RuleSet(data))["errors"] == []
+    definition["effects"][0], definition["effects"][1] = definition["effects"][1], definition["effects"][0]
+    assert compare_card(source, RuleSet(data))["errors"] == ["effects[0]", "effects[1]"]
+    definition["effects"].pop()
+    assert "effects size" in compare_card(source, RuleSet(data))["errors"]
+
+
+def test_new_search_resets_the_scope_even_when_the_player_takes_no_cards(data):
+    card(data, "g-chain")["effects"] = [
+        instruction({"type": "search-deck", "min": 1, "max": 1}),
+        instruction({"type": "search-deck", "min": 0, "max": 1}),
+        instruction({"type": "play-from-zone", "zone": "hand", "fromLastSearchOnly": True, "optional": True}),
+        instruction({"type": "points", "side": "self", "amount": 2}),
+    ]
+    processor = make(data)
+    play(processor, "g-chain")
+    choose(processor, "g-deck-1")
+    choose(processor, "done")
+    assert processor.state.decision.legal_options == ["done"]
+    choose(processor, "done")
+    assert processor.state.tokens["g-deck-1"].position_id == "germany:HAND"
+    assert processor.state.scores["axis"] == 2

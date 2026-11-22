@@ -291,7 +291,7 @@ def available_options(rules, state, country, effect, context=None):
         return [t.token_id for t in filtered_units(rules, state, country, effect["filter"])]
     if kind == "choose-one":
         return [str(i) for i, option in enumerate(effect["options"])
-            if not option["effects"] or can_begin(rules, state, country, option["effects"][0])]
+                if branch_can_begin(rules, state, country, option["effects"], context)]
     if kind == "play-from-zone":
         owner = force_id(effect.get("target"), country)
         legal = LegalActionGenerator(rules)
@@ -338,9 +338,17 @@ def available_options(rules, state, country, effect, context=None):
     return []
 
 
+def branch_can_begin(rules, state, country, effects, context=None):
+    for effect in effects:
+        chooser = effect.get("chooser", country)
+        if condition_met(rules, state, chooser, effect.get("when")):
+            return can_begin(rules, state, chooser, effect, context)
+    return True
+
+
 def can_begin(rules, state, country, effect, context=None):
     if not condition_met(rules, state, country, effect.get("when")):
-        return False
+        return True  # The instruction itself is legal and will be skipped in order.
     context = context or {}
     event = context.get("event", {})
     kind = effect["type"]
@@ -361,6 +369,8 @@ def can_begin(rules, state, country, effect, context=None):
         return len(available_options(rules, state, country, effect, context)) >= effect["count"]
     if effect["type"] == "choose-country":
         return bool(available_options(rules, state, country, effect, context)) or effect.get("skipIfNoTarget", False)
+    if effect["type"] == "search-deck":
+        return len(available_options(rules, state, country, effect, context)) >= effect["min"]
     return True
 
 
@@ -676,7 +686,11 @@ def execute_effect(engine, state, frame, op):
     if kind in ("build", "recruit"):
         frame.remaining_operations.append({**action_for(effect, country), "effect_constraints": effect})
         return outcome("EFFECT_EXPANDED"), False
+    if kind == "search-deck" and "selected" not in op:
+        frame.context["search_tokens"] = []
     options = available_options(rules, state, country, effect, frame.context)
+    if kind in ("search-deck", "put-hand-on-deck-bottom") and len(options) < effect["min"] - len(op.get("selected", [])):
+        return outcome_failure(kind.upper(), "Too few eligible cards for the required choice"), False
     if kind == "discard-hand" and effect.get("strict") and len(options) < effect["count"]:
         return outcome_failure("DISCARD_PAYMENT", "Not enough eligible cards for payment"), False
     remaining = op.get("remaining", effect.get("count", effect.get("max", 1)))
