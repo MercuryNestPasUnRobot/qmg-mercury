@@ -1,0 +1,435 @@
+"use strict";
+
+const $ = id => document.getElementById(id);
+function node(tag, value, cls) {
+  const element = document.createElement(tag);
+  if (value !== undefined) element.textContent = value;
+  if (cls) element.className = cls;
+  return element;
+}
+
+const world = {
+  canada: [0, 1], "united-states": [0, 3], "latin-america": [1, 5],
+  "north-atlantic": [1, 1], "central-atlantic": [2, 3], "south-atlantic": [3, 6],
+  "united-kingdom": [2, 1], "western-europe": [3, 3], "north-sea": [3, 1],
+  scandinavia: [4, 0], germany: [4, 2], italy: [4, 4], "baltic-sea": [5, 1],
+  "eastern-europe": [5, 2], balkans: [5, 4], ukraine: [6, 3], moscow: [6, 1],
+  russia: [7, 0], "black-sea": [6, 4], "north-africa": [4, 6], mediterranean: [4, 5],
+  "south-africa": [4, 8], madagascar: [5, 8], "middle-east": [6, 5], "caspian-sea": [7, 3],
+  "arabian-sea": [6, 7], "indian-ocean": [7, 8], kazakhstan: [8, 2], india: [8, 5],
+  siberia: [9, 0], mongolia: [9, 2], "china-west": [9, 4], "china-east": [10, 3],
+  vladivostok: [11, 1], japan: [12, 2], "east-china-sea": [11, 3], "iwo-jima": [12, 3],
+  "southeast-asia": [9, 5], "south-china-sea": [10, 5], philippines: [11, 5],
+  indonesia: [9, 6], "new-guinea": [11, 6], australia: [10, 8], "new-zealand": [12, 8],
+  "north-pacific": [13, 1], hawaii: [13, 3], "central-pacific": [12, 5],
+  "east-pacific": [14, 3], "southeast-pacific": [14, 6], "south-pacific": [13, 7],
+};
+const countryShort = {germany:"德", "united-kingdom":"英", japan:"日", "soviet-union":"苏", italy:"意", "united-states":"美"};
+const teamNames = {axis: "轴心", allies: "同盟", draw: "平局"};
+const phaseNames = {Setup: "设置", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "抓牌"};
+const unitNames = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};
+const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "状态区", DISABLED_STATUS: "停用区",
+  RESPONSE: "响应区", RESERVE_ARMY: "陆军预备", RESERVE_NAVY: "海军预备", RESERVE_AIR: "空军预备",
+  ABILITY_READY: "可用区", ABILITY_PENDING: "待结算", OBJECT_POOL: "对象池",
+  RESOLUTION: "结算区", SCORE_DORMANT: "计分休眠区", SET_ASIDE: "待命区"};
+const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", CHOOSE: "选择", USE_STATUS: "发动状态牌",
+  USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应",
+  BUILD_ARMY: "建立陆军", BUILD_NAVY: "建立海军", LAND_BATTLE: "陆战", SEA_BATTLE: "海战", RECRUIT: "征召"};
+const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
+  ABILITY_TRIGGERED: "响应触发", BEGIN_PHASE: "进入阶段", TURN_END: "回合结束", GAIN_VP: "获得 VP",
+  SCORE_COUNTRY: "据点计分", ELIMINATE: "移除单位", OBJECT_SETTLED: "对象结算完成", ACTIVATE_ABILITY: "发动能力",
+  CARD_EFFECT: "牌效果", BATTLE_DECLARED: "宣告战斗", COUNTRY_LOSS: "国家损失"};
+const optionNames = {use: "使用能力", decline: "放弃", confirm: "确认", cancel: "取消", done: "完成",
+  skip: "跳过", discard: "弃牌", air: "空军", unit: "地面／海军单位"};
+const modeNames = {rules: "规则评分 A", search: "完整结算 B", plan: "沿用已评分的续步", forced: "唯一合法指令"};
+const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "no-comparable-commands":"无可比较的行动",
+  "matched-continuation":"续步吻合", "rules-only":"规则策略", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
+const shortReason = reason => ({
+  "Action cannot be represented from this observation": "席位观察无法表示",
+  "Within-card choice budget exceeded; no partial score assigned": "超过结算分支上限",
+})[reason] || statusNames[reason] || reason || "未完成";
+const signed = n => (n > 0 ? "+" : "") + Number(n).toFixed(Number.isInteger(n) ? 0 : 2);
+
+function mount(data) {
+  const {frames, regions, edges, tokens, forces, game, batch} = data;
+  const country = id => forces[id]?.name || id || "";
+  const end = frames.length - 1;
+  const map = $("map");
+  const viewport = $("viewport");
+  const canvas = $("routes");
+  const ctx = canvas.getContext("2d");
+  const turnStart = [];
+  const points = Object.create(null);
+  const buttons = Object.create(null);
+  let i = 0;
+  let timer = null;
+  let focus = null;
+  let zoomFit = false;
+  const worldMap = Object.keys(regions).every(key => Object.hasOwn(world, key));
+
+  $("match-name").textContent = batch.name;
+  $("match-info").textContent = [
+    batch.ai_version, "种子 " + game.seed, "B 执" + teamNames[game.search_team],
+    "预算 " + batch.settings.budget_ms + " ms", batch.ai_note,
+  ].filter(Boolean).join(" · ");
+  $("position").max = end;
+  frames.forEach((frame, index) => {
+    const previous = frames[index - 1];
+    if (!previous || frame.turn.turn_id !== previous.turn.turn_id ||
+        (previous.turn.phase === "Setup" && frame.turn.phase !== "Setup")) {
+      turnStart.push(index);
+      const turn = frame.turn;
+      const label = frame.winner ? "终局" : turn.phase === "Setup" ? "开局设置" :
+        "第 " + turn.round_id + " 轮 · " + country(data.turn_order[turn.country_index]);
+      const option = node("option", label);
+      option.value = index;
+      $("turns").append(option);
+    }
+  });
+  const regionKeys = Object.keys(regions);
+  const dx = 106, dy = 56, marginX = 57, marginY = 32;
+  regionKeys.forEach((key, index) => {
+    const [col, line] = worldMap ? world[key] : [index % 5, Math.floor(index / 5)];
+    const x = marginX + col * dx, y = marginY + line * dy;
+    points[key] = [x, y];
+    const button = node("button", undefined, "position" + (regions[key].type === "SEA" ? " sea" : ""));
+    button.style.left = x + "px";
+    button.style.top = y + "px";
+    button.addEventListener("click", () => {
+      focus = focus === key ? null : key;
+      paintMap(frames[i]);
+    });
+    buttons[key] = button;
+    $("regions").append(button);
+  });
+  const width = Math.max(...Object.values(points).map(p => p[0])) + marginX;
+  const height = Math.max(...Object.values(points).map(p => p[1])) + marginY;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  canvas.style.width = map.style.width = width + "px";
+  canvas.style.height = map.style.height = height + "px";
+  ctx.scale(ratio, ratio);
+
+  function fit() {
+    map.style.zoom = zoomFit ? Math.min(1, viewport.clientWidth / width) : 1;
+  }
+  function pan(key) {
+    zoomFit = !key;
+    fit();
+    viewport.scrollLeft = key ? Math.max(0, points[key][0] - viewport.clientWidth / 2) : 0;
+  }
+  const theaters = [["总览", null]];
+  if (worldMap) theaters.push(...[["大西洋", "central-atlantic"], ["欧洲与非洲", "germany"],
+    ["亚洲", "china-west"], ["太平洋", "central-pacific"]].filter(([, key]) => key in points));
+  else theaters.push(["原始大小", regionKeys[0]]);
+  for (const [name, key] of theaters) {
+    const button = node("button", name);
+    button.addEventListener("click", () => pan(key));
+    $("theaters").append(button);
+  }
+  window.addEventListener("resize", fit);
+
+  const judge = () => $("reveal").checked;
+  const tokenName = key => {
+    const t = tokens[key];
+    if (!t) return optionNames[key] || regions[key]?.name || country(key);
+    if (t.unit) return country(t.force) + " " + unitNames[t.unit];
+    return tokens[t.source]?.name || t.name;
+  };
+  const concealed = key => {
+    const t = tokens[key];
+    if (!t) return false;
+    const seat = frames[i].seats[forces[t.force]?.seat];
+    const earlier = frames[Math.max(0, i - 1)].seats[forces[t.force]?.seat];
+    return seat?.RESPONSE.includes(key) || seat?.RESPONSE.includes(t.source) ||
+      earlier?.RESPONSE.includes(key) || earlier?.RESPONSE.includes(t.source);
+  };
+  const safeName = key => !judge() && concealed(key) ? "暗置响应" : tokenName(key);
+  const zoneName = key => {
+    if (!key) return "—";
+    if (regions[key]) return regions[key].name;
+    const [owner, area] = key.split(":");
+    return area ? country(owner) + " " + (zoneNames[area] || area) : zoneNames[key] || key;
+  };
+  const commandLabel = (command, obscure) => {
+    const label = commandNames[command.type] || command.type;
+    if (command.type === "CHOOSE") return obscure ? "提交选项" : "选择 · " + safeName(command.option);
+    if (command.card) {
+      const name = obscure ? "暗置响应" : safeName(command.card);
+      return label + " · " + name + (command.play_as ? " · " + (commandNames[command.play_as] || command.play_as) : "");
+    }
+    return label;
+  };
+
+  function paintMap(frame) {
+    const moved = new Set();
+    const tracks = [];
+    for (const event of frame.events) {
+      for (const [key, from, to] of event.moves) {
+        if (!tokens[key]?.unit) continue;
+        if (from in points) moved.add(from);
+        if (to in points) moved.add(to);
+        if (from in points && to in points) tracks.push([from, to]);
+      }
+    }
+    ctx.clearRect(0, 0, width, height);
+    function line(a, b, highlight, move) {
+      ctx.strokeStyle = move ? "#a36529" : highlight ? "#506e62" : "#8ea9a1";
+      ctx.globalAlpha = (move || highlight) ? 1 : 0.60;
+      ctx.lineWidth = move ? 2.7 : highlight ? 1.8 : 1;
+      ctx.setLineDash(move ? [5, 3] : []);
+      ctx.beginPath();
+      ctx.moveTo(...points[a]);
+      ctx.lineTo(...points[b]);
+      ctx.stroke();
+    }
+    for (const [a, b] of edges) {
+      const highlight = a === focus || b === focus;
+      if (highlight || Math.abs(points[a][0] - points[b][0]) <= dx * 4) line(a, b, highlight, false);
+    }
+    for (const [a, b] of tracks) line(a, b, true, true);
+    const selected = focus && regions[focus];
+    for (const [key, region] of Object.entries(regions)) {
+      const button = buttons[key];
+      const units = (frame.board[key] || []).map(id => tokens[id]).filter(t => t?.unit);
+      const groups = new Map();
+      for (const unit of units) {
+        const k = unit.force + "/" + unit.unit;
+        if (!groups.has(k)) groups.set(k, {unit, count: 0});
+        groups.get(k).count++;
+      }
+      button.classList.toggle("changed", moved.has(key));
+      button.classList.toggle("selected", focus === key);
+      button.setAttribute("aria-pressed", focus === key);
+      button.title = region.name + (units.length ? " · " + units.map(t => country(t.force) + unitNames[t.unit]).join("、") : " · 空区");
+      button.replaceChildren(node("span", region.name, "place-name"));
+      if (region.vp) button.append(node("span", region.vp + " VP", "vp"));
+      if (groups.size) {
+        const badges = node("span", undefined, "badges");
+        for (const {unit, count} of groups.values()) {
+          const name = countryShort[unit.force] || country(unit.force).slice(0, 1);
+          const badge = node("span", name + unitNames[unit.unit].slice(0, 1) + (count > 1 ? "×" + count : ""),
+            "unit " + forces[unit.force].team);
+          badge.title = country(unit.force) + " " + unitNames[unit.unit] + " ×" + count;
+          badges.append(badge);
+        }
+        button.append(badges);
+      }
+    }
+    if (selected) {
+      const occupants = (frame.board[focus] || []).filter(key => tokens[key]?.unit).map(tokenName);
+      const adjacent = edges.filter(e => e.includes(focus)).map(e => regions[e.find(k => k !== focus)].name);
+      $("region-detail").textContent = [selected.name, occupants.join("、") || "无驻军",
+        "基础相邻 " + ([...new Set(adjacent)].join("、") || "—")].join(" · ");
+    } else {
+      $("region-detail").textContent = "点击地区查看驻军和基础连接。";
+    }
+  }
+
+  function inspectCard(key) {
+    const t = tokens[key];
+    const card = tokens[t?.source] || t;
+    $("card-name").textContent = tokenName(key);
+    $("card-text").textContent = card?.text || "此对象没有单独的牌文。";
+    $("card-dialog").showModal();
+  }
+
+  function cardButton(key, css, prefix) {
+    const button = node("button", prefix + tokenName(key), "card " + css);
+    button.addEventListener("click", () => inspectCard(key));
+    return button;
+  }
+
+  function paintSeats(frame) {
+    const active = data.turn_order[frame.turn.country_index];
+    $("seats").replaceChildren();
+    for (const id of data.turn_order) {
+      const seat = frame.seats[id];
+      const team = forces[id].team;
+      const pane = node("article", undefined, "seat team-" + team + (active === id ? " active" : ""));
+      const head = node("div", undefined, "seat-head");
+      head.append(node("strong", country(id)), node("span", teamNames[team], "seat-side"),
+        node("span", team === game.search_team ? "B" : "A", "seat-side"));
+      pane.append(head, node("small", "手牌 " + seat.HAND + " · 牌库 " + seat.DECK + " · 弃牌 " + seat.DISCARD));
+      const cards = node("div", undefined, "cards");
+      for (const key of seat.STATUS) cards.append(cardButton(key, "status", ""));
+      for (const key of seat.DISABLED_STATUS) cards.append(cardButton(key, "disabled", "停用 · "));
+      const responses = seat.RESPONSE.filter(key => tokens[key]?.kind === "CARD");
+      const listeners = seat.RESPONSE.filter(key => tokens[key]?.kind !== "CARD");
+      if (judge()) {
+        for (const key of responses) cards.append(cardButton(key, "response", "盖牌 · "));
+        for (const key of listeners) cards.append(cardButton(key, "response", "监听 · "));
+      } else {
+        if (responses.length) cards.append(node("span", "盖牌 ×" + responses.length, "card-back"));
+        if (listeners.length) cards.append(node("span", "监听 ×" + listeners.length, "card-back"));
+      }
+      if (!cards.childElementCount) cards.append(node("small", "场上无状态牌或响应"));
+      pane.append(cards);
+      $("seats").append(pane);
+    }
+  }
+
+  function paintAction(frame) {
+    const area = $("action");
+    area.replaceChildren();
+    if (frame.decision) {
+      const row = frame.decision;
+      const setResponse = frame.events.some(e => e.moves.some(([key, , to]) =>
+        tokens[key]?.kind === "CARD" && to?.endsWith(":RESPONSE")));
+      const obscure = !judge() && (setResponse || row.command.type === "CHOOSE");
+      area.append(node("p", country(row.country) + " · " + commandLabel(row.command, obscure), "decision-label"),
+        node("p", [row.policy, modeNames[row.mode] || row.mode,
+          row.elapsed_ms.toFixed(1) + " / " + row.budget_ms + " ms"].join(" · "), "action-meta muted"));
+    } else {
+      area.append(node("p", "开局 · 初始发牌", "muted"));
+    }
+    if (frame.waiting) area.append(node("p", "等待 " + country(frame.waiting.required_country) + " 选择", "action-meta"));
+    if (frame.resolution.length) {
+      area.append(node("p", "结算中 · " + frame.resolution.map(safeName).join(" → "), "action-meta"));
+    }
+  }
+
+  function paintEvents(frame) {
+    const area = $("events");
+    area.replaceChildren();
+    if (!frame.events.length) {
+      area.append(node("p", "本步没有地图、场上牌区或 VP 变化。", "muted"));
+      return;
+    }
+    const list = node("ul", undefined, "event-list");
+    for (const event of frame.events) {
+      const li = node("li");
+      li.append(node("strong", [country(event.actor), eventNames[event.type] || event.type, event.ok ? "" : "未生效"].filter(Boolean).join(" · ")));
+      for (const [key, from, to] of event.moves) {
+        li.append(node("small", [safeName(key), zoneName(from) + " → " + zoneName(to)].join(" · ")));
+      }
+      for (const score of event.scores) li.append(node("small", teamNames[score.team] + " " + signed(score.amount) + " VP"));
+      list.append(li);
+    }
+    area.append(list);
+  }
+
+  function paintEvaluation(frame) {
+    const area = $("evaluation");
+    area.replaceChildren();
+    const row = frame.decision;
+    if (!row) {
+      area.append(node("p", "走到第一条指令后显示评分。", "muted"));
+      return;
+    }
+    if (!judge()) {
+      area.append(node("p", "开启裁判视角可查看候选牌、评分和回退原因。", "muted"));
+      return;
+    }
+    area.append(node("p", statusNames[row.search_status] || row.search_status, "muted"));
+    if (row.selected_q != null) area.append(node("p", "采用评分 " + signed(row.selected_q) + " 等效 VP", "action-score"));
+    const picked = c => Object.keys(row.command).every(k => c[k] === row.command[k]) &&
+      Object.keys(c).length === Object.keys(row.command).length;
+    const list = node("ul", undefined, "candidate-list");
+    for (const c of row.candidate_scores) {
+      const li = node("li", undefined, picked(c.command) ? "picked" : "");
+      li.append(node("strong", commandLabel(c.command, false) + (picked(c.command) ? " ✓" : "")));
+      if (c.complete) {
+        li.append(node("small", "总分 " + signed(c.q) + (c.terminal_rank === 2 ? " · 获胜" : c.terminal_rank === -2 ? " · 落败" : "")),
+          node("small", ["实得 " + signed(c.actual_vp_delta), "地图 " + signed(c.map_delta),
+            "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
+      } else {
+        li.append(node("small", shortReason(c.reason)));
+      }
+      list.append(li);
+    }
+    if (list.childElementCount) area.append(list);
+    const details = node("details");
+    if (!list.childElementCount) details.open = true;
+    const rules = node("ul", undefined, "candidate-list");
+    for (const c of row.rule_scores) {
+      rules.append(node("li", commandLabel(c.command, false) + " · " + signed(c.rule_score) + (picked(c.command) ? " ✓" : ""),
+        picked(c.command) ? "picked" : ""));
+    }
+    details.append(node("summary", "规则排序（" + row.rule_scores.length + " 项）"), rules);
+    area.append(details);
+  }
+
+  function render() {
+    const frame = frames[i];
+    const turn = frame.turn;
+    $("position").value = i;
+    $("step").textContent = i + " / " + end;
+    $("turns").value = turnStart.filter(start => start <= i).at(-1);
+    $("first").disabled = $("prev").disabled = i === 0;
+    $("last").disabled = $("next").disabled = i === end;
+    $("axis").textContent = frame.scores.axis;
+    $("allies").textContent = frame.scores.allies;
+    $("clock").textContent = frame.winner ? (frame.winner === "draw" ? "终局 · 平局" : "终局 · " + teamNames[frame.winner] + "获胜") :
+      ["第 " + turn.round_id + " 轮", country(data.turn_order[turn.country_index]), phaseNames[turn.phase] || turn.phase].join(" · ");
+    paintMap(frame);
+    paintSeats(frame);
+    paintAction(frame);
+    paintEvents(frame);
+    paintEvaluation(frame);
+  }
+
+  function pause() {
+    clearInterval(timer);
+    timer = null;
+    $("play").textContent = "▶ 播放";
+  }
+
+  function jump(target) {
+    pause();
+    i = Math.min(end, Math.max(0, target));
+    render();
+  }
+
+  function play() {
+    if (timer) {
+      pause();
+      return;
+    }
+    if (end === 0) return;
+    if (i === end) i = 0;
+    $("play").textContent = "Ⅱ 暂停";
+    render();
+    timer = setInterval(() => {
+      i++;
+      if (i === end) pause();
+      render();
+    }, 800 / Number($("speed").value));
+  }
+
+  $("first").addEventListener("click", () => jump(0));
+  $("last").addEventListener("click", () => jump(end));
+  $("prev").addEventListener("click", () => jump(i - 1));
+  $("next").addEventListener("click", () => jump(i + 1));
+  $("play").addEventListener("click", play);
+  $("speed").addEventListener("change", () => {
+    if (timer) {
+      pause();
+      play();
+    }
+  });
+  $("turns").addEventListener("change", event => jump(Number(event.target.value)));
+  $("position").addEventListener("input", event => jump(Number(event.target.value)));
+  $("reveal").addEventListener("change", render);
+  document.addEventListener("keydown", event => {
+    if (event.target.matches("input,select,button,a") || $("card-dialog").open) return;
+    if (event.key === "ArrowLeft") jump(i - 1);
+    else if (event.key === "ArrowRight") jump(i + 1);
+    else if (event.code === "Space") play();
+    else return;
+    event.preventDefault();
+  });
+  render();
+  pan(worldMap && points.germany ? "germany" : null);
+}
+
+const picker = $("batch-select");
+if (picker) {
+  const selectBatch = () => document.querySelectorAll(".batch").forEach(panel => {
+    panel.hidden = panel.id !== "batch-" + picker.value;
+  });
+  picker.addEventListener("change", selectBatch);
+  selectBatch();
+}
+if ($("replay-data")) mount(JSON.parse($("replay-data").textContent));
