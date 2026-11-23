@@ -1,6 +1,7 @@
 """Application boundary: projected observations and the same commands for every client."""
 from copy import deepcopy
 from collections import Counter
+from dataclasses import replace
 
 from .model import CoreError, TURN_ORDER, Token, TurnClock, GameState, zone
 from .engine import CommandProcessor
@@ -8,6 +9,26 @@ from .definitions import RuleSet
 from .rules import MapGraph, initial_abilities
 
 PUBLIC_ZONES = {"DISCARD", "STATUS", "DISABLED_STATUS", "RESERVE_ARMY", "RESERVE_NAVY", "RESERVE_AIR"}
+
+
+def _public_spent_statuses(processor, state, controlled):
+    public = {k: state.tokens[k].definition_id for c in TURN_ORDER if c not in controlled
+              for k in state.positions[zone(c, "STATUS")]}
+    spent = {}
+    for record in reversed(processor.records):
+        if not public or record["turn_id"] != state.turn.turn_id or record["operation_type"] == "TURN_END":
+            break
+        source = record["source"]
+        if record["operation_type"] != "OBJECT_SETTLED" or source not in public:
+            continue
+        definition = record["outcome"]["context"].get("settled_definition")
+        if definition == public[source]:
+            del public[source]  # The card was redeployed; older uses belong to its former stay.
+        elif (definition in processor.rules.cards[public[source]].get("abilities", ()) and
+              processor.rules.abilities[definition].get("reset_policy") == "TURN_END"):
+            counts = spent.setdefault(source, {})
+            counts[definition] = counts.get(definition, 0) + 1
+    return spent
 
 
 def _visible_position(position, rules, controlled):
@@ -116,9 +137,21 @@ def observation(processor, controlled_countries, *, include_history=True):
                 decision["response_sources"] = {
                     "use" if len(candidates) == 1 else key: s.tokens[key].source_token_id for key in candidates
                 }
+                event = s.stack[-1].context.get("event", {})
+                decision["response_abilities"] = {
+                    option: s.tokens[key].definition_id for option, key in
+                    zip(decision["response_sources"], candidates)
+                }
+                decision["event_region"] = event.get("target") if event.get("target") in rules.regions else None
+                decision["event_actor"] = event.get("actor_country")
             if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
                     s.decision.continuation["effect"]["type"] == "choose-country"):
                 decision["deck_discard_count"] = s.decision.continuation["effect"]["count"]
+            if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
+                    s.decision.continuation["effect"]["type"] == "discard-hand" and
+                    s.stack[-1].source_card_id in visible and
+                    rules.cards.get(visible[s.stack[-1].source_card_id]["definition_id"], {}).get("type") == "STATUS"):
+                decision["status_hand_payment"] = True
     resolution = []
     for frame in s.stack:
         ability_id = frame.context.get("ability_token")
@@ -128,11 +161,13 @@ def observation(processor, controlled_countries, *, include_history=True):
         if source in visible:
             resolution.append({"source": source, "country": frame.actor_country})
     reallocation = _reallocation_view(rules, s, controlled, visible)
+    spent = _public_spent_statuses(processor, s, controlled)
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
             "tokens": visible, "positions": positions, "turn": deepcopy(s.turn.__dict__),
             "scores": dict(s.scores), "winner": s.winner, "decision": decision,
             "resolution_depth": len(s.stack), "resolution": resolution, "history": history,
             **({"reallocation": reallocation} if reallocation is not None else {}),
+            **({"public_status_uses": spent} if spent else {}),
             **({"turn_start": deepcopy(s.turn_start)} if s.turn_start else {})}
 
 
@@ -194,12 +229,27 @@ def observed_position(rules, view):
                 token_id = f"unknown:{country}:{kind}:{i}"
                 tokens[token_id] = Token(token_id, f"unknown-{country}", "CARD", country, p)
                 positions[p].append(token_id)
-    # Public deployed statuses are known. Conservatively model their abilities as ready;
-    # never read their actual hidden replica positions or private usage history.
+    # Reconstruct public status use from its announced settlement, without inspecting
+    # another seat's ability pool or identifying any hidden response card.
     for token in list(tokens.values()):
         if (token.token_type == "CARD" and token.position_id == zone(token.owner_country, "STATUS") and
                 "tokens" not in view["positions"][zone(token.owner_country, "ABILITY_READY")]):
-            for replica in initial_abilities(rules, token, include_pool=zone(token.owner_country, "OBJECT_POOL") in positions):
+            country = token.owner_country
+            spent = view.get("public_status_uses", {}).get(token.token_id, {})
+            pool, response = zone(country, "OBJECT_POOL"), zone(country, "RESPONSE")
+            copies = Counter()
+            for replica in initial_abilities(rules, token, include_pool=pool in positions):
+                definition = replica.definition_id
+                copies[definition] += 1
+                if pool in positions and copies[definition] <= spent.get(definition, 0):
+                    replica = replace(replica, position_id=pool)
+                elif (definition.startswith("renew-") and copies[definition] <= spent.get(definition[6:], 0)
+                      and rules.abilities[definition].get("system_response")):
+                    opaque = next((k for k in positions[response] if k.startswith("unknown:")), None)
+                    if opaque:
+                        positions[response].remove(opaque)
+                        del tokens[opaque]
+                        replica = replace(replica, position_id=response)
                 tokens[replica.token_id] = replica
                 positions[replica.position_id].append(replica.token_id)
     state = GameState(view["game_id"], rules.version, tokens, positions, TurnClock(**view["turn"]),

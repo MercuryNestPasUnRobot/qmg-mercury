@@ -1,4 +1,5 @@
 """Estimate the value of immediate VP and deck attrition from public information."""
+from functools import cached_property
 from math import ceil, copysign
 
 from .content_effects import available_options, condition_met, filtered_units, force_id, point_award
@@ -10,7 +11,7 @@ MILL_EFFECTS = {"discard-top", "discard-top-per-unit", "choose-country"}
 
 
 class EconomicForecast:
-    def __init__(self, rules, settings, turn, scores, count, visible_state, winner):
+    def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None):
         self.rules, self.settings = rules, settings
         self.scores, self.count, self.visible_state = scores, count, visible_state
         self.margin = rules.settings["victory_margin"]
@@ -25,6 +26,12 @@ class EconomicForecast:
         self.horizon = min(remaining, margin_turns) if not winner else 0
         self.turn = turn
         self.penalty = max(0, -rules.settings.get("deck_exhaustion_vp", 0))
+        self.status_weights = status_weights
+
+    @cached_property
+    def statuses(self):
+        from .status_scoring import StatusForecast
+        return StatusForecast(self, **self.status_weights) if self.status_weights else None
 
     def gaps(self, team):
         lead = self.scores[team] - self.scores["allies" if team == "axis" else "axis"]
