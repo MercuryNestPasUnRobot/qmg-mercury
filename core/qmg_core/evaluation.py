@@ -5,9 +5,10 @@ import json
 from math import isfinite
 from pathlib import Path
 
-from .api import CoreAPI, simulation_from_observation
+from .api import CoreAPI, observed_position, simulation_from_observation
 from .definitions import RuleSet
 from .engine import CommandProcessor, ResolutionBudgetExceeded
+from .hand_retention import score_retention
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
@@ -41,10 +42,18 @@ class ScoreEvaluator:
             if not isinstance(effect_weights, dict) or not {"default", "points"} <= set(effect_weights):
                 raise CoreError("Effect values require default and points weights")
             numbers.extend(effect_weights.values())
+        if "hand_retention" in weights:
+            retention = weights["hand_retention"]
+            if not isinstance(retention, dict) or set(retention) != {
+                    "slot_cost", "basic_floor", "duplicate_penalty", "basic_congestion"}:
+                raise CoreError("Invalid hand retention settings")
+            numbers.extend(retention.values())
         if any(type(n) not in (int, float) or not isfinite(n) or n < 0 for n in numbers) or not 0 <= weights["time_discount"] <= 1:
             raise CoreError("Evaluation weights must be finite nonnegative values")
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
             raise CoreError("Invalid planning horizon or saturation")
+        if "hand_retention" in weights and not 0 < retention["slot_cost"] < retention["basic_floor"]:
+            raise CoreError("Basic reserve must exceed the hand slot cost")
         if type(weights["max_simulation_nodes"]) is not int or not 1 <= weights["max_simulation_nodes"] <= 10000:
             raise CoreError("Invalid simulation budget")
 
@@ -66,15 +75,55 @@ class ScoreEvaluator:
             return weights["unknown"]
         deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
         copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
-        value = copies * weights["ability_ready"]
-        for instruction in card["effects"]:
+        value = copies * weights["ability_ready"] + self.program_value(rules, state, country, card["effects"])
+        return max(0.0, value) * (1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
+
+    def program_value(self, rules, state, country, steps):
+        w, value = self.weights, 0.0
+        for instruction in steps:
             operation = instruction.get("operation", instruction)
             multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
             if operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
                 value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"])
             else:
+                weights = w["card_value_weights"]
                 value += weights.get(operation["type"], weights.get(instruction["type"], 0)) * multiplier
-        return max(0.0, value) * (1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
+        return value
+
+    @property
+    def hand_slot_cost(self):
+        return self.weights.get("hand_retention", {}).get("slot_cost", 0.0)
+
+    def retention(self, view, country):
+        from .air import air_options
+        from .content_effects import condition_met
+
+        rules, state = observed_position(self.rules, view)
+        legal = LegalActionGenerator(rules)
+
+        def short_term(card):
+            if card.get("implementation", {}).get("status") == "blocked":
+                return 0.0
+            kind = card.get("legacy_kind")
+            if kind == "air-power":
+                if not rules.settings.get("air_phase"):
+                    return 0.0
+                actions = ("deploy", "marshal", "superiority")
+                useful = any(air_options(rules, state, country, {"force": force, "actions": actions})
+                             for force in rules.controlled_forces(country))
+                return 0.65 if useful else 0.20
+            raw = self.hand_value(rules, state, country, card, legal)
+            if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
+                ready = condition_met(rules, state, country, card.get("content_condition"))
+                if ready:
+                    attached = max((self.program_value(rules, state, country, rules.abilities[k]["effects"])
+                                    for k in card.get("abilities", ())), default=0)
+                    raw += 0.5 * max(0, attached) + (0.35 if card.get("modifiers") else 0)
+                    if kind == "bolster":
+                        raw += 0.20
+            return raw
+
+        return score_retention(rules, state, country, self.weights["hand_retention"], short_term)
 
     def _value(self, processor, country, *, excluded_unit=None):
         s, rules, w = processor.state, processor.rules, self.weights
@@ -230,6 +279,10 @@ def candidate_key(row):
             row["q"] if row["q"] is not None else float("-inf"))
 
 
+def acceptable_play(row):
+    return row["complete"] and (not row.get("initial_card_score") or row["q"] > 0 or row["terminal_rank"] == 2)
+
+
 class OneStepPlanner:
     def __init__(self, rules, weights):
         self.evaluator = ScoreEvaluator(rules, weights)
@@ -255,13 +308,15 @@ class OneStepPlanner:
                     raise SimulationIncomplete("Action cannot be represented from this observation")
                 simulated_seat.submit(command, include_history=False)
                 value, choices = self._finish(candidate, country, nodes)
+                initial = -self.evaluator.hand_slot_cost if command["type"] in ("PLAY_CARD", "USE_AIR") else 0.0
                 yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                        "weights_digest": digest(self.evaluator.weights),
                        "actual_vp_delta": value.actual_vp - before.actual_vp,
                        "map_delta": value.map_value - before.map_value,
-                       "card_delta": value.card_value - before.card_value,
+                       "card_delta": value.card_value - before.card_value + initial,
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
-                       "q": value.total - before.total, "terminal_rank": value.terminal_rank,
+                       "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
+                       **({"initial_card_score": initial} if initial else {}),
                        "continuations": [choice for choice, _ in choices],
                        "choice_signatures": [signature for _, signature in choices]}
             except (SimulationIncomplete, ResolutionBudgetExceeded) as e:
@@ -311,12 +366,13 @@ class OneStepPlanner:
                 value, _ = self._finish(branch, country, nodes)
                 outcomes.append(value)
         after = max(outcomes, key=lambda value: (value.terminal_rank, value.total), default=before)
-        plan = price(plan, after.total - before.total)
+        initial = -self.evaluator.hand_slot_cost if outcomes else 0.0
+        plan = price(plan, after.total - before.total + initial)
         return {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                 "weights_digest": digest(self.evaluator.weights),
                 "actual_vp_delta": after.actual_vp - before.actual_vp,
                 "map_delta": after.map_value - before.map_value,
-                "card_delta": after.card_value - before.card_value + plan["discard_score"],
+                "card_delta": after.card_value - before.card_value + plan["discard_score"] + initial,
                 "resource_delta": after.resource_adjustment - before.resource_adjustment + plan["deck_score"],
                 "q": plan["total"], "terminal_rank": 0,
                 "continuations": [], "choice_signatures": [], "reallocation": plan}

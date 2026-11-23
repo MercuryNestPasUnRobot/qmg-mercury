@@ -331,6 +331,9 @@ class CommandProcessor:
         if s.stack or country not in controlled_countries or s.turn.phase == "Setup":
             return interrupts
         commands = [{"type": "END_PHASE", "actor": country, "expected_version": s.version}]
+        if s.turn.phase == "Discard":
+            commands.extend({"type": "DISCARD_CARD", "actor": country, "expected_version": s.version, "card": key}
+                            for key in s.positions[zone(country, "HAND")])
         if s.turn.phase == "Air":
             from .air import air_options, opportunity
             for force in self.rules.controlled_forces(country):
@@ -384,6 +387,10 @@ class CommandProcessor:
             if "ability_token" in frame.context:
                 op.update(object_token_id=frame.context["ability_token"], object_origin=frame.context.get("origin"))
         def apply(s):
+            if command["type"] == "DISCARD_CARD":
+                s.stack.append(CardInterpreter.frame(s, command["actor"], None,
+                    [{"type": "DISCARD", "target_token": command["card"]}]))
+                return outcome("DISCARD_CARD")
             if command["type"] in ("USE_AIR", "REALLOCATE"):
                 from .content_actions import begin_action
                 return begin_action(self, s, command)
