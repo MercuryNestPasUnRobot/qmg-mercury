@@ -54,7 +54,7 @@ const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "�
   RESPONSE: "响应区", RESERVE_ARMY: "陆军预备", RESERVE_NAVY: "海军预备", RESERVE_AIR: "空军预备",
   ABILITY_READY: "可用区", ABILITY_PENDING: "待结算", OBJECT_POOL: "对象池",
   RESOLUTION: "结算区", SCORE_DORMANT: "计分休眠区", SET_ASIDE: "待命区"};
-const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", CHOOSE: "选择", USE_STATUS: "发动状态牌",
+const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "主动弃牌", CHOOSE: "选择", USE_STATUS: "发动状态牌",
   USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应",
   BUILD_ARMY: "建立陆军", BUILD_NAVY: "建立海军", LAND_BATTLE: "陆战", SEA_BATTLE: "海战", RECRUIT: "征召"};
 const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
@@ -66,7 +66,7 @@ const optionNames = {use: "使用能力", decline: "放弃", confirm: "确认", 
 const modeNames = {rules: "规则评分 A", search: "完整结算 B", plan: "沿用已评分的续步", forced: "唯一合法指令"};
 const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "no-comparable-commands":"无可比较的行动",
   "matched-continuation":"续步吻合", "matched-exchange":"调配方案与合法选项吻合",
-  "rules-only":"规则策略", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
+  "rules-only":"规则策略", "hand-retention":"手牌保留评分", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
 const shortReason = reason => ({
   "Action cannot be represented from this observation": "席位观察无法表示",
   "Within-card choice budget exceeded; no partial score assigned": "超过结算分支上限",
@@ -76,6 +76,11 @@ const exchangeDetails = plan => [
   "出牌 " + signed(plan.play_score), "弃牌 " + signed(plan.discard_score), "牌库 " + signed(plan.deck_score),
   "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining,
 ].join(" · ");
+const retentionDetails = value => [
+  "保留分 " + signed(value.net), "短期 " + signed(value.short_term), "初始 " + signed(value.slot_cost),
+  "基础储备 " + signed(value.basic_reserve), "重复 " + signed(value.redundancy),
+  value.replacement_available ? "" : "无额外补牌",
+].filter(Boolean).join(" · ");
 
 function pieceIcon(kind, color, label, count = 1) {
   const piece = node("span", undefined, "piece");
@@ -472,6 +477,7 @@ async function mount(data) {
         li.append(node("small", shortReason(c.reason)));
       }
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
+      if (c.initial_card_score) li.append(node("small", "初始出牌分 " + signed(c.initial_card_score)));
       list.append(li);
     }
     if (list.childElementCount) area.append(list);
@@ -482,6 +488,8 @@ async function mount(data) {
       const li = node("li", commandLabel(c.command, false) + " · " + signed(c.rule_score) + (picked(c.command) ? " ✓" : ""),
         picked(c.command) ? "picked" : "");
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
+      if (c.retention) li.append(node("small", retentionDetails(c.retention)));
+      if (c.initial_card_score) li.append(node("small", "初始出牌分 " + signed(c.initial_card_score)));
       rules.append(li);
     }
     details.append(node("summary", "规则排序（" + row.rule_scores.length + " 项）"), rules);

@@ -3,8 +3,9 @@ import multiprocessing
 from itertools import takewhile
 from time import perf_counter
 
-from .evaluation import OneStepPlanner, candidate_key
-from .model import CoreError
+from .evaluation import OneStepPlanner, acceptable_play, candidate_key
+from .hand_retention import is_hand_choice
+from .model import CoreError, zone
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price, stock_value
 
 
@@ -26,8 +27,9 @@ def effect_priority(effect, team):
 
 class RulePolicy:
     """One policy serves as both the comparator and the live fall-back."""
-    def __init__(self, rules):
+    def __init__(self, rules, evaluator=None):
         self.rules = rules
+        self.evaluator = evaluator
         self.sites = {}
         for site in rules.sites.values():
             region = site["region"]
@@ -53,14 +55,20 @@ class RulePolicy:
     def discard_value(self, card, seat):
         return -max(0, self.card_value(card, seat))
 
+    def play_card_value(self, card, seat):
+        slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
+        return self.card_value(card, seat) - slot_cost
+
     def reallocation_plan(self, view, seat):
         plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat))
-        return max((price(plan, self.card_value(self.rules.cards[plan["definition"]], seat)) for plan in plans),
+        return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat))
+                    for plan in plans),
                    key=lambda plan: plan["total"], default=None)
 
     def acquisition_value(self, info, seat, source, definition):
         card = self.rules.cards[definition]
-        return self.card_value(card, seat) + stock_value(info["deck"], source, card["legacy_kind"])["deck_score"]
+        return (self.play_card_value(card, seat) +
+                stock_value(info["deck"], source, card["legacy_kind"])["deck_score"])
 
     def choice_value(self, view, command):
         option = command["option"]
@@ -92,6 +100,12 @@ class RulePolicy:
         if not commands:
             return []
         seat = commands[0]["actor"]
+        phase = view["turn"]["phase"]
+        slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
+        retention = self.evaluator.retention(view, seat) if slot_cost and is_hand_choice(view, seat) else {}
+        hand = view["positions"][zone(seat, "HAND")]["count"]
+        slots = max(0, self.rules.settings["hand_limit"] - hand)
+        replacement_available = view["positions"][zone(seat, "DECK")]["count"] > slots
         info = view.get("reallocation", {})
         plan = (self.reallocation_plan(view, seat)
                 if "payment" in info or any(c["type"] == "REALLOCATE" for c in commands) else None)
@@ -105,29 +119,42 @@ class RulePolicy:
             kind = command["type"]
             if kind == "CHOOSE":
                 option = command["option"]
+                if option in retention:
+                    return -retention[option]["net"]
                 if option in info.get("targets", {}):
                     return self.acquisition_value(info, seat, info["source"], info["targets"][option])
                 if option in info.get("sources", {}):
                     return source_values.get(info["sources"][option], -10)
                 return self.choice_value(view, command)
             if kind == "END_PHASE":
+                if slot_cost and phase in ("Play", "Air", "Discard"):
+                    return 0
                 return -1
+            if kind == "DISCARD_CARD":
+                net = retention.get(command["card"], {}).get("net", 0)
+                return -net if net < 0 and replacement_available else -1
             if kind == "REALLOCATE":
                 return plan["total"] if plan else -2
             if kind == "ACTIVATE_CARD":
                 return -101  # Choose within the open window, or advance the phase.
             if kind == "USE_AIR":
-                return 1
+                return 1 - slot_cost
             if mode := command.get("play_as"):
-                return ACTION_PRIORITY.get(mode, 0.4)
+                return ACTION_PRIORITY.get(mode, 0.4) - slot_cost
             token = view["tokens"][command["card"]]
-            return self.card_value(self.rules.cards[token["definition_id"]], command["actor"],
-                                   active=kind == "USE_STATUS")
+            card = self.rules.cards[token["definition_id"]]
+            return (self.play_card_value(card, seat) if kind == "PLAY_CARD" else
+                    self.card_value(card, seat, active=kind == "USE_STATUS"))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
-        if plan:
-            for row in rows:
-                if row["command"]["type"] == "REALLOCATE":
-                    row["reallocation"] = plan
+        for row in rows:
+            command = row["command"]
+            if plan and command["type"] == "REALLOCATE":
+                row["reallocation"] = plan
+            key = command.get("option", command.get("card"))
+            if key in retention and command["type"] in ("DISCARD_CARD", "CHOOSE"):
+                row["retention"] = {**retention[key], "replacement_available": replacement_available}
+            if slot_cost and command["type"] in ("PLAY_CARD", "USE_AIR"):
+                row["initial_card_score"] = -slot_cost
         # Canonical tie-breaks also apply to own permitted choices out of the deck.
         def order(row):
             command = row["command"]
@@ -241,8 +268,8 @@ class DeadlineSearch:
 
 
 class SeatPolicy:
-    def __init__(self, rules, *, search=None, width=3, budget_ms=1500):
-        self.rule = RulePolicy(rules)
+    def __init__(self, rules, *, search=None, evaluator=None, width=3, budget_ms=1500):
+        self.rule = RulePolicy(rules, evaluator)
         self.search = search
         self.width = width
         self.budget_ms = budget_ms
@@ -273,7 +300,9 @@ class SeatPolicy:
         mode, status, tried, rows, selected = "rules", "rules-only", [], [], None
         if len(commands) == 1:
             mode, status = "forced", "only-legal-command"
-        if self.search:
+        if self.rule.evaluator and self.rule.evaluator.hand_slot_cost and is_hand_choice(view, country):
+            status = "hand-retention"
+        elif self.search:
             if self.exchange and (not view["decision"] or self.exchange[0] != view["turn"]["turn_id"]):
                 self.exchange = None
             info = view.get("reallocation", {})
@@ -305,7 +334,12 @@ class SeatPolicy:
                     # Reserve a small part of the total budget for choosing and recording the result.
                     reserve_ms = min(10, self.budget_ms * 0.05)
                     rows, status = self.search.run(view, tried, country, started + (self.budget_ms - reserve_ms) / 1000)
-                    selected = max((row for row in rows if row["complete"]), key=candidate_key, default=None)
+                    completed = [row for row in rows if row["complete"]]
+                    rejected = [row["command"] for row in completed if not acceptable_play(row)]
+                    selected = max((row for row in completed if acceptable_play(row)),
+                                   key=candidate_key, default=None)
+                    if selected is None and chosen in rejected:
+                        chosen = next(row["command"] for row in ranked if row["command"] not in rejected)
                     if selected:
                         mode, chosen = "search", selected["command"]
                         if selected.get("reallocation"):

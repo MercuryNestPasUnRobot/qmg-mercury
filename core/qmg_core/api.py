@@ -167,6 +167,11 @@ def simulation_from_observation(rules, view):
     """Never clone the authoritative hidden state, RNG, journal or deck order."""
     if (view["resolution_depth"] or view["decision"]) and not view["winner"]:
         raise CoreError("Start a candidate simulation at a quiescent action boundary")
+    return CommandProcessor(*observed_position(rules, view))
+
+
+def observed_position(rules, view):
+    """Reconstruct a visible position for inspection; pending frames aren't reconstructed."""
     data = deepcopy({**rules.data, "initial_tokens": []})
     tokens = {k: Token(**v) for k, v in view["tokens"].items()}
     positions = {}
@@ -203,4 +208,4 @@ def simulation_from_observation(rules, view):
         upgrade_object_pools(state, RuleSet(data), OperationExecutor(rules))
     data["initial_tokens"] = [deepcopy(t.__dict__) for t in tokens.values()]
     simulation_rules = RuleSet(data, projected=True)
-    return CommandProcessor(simulation_rules, state)
+    return simulation_rules, state

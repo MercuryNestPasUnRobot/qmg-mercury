@@ -11,7 +11,8 @@ from .api import CoreAPI
 from .ai_match_policy import RulePolicy
 from .catalog import ContentCatalog
 from .engine import CommandProcessor
-from .evaluation import OneStepPlanner, SimulationIncomplete
+from .evaluation import OneStepPlanner, SimulationIncomplete, acceptable_play
+from .hand_retention import is_hand_choice
 from .model import CoreError, TURN_ORDER, zone
 from .persistence import OperationLogger, SaveRepository
 
@@ -53,7 +54,7 @@ class Workbench:
             )
         self.human = CoreAPI(self.processor, SEAT)
         self.planner = OneStepPlanner(rules, weights)
-        self.rule_policy = RulePolicy(rules)
+        self.rule_policy = RulePolicy(rules, self.planner.evaluator)
         self.ai_choices = []
 
     def act(self, fields):
@@ -66,12 +67,15 @@ class Workbench:
             available = client.legal_commands()
             if not available:
                 raise CoreError("当前没有可执行的指令。")
-            if view["decision"]:
+            actor_view = client.observe(include_history=False)
+            if self.planner.evaluator.hand_slot_cost and is_hand_choice(actor_view, actor):
+                self.ai_choices = []
+                command = self.rule_policy.rank(actor_view, available)[0]["command"]
+            elif view["decision"]:
                 expected = next((c for c in self.ai_choices if c["actor"] == actor and c["expected_version"] == view["version"]), None)
                 planned = next((c for c in available if expected and c["type"] == "CHOOSE" and
                                 c["option"] == expected.get("option")), None)
                 self.ai_choices = [c for c in self.ai_choices if c["expected_version"] > view["version"]] if planned else []
-                actor_view = client.observe(include_history=False)
                 if planned:
                     command = planned
                 elif actor_view.get("reallocation"):
@@ -80,7 +84,7 @@ class Workbench:
                     command = self.planner.choose(client, actor)
             else:
                 ranked = self.planner.rank(client, actor)
-                best = next((candidate for candidate in ranked if candidate["complete"]), None)
+                best = next((row for row in ranked if acceptable_play(row)), None)
                 if best is None:
                     raise SimulationIncomplete("当前预算内没有完成模拟的行动。")
                 command = best["command"]
@@ -163,6 +167,8 @@ class Workbench:
             elif command["type"] == "REALLOCATE":
                 cost = view.get("reallocation", {}).get("cost", 3)
                 options.append(button("human", f"调配资源 · 弃 {cost} 找 1", i))
+            elif command["type"] == "DISCARD_CARD":
+                options.append(button("human", f"弃置 {token_name(command['card'])}", i))
         waiting = f'等待 {COUNTRY_NAMES[decision["required_country"]]} 选择' if decision else "本阶段行动"
         if decision and "decision_type" in decision:
             kind = {"ABILITY": "使用或放弃能力", "RESPONSE_ORDER": "选择先发动的响应", "COST": "选择支付牌", "TARGET": "选择合法目标",
@@ -283,6 +289,7 @@ def main():
     rules = (ContentCatalog.load(args.catalog) if args.catalog else
              ContentCatalog.cached(DATA / "architecture_fixture.json", CATALOG_CACHE))
     weights = json.loads((DATA / "evaluation_weights.json").read_text(encoding="utf-8"))
+    weights["hand_retention"] = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))["hand_retention"]
     with make_server(Workbench(args.save_dir, rules, weights), args.port) as server:
         print(f"Mercury Core: http://127.0.0.1:{server.server_port}", flush=True)
         try:

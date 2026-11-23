@@ -76,6 +76,8 @@ class Tape:
                 origin, destination = change["from"], change["to"]
                 key = change["token_id"]
                 if (origin in rules.regions or destination in rules.regions or
+                        (row and row["command"]["type"] == "DISCARD_CARD" and
+                         (origin or "").endswith(":HAND") and (destination or "").endswith(":DISCARD")) or
                         any((position or "").partition(":")[2] in ("STATUS", "DISABLED_STATUS", "RESPONSE")
                             for position in (origin, destination)) or
                         "RESOLUTION" in (origin, destination)):
