@@ -11,6 +11,7 @@ from re import fullmatch
 from tempfile import NamedTemporaryFile
 
 from .api import CoreAPI
+from .board_connections import PRINTED_REGIONS, corrected_edges, corrected_straits, edge_pairs
 from .definitions import RuleSet
 from .engine import CommandProcessor
 from .model import CoreError, TURN_ORDER, digest, zone
@@ -111,7 +112,8 @@ class Tape:
         return {"frames": self.frames, "tokens": self.tokens, "forces": forces, "turn_order": TURN_ORDER,
                 "regions": {key: {"name": region.get("name", key), "type": region["type"], "vp": sites.get(key, 0)}
                             for key, region in rules.regions.items()},
-                "edges": [[edge["a"], edge["b"]] for edge in rules.connections.values()]}
+                "edges": [[edge["a"], edge["b"]] for edge in rules.connections.values()],
+                "straits": rules.settings.get("straits", [])}
 
 
 def replay_game(rules, game, path):
@@ -159,9 +161,29 @@ def page(title, body, payload=None):
 
 
 def render_recording(path, payload):
+    payload = recording_topology(path, payload)
     title = f'{payload["batch"]["name"]} · {payload["game"]["game_id"]}'
     body = (ASSETS / "player.html").read_text(encoding="utf-8")
     write_text(path, page(title, body, payload))
+
+
+def recording_topology(path, payload):
+    if set(payload["regions"]) != PRINTED_REGIONS:
+        return payload
+    result = {**payload}
+    result.pop("board_reference", None)
+    if "straits" not in result:
+        fingerprint = payload["batch"].get("rules_digest", "")
+        if fullmatch(r"[0-9a-f]{64}", fingerprint):
+            archive = path.parents[2] / "rules" / (fingerprint + ".json")
+            if archive.is_file():
+                result["straits"] = read_json(archive)["settings"].get("straits", [])
+    straits = result.get("straits", [])
+    audited = corrected_edges(payload["edges"])
+    channels = corrected_straits(straits)
+    if set(audited) != edge_pairs(payload["edges"]) or channels != straits:
+        result["board_reference"] = {"edges": audited, "straits": channels}
+    return result
 
 
 def refresh_recordings(root):

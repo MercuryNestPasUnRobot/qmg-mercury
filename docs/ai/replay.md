@@ -29,7 +29,9 @@ npm run core:replay -- --batch ../local-content/ai-tests/six-seat-v1 --catalog .
 
 ## 桌游棋盘
 
-录像库使用本机 `local-content/replays/board/map.png`。底图取自冻结旧项目的 `public/assets/map.png`，尺寸 3366 × 1803，SHA-256 为 `5b39607005da9deffb4f2d30165c29758755d87a4669bff2cce039a91ab54a03`。50 个棋子锚点来自同一旧项目的 `src/engine/map.ts`，仅用于显示。规则邻接仍来自录像本身。底图保留在本机，缺少底图的环境会显示示意地图。
+录像库使用本机 `local-content/replays/board/map.png`。底图取自冻结旧项目的 `public/assets/map.png`，尺寸 3366 × 1803，SHA-256 为 `5b39607005da9deffb4f2d30165c29758755d87a4669bff2cce039a91ab54a03`。50 个棋子锚点来自同一旧项目的 `src/engine/map.ts`，仅用于显示。底图保留在本机，缺少底图的环境会显示示意地图。
+
+旧规则的录像默认展示「校对后棋盘」。需要核对当时的合法动作时，可切换到「当局规则」。点击地区会高亮普通邻接，并单独列出可随阵营控制变化的海峡通行。局面、结算和比分来自原录像。
 
 界面更新后可在仓库根目录执行以下命令，一次更新所有已有录像的外观，保留已核对的帧和对局日志。
 
