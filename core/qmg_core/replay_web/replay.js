@@ -24,7 +24,29 @@ const world = {
   "north-pacific": [13, 1], hawaii: [13, 3], "central-pacific": [12, 5],
   "east-pacific": [14, 3], "southeast-pacific": [14, 6], "south-pacific": [13, 7],
 };
-const countryShort = {germany:"德", "united-kingdom":"英", japan:"日", "soviet-union":"苏", italy:"意", "united-states":"美"};
+// Percentage anchors from the frozen project's src/engine/map.ts.
+const boardAnchors = {
+  canada: [11, 18], "united-states": [11, 28], "latin-america": [19, 62],
+  "united-kingdom": [30, 25], scandinavia: [36, 13], "western-europe": [31, 33],
+  germany: [37, 29], italy: [36, 38], "eastern-europe": [39, 25], balkans: [40, 36],
+  ukraine: [45, 29], moscow: [52, 20], russia: [47, 14], siberia: [63, 12],
+  vladivostok: [79, 11], kazakhstan: [56, 31], mongolia: [65, 29],
+  "china-west": [62, 40], "china-east": [71, 40], japan: [80, 32], "iwo-jima": [81, 46],
+  "southeast-asia": [68, 53], philippines: [74, 56], indonesia: [71, 66],
+  "new-guinea": [79, 66], india: [60, 49], "middle-east": [48, 45],
+  "north-africa": [39, 52], "south-africa": [39, 62], madagascar: [46, 76],
+  australia: [76, 78], "new-zealand": [84, 89], hawaii: [89, 43],
+  "north-atlantic": [17, 40], "southeast-pacific": [10, 67], "central-atlantic": [29, 72],
+  "south-atlantic": [30, 89], "north-sea": [26, 30], "baltic-sea": [38, 18],
+  "black-sea": [44, 38], "caspian-sea": [51, 37], mediterranean: [42, 45],
+  "arabian-sea": [54, 64], "indian-ocean": [59, 76], "south-china-sea": [72, 58],
+  "east-china-sea": [79, 44], "north-pacific": [86, 27], "central-pacific": [85, 56],
+  "east-pacific": [91, 59], "south-pacific": [84, 71],
+};
+const forceColors = {
+  "soviet-union": "#c52f3d", china: "#934637", france: "#3265b8", "united-kingdom": "#777242",
+  "united-states": "#23824b", italy: "#7f49a5", germany: "#222226", japan: "#f3e6c8",
+};
 const teamNames = {axis: "轴心", allies: "同盟", draw: "平局"};
 const phaseNames = {Setup: "设置", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "抓牌"};
 const unitNames = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};
@@ -55,12 +77,39 @@ const exchangeDetails = plan => [
   "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining,
 ].join(" · ");
 
-function mount(data) {
+function pieceIcon(kind, color, label, count = 1) {
+  const piece = node("span", undefined, "piece");
+  piece.title = label;
+  piece.setAttribute("aria-label", label);
+  piece.setAttribute("role", "img");
+  const mold = node("span", undefined, "piece-mold");
+  const shape = node("span", undefined, "piece-shape");
+  shape.dataset.kind = kind.toLowerCase();
+  shape.style.setProperty("--piece-color", color);
+  mold.append(shape);
+  piece.append(mold);
+  if (count > 1) piece.append(node("small", "×" + count, "piece-count"));
+  return piece;
+}
+
+async function loadBoardArt(image) {
+  image.src = "../../board/map.png";
+  try {
+    await image.decode();
+  } catch {
+    return false;
+  }
+  image.hidden = false;
+  return true;
+}
+
+async function mount(data) {
   const {frames, regions, edges, tokens, forces, game, batch} = data;
   const country = id => forces[id]?.name || id || "";
   const end = frames.length - 1;
   const map = $("map");
   const viewport = $("viewport");
+  const artwork = $("board-art");
   const canvas = $("routes");
   const ctx = canvas.getContext("2d");
   const turnStart = [];
@@ -70,7 +119,11 @@ function mount(data) {
   let timer = null;
   let focus = null;
   let zoomFit = false;
+  let zoom = 1;
   const worldMap = Object.keys(regions).every(key => Object.hasOwn(world, key));
+  const artMap = Object.keys(regions).length === Object.keys(boardAnchors).length &&
+    Object.keys(regions).every(key => Object.hasOwn(boardAnchors, key)) && await loadBoardArt(artwork);
+  map.classList.toggle("printed-board", artMap);
 
   $("match-name").textContent = batch.name;
   $("match-info").textContent = [
@@ -93,11 +146,20 @@ function mount(data) {
   });
   const regionKeys = Object.keys(regions);
   const dx = 106, dy = 56, marginX = 57, marginY = 32;
-  regionKeys.forEach((key, index) => {
+  const schematicPoints = regionKeys.map((key, index) => {
     const [col, line] = worldMap ? world[key] : [index % 5, Math.floor(index / 5)];
-    const x = marginX + col * dx, y = marginY + line * dy;
+    return [marginX + col * dx, marginY + line * dy];
+  });
+  const width = artMap ? 1536 : Math.max(...schematicPoints.map(([x]) => x)) + marginX;
+  const height = artMap ? Math.round(width * artwork.naturalHeight / artwork.naturalWidth) :
+    Math.max(...schematicPoints.map(([, y]) => y)) + marginY;
+  regionKeys.forEach((key, index) => {
+    const [x, y] = artMap
+      ? [width * boardAnchors[key][0] / 100, height * boardAnchors[key][1] / 100]
+      : schematicPoints[index];
     points[key] = [x, y];
     const button = node("button", undefined, "position" + (regions[key].type === "SEA" ? " sea" : ""));
+    button.dataset.region = key;
     button.style.left = x + "px";
     button.style.top = y + "px";
     button.addEventListener("click", () => {
@@ -107,8 +169,6 @@ function mount(data) {
     buttons[key] = button;
     $("regions").append(button);
   });
-  const width = Math.max(...Object.values(points).map(p => p[0])) + marginX;
-  const height = Math.max(...Object.values(points).map(p => p[1])) + marginY;
   const ratio = window.devicePixelRatio || 1;
   canvas.width = width * ratio;
   canvas.height = height * ratio;
@@ -117,12 +177,24 @@ function mount(data) {
   ctx.scale(ratio, ratio);
 
   function fit() {
-    map.style.zoom = zoomFit ? Math.min(1, viewport.clientWidth / width) : 1;
+    map.style.zoom = zoomFit ? Math.min(1, viewport.clientWidth / width) : zoom;
   }
   function pan(key) {
     zoomFit = !key;
+    zoom = 1;
     fit();
     viewport.scrollLeft = key ? Math.max(0, points[key][0] - viewport.clientWidth / 2) : 0;
+    viewport.scrollTop = key ? Math.max(0, points[key][1] - viewport.clientHeight / 2) : 0;
+  }
+  function changeZoom(step) {
+    const current = Number(map.style.zoom) || 1;
+    const centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / current;
+    const centerY = (viewport.scrollTop + viewport.clientHeight / 2) / current;
+    zoom = Math.min(2, Math.max(Math.min(1, viewport.clientWidth / width), current + step));
+    zoomFit = false;
+    fit();
+    viewport.scrollLeft = centerX * zoom - viewport.clientWidth / 2;
+    viewport.scrollTop = centerY * zoom - viewport.clientHeight / 2;
   }
   const theaters = [["总览", null]];
   if (worldMap) theaters.push(...[["大西洋", "central-atlantic"], ["欧洲与非洲", "germany"],
@@ -133,7 +205,27 @@ function mount(data) {
     button.addEventListener("click", () => pan(key));
     $("theaters").append(button);
   }
+  for (const [name, step] of [["缩小", -0.2], ["放大", 0.2]]) {
+    const button = node("button", name);
+    button.addEventListener("click", () => changeZoom(step));
+    $("theaters").append(button);
+  }
   window.addEventListener("resize", fit);
+
+  for (const [kind, label] of Object.entries(unitNames)) {
+    const legend = node("span", undefined, "legend-item");
+    legend.append(pieceIcon(kind, "#617469", label), node("span", label));
+    $("unit-key").append(legend);
+  }
+  for (const [force, color] of Object.entries(forceColors)) {
+    if (!Object.hasOwn(forces, force)) continue;
+    const legend = node("span", undefined, "legend-item");
+    legend.dataset.force = force;
+    const swatch = node("span", undefined, "force-swatch");
+    swatch.style.setProperty("--piece-color", color);
+    legend.append(swatch, node("span", country(force)));
+    $("force-key").append(legend);
+  }
 
   const judge = () => $("reveal").checked;
   const tokenName = key => {
@@ -191,7 +283,7 @@ function mount(data) {
     }
     for (const [a, b] of edges) {
       const highlight = a === focus || b === focus;
-      if (highlight || Math.abs(points[a][0] - points[b][0]) <= dx * 4) line(a, b, highlight, false);
+      if (highlight || (!artMap && Math.abs(points[a][0] - points[b][0]) <= dx * 4)) line(a, b, highlight, false);
     }
     for (const [a, b] of tracks) line(a, b, true, true);
     const selected = focus && regions[focus];
@@ -206,18 +298,22 @@ function mount(data) {
       }
       button.classList.toggle("changed", moved.has(key));
       button.classList.toggle("selected", focus === key);
+      button.classList.toggle("occupied", !!groups.size);
       button.setAttribute("aria-pressed", focus === key);
       button.title = region.name + (units.length ? " · " + units.map(t => country(t.force) + unitNames[t.unit]).join("、") : " · 空区");
-      button.replaceChildren(node("span", region.name, "place-name"));
-      if (region.vp) button.append(node("span", region.vp + " VP", "vp"));
+      button.setAttribute("aria-label", button.title);
+      button.replaceChildren();
+      if (!artMap) {
+        button.append(node("span", region.name, "place-name"));
+        if (region.vp) button.append(node("span", region.vp + " VP", "vp"));
+      } else if (!groups.size) {
+        button.append(node("span", undefined, "board-pin"));
+      }
       if (groups.size) {
         const badges = node("span", undefined, "badges");
         for (const {unit, count} of groups.values()) {
-          const name = countryShort[unit.force] || country(unit.force).slice(0, 1);
-          const badge = node("span", name + unitNames[unit.unit].slice(0, 1) + (count > 1 ? "×" + count : ""),
-            "unit " + forces[unit.force].team);
-          badge.title = country(unit.force) + " " + unitNames[unit.unit] + " ×" + count;
-          badges.append(badge);
+          const label = country(unit.force) + " " + unitNames[unit.unit] + " ×" + count;
+          badges.append(pieceIcon(unit.unit, forceColors[unit.force] || "#647769", label, count));
         }
         button.append(badges);
       }
@@ -226,7 +322,8 @@ function mount(data) {
       const occupants = (frame.board[focus] || []).filter(key => tokens[key]?.unit).map(tokenName);
       const adjacent = edges.filter(e => e.includes(focus)).map(e => regions[e.find(k => k !== focus)].name);
       $("region-detail").textContent = [selected.name, occupants.join("、") || "无驻军",
-        "基础相邻 " + ([...new Set(adjacent)].join("、") || "—")].join(" · ");
+        selected.vp ? selected.vp + " VP" : "",
+        "基础相邻 " + ([...new Set(adjacent)].join("、") || "—")].filter(Boolean).join(" · ");
     } else {
       $("region-detail").textContent = "点击地区查看驻军和基础连接。";
     }
@@ -429,7 +526,7 @@ function mount(data) {
     event.preventDefault();
   });
   render();
-  pan(worldMap && points.germany ? "germany" : null);
+  pan(!artMap && worldMap && points.germany ? "germany" : null);
 }
 
 const picker = $("batch-select");
