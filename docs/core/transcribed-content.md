@@ -64,3 +64,8 @@ npm run core:audit-content -- ../local-content/legacy-2026-11-19/content.json $c
 2026-11-20 本地验证：`npm run check` 通过 134 项 Core 测试和 4 项 Node 测试，1,725 个旧文件及 347 个上游参考文件完整性通过。整套开局检查为 186 个操作完成、50 个手牌监听器注册、40 个定义无开局目标，无运行异常；所有定义均已转换，380 个卡牌实例和原文往返校验通过。
 
 迁移报告当前无未实现指令，内容包保留旧 `verified` 与来源信息。规则参数沿用旧实现，开局 12 张、弃 5 张、手牌上限 7、20 轮、分差 30，牌库耗尽扣 1 分。常规转录响应使用同一优先级，响应顺序与每个时机的使用限制详见[响应时机验收](response-windows.md)。
+### 棋盘连接校对
+
+按本机 50 区棋盘的实际边界与版图两侧印刷的跨图标注复核了基础连接。不列颠只接北海，日耳曼的海岸接波罗的海。北海直接接北非，北海与地中海之间的通行取决于北非控制。地形边界只在一点相接时没有基础连接。[二版规则书（第 6–7 页）](https://c.tabletopia.com/games/quartermaster-general-ww2/rules/artg006-quartermastergeneralww2-rulebook-en-web/en#page=6)
+
+正常迁移命令会生成独立的 `board-reviewed` 规则版本，50 区共有 122 条基础连接。本机校对版的数据库路径记录在 `local-content/baselines/board-reviewed/coverage.json`。既有录像依靠原规则指纹继续重放。录像台可切换校对后的棋盘和当局规则。

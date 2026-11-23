@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 
+from .board_connections import PRINTED_REGIONS, corrected_edges, corrected_straits, edge_pairs
 from .catalog import ContentCatalog
 from .content_effects import instruction, supported_effect
 from .content_triggers import supported_trigger
@@ -54,7 +55,11 @@ def compile_transcriptions(export):
     regions = [{"id": p["id"], "name": p["name"], "type": p["kind"].upper(),
                 **({"home_country": p["home"], "supply_source_for": p["home"]} if p.get("home") else {})}
                for p in pack["spaces"]]
-    edges = sorted({tuple(sorted((p["id"], neighbor))) for p in pack["spaces"] for neighbor in p["neighbors"]})
+    edges = sorted(edge_pairs((p["id"], neighbor) for p in pack["spaces"] for neighbor in p["neighbors"]))
+    straits = pack.get("straits", [])
+    printed_board = pack["id"] == "starter-unverified" and {r["id"] for r in regions} == PRINTED_REGIONS
+    if printed_board:
+        edges, straits = corrected_edges(edges), corrected_straits(straits)
     cards, abilities, coverage, area_responses = [], [], [], {}
     for index, original in enumerate(pack["cards"]):
         original = deepcopy(original)
@@ -199,7 +204,7 @@ def compile_transcriptions(export):
                           "trigger": {"operation_type": "TURN_END"}, "effects": [], "on_settle": [
                               {"type": "TRANSFER", "token": "$object", "destination": "$owner_ready"}]})
     rules = RuleSet({
-        "ruleset_version": f"transcribed-{pack['id']}-v{pack['version']}",
+        "ruleset_version": f"transcribed-{pack['id']}-v{pack['version']}" + ("-board-reviewed" if printed_board else ""),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],
@@ -213,9 +218,9 @@ def compile_transcriptions(export):
                      "unit_responses": ["unit-protection", "unit-supply"], "area_responses": area_responses,
                      "record_turn_start": True, "air_phase": True, "temporary_status_disable": True,
                      "reallocation": True, "turn_opportunities": opportunities, "free_recruit": True, "naval_army_base": True,
-                     "surface_supply": True, "straits": pack.get("straits", []), "declare_passives": True},
+                     "surface_supply": True, "straits": straits, "declare_passives": True},
         "source_pack": {"id": pack["id"], "version": pack["version"], "verified": pack["verified"],
-                        "straits": pack.get("straits", []), "limits": pack["limits"],
+                        "straits": straits, "limits": pack["limits"],
                         "reviewed": export.get("reviewed", [])},
     })
     report = {"total_definitions": len(cards), "total_copies": sum(len(deck) for deck in pack["decks"].values()),

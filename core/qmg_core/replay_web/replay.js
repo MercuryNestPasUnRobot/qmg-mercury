@@ -104,7 +104,9 @@ async function loadBoardArt(image) {
 }
 
 async function mount(data) {
-  const {frames, regions, edges, tokens, forces, game, batch} = data;
+  const {frames, regions, tokens, forces, game, batch} = data;
+  const atPlay = {edges: data.edges, straits: data.straits || []};
+  let topology = data.board_reference || atPlay;
   const country = id => forces[id]?.name || id || "";
   const end = frames.length - 1;
   const map = $("map");
@@ -210,6 +212,22 @@ async function mount(data) {
     button.addEventListener("click", () => changeZoom(step));
     $("theaters").append(button);
   }
+  if (data.board_reference) {
+    const label = node("label", "邻接 ", "topology-picker");
+    const select = node("select");
+    select.setAttribute("aria-label", "地图邻接规则");
+    const checked = node("option", "校对后棋盘");
+    checked.value = "checked";
+    const historical = node("option", "当局规则");
+    historical.value = "played";
+    select.append(checked, historical);
+    select.addEventListener("change", () => {
+      topology = select.value === "played" ? atPlay : data.board_reference;
+      paintMap(frames[i]);
+    });
+    label.append(select);
+    $("theaters").append(label);
+  }
   window.addEventListener("resize", fit);
 
   for (const [kind, label] of Object.entries(unitNames)) {
@@ -271,20 +289,24 @@ async function mount(data) {
       }
     }
     ctx.clearRect(0, 0, width, height);
-    function line(a, b, highlight, move) {
-      ctx.strokeStyle = move ? "#a36529" : highlight ? "#506e62" : "#8ea9a1";
-      ctx.globalAlpha = (move || highlight) ? 1 : 0.60;
+    const adjacent = new Set();
+    const channels = topology.straits.filter(strait => strait.seas.includes(focus));
+    function line(a, b, highlight, move, channel = false) {
+      ctx.strokeStyle = channel ? "#fbe3a2" : move ? "#a36529" : highlight ? (artMap ? "#fff1c1" : "#506e62") : "#8ea9a1";
+      ctx.globalAlpha = (move || highlight || channel) ? 1 : 0.60;
       ctx.lineWidth = move ? 2.7 : highlight ? 1.8 : 1;
-      ctx.setLineDash(move ? [5, 3] : []);
+      ctx.setLineDash(move || channel ? [5, 3] : []);
       ctx.beginPath();
       ctx.moveTo(...points[a]);
       ctx.lineTo(...points[b]);
       ctx.stroke();
     }
-    for (const [a, b] of edges) {
+    for (const [a, b] of topology.edges) {
       const highlight = a === focus || b === focus;
+      if (highlight) adjacent.add(a === focus ? b : a);
       if (highlight || (!artMap && Math.abs(points[a][0] - points[b][0]) <= dx * 4)) line(a, b, highlight, false);
     }
+    for (const strait of channels) line(...strait.seas, true, false, true);
     for (const [a, b] of tracks) line(a, b, true, true);
     const selected = focus && regions[focus];
     for (const [key, region] of Object.entries(regions)) {
@@ -298,6 +320,7 @@ async function mount(data) {
       }
       button.classList.toggle("changed", moved.has(key));
       button.classList.toggle("selected", focus === key);
+      button.classList.toggle("neighbor", adjacent.has(key));
       button.classList.toggle("occupied", !!groups.size);
       button.setAttribute("aria-pressed", focus === key);
       button.title = region.name + (units.length ? " · " + units.map(t => country(t.force) + unitNames[t.unit]).join("、") : " · 空区");
@@ -320,10 +343,19 @@ async function mount(data) {
     }
     if (selected) {
       const occupants = (frame.board[focus] || []).filter(key => tokens[key]?.unit).map(tokenName);
-      const adjacent = edges.filter(e => e.includes(focus)).map(e => regions[e.find(k => k !== focus)].name);
+      const neighbors = [...adjacent].map(key => regions[key].name);
+      const passages = channels.map(strait => {
+        const other = strait.seas.find(key => key !== focus);
+        const axis = (frame.board[strait.land] || []).some(key => {
+          const token = tokens[key];
+          return token?.unit === "ARMY" && forces[token.force]?.team === "axis";
+        });
+        return regions[other].name + "（" + regions[strait.land].name + "，" + (axis ? "轴心" : "同盟") + "可通行）";
+      });
       $("region-detail").textContent = [selected.name, occupants.join("、") || "无驻军",
         selected.vp ? selected.vp + " VP" : "",
-        "基础相邻 " + ([...new Set(adjacent)].join("、") || "—")].filter(Boolean).join(" · ");
+        "基础相邻 " + (neighbors.join("、") || "—"), passages.length ? "海峡 " + passages.join("、") : "",
+      ].filter(Boolean).join(" · ");
     } else {
       $("region-detail").textContent = "点击地区查看驻军和基础连接。";
     }

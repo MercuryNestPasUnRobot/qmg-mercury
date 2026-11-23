@@ -364,6 +364,15 @@ small {
   font-size: .8em;
 }
 
+.topology-picker {
+  color: var(--muted);
+  font-size: .8em;
+}
+
+.topology-picker select {
+  padding: 3px 7px;
+}
+
 .map-viewport {
   overflow: auto;
   background: #dce7e4;
@@ -430,6 +439,10 @@ small {
 .position.changed {
   border-color: #a6661f;
   box-shadow: 0 0 0 2px #d5a45780;
+}
+
+.position.neighbor {
+  outline: 1px solid #e5cf8b;
 }
 
 .position.selected {
