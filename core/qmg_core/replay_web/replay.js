@@ -489,6 +489,18 @@ async function mount(data) {
         picked(c.command) ? "picked" : "");
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
       if (c.retention) li.append(node("small", retentionDetails(c.retention)));
+      if (c.status_forecast) {
+        const s = c.status_forecast;
+        li.append(node("small", "状态预估 · " + s.windows + " 个席位回合 · 折算 " + s.effective.toFixed(2)
+          + " 次机会 · 毛收益 " + signed(s.gross) + " · 同时机重合 " + signed(s.competition) + " · 净值 " + signed(s.future)));
+        const timings = {"during-victory": "计分时", "after-build": "建设后", "battle-space": "战斗后",
+          "before-battle-removal": "受攻击时", "unit-activity": "部队行动时", "economic-play": "经济战时",
+          "discard-stage-card": "弃指定牌时", "play-army-card": "打出建陆牌时", "turn-start": "回合开始",
+          "play-phase-start": "出牌阶段开始", "discard-start": "弃牌阶段开始", USE_STATUS: "代替常规出牌",
+          modifier: "持续规则"};
+        const parts = Object.entries(s.by_trigger || {}).map(([kind, gain]) => (timings[kind] || kind) + " " + signed(gain));
+        if (parts.length) li.append(node("small", parts.join(" · ")));
+      }
       if (c.initial_card_score) li.append(node("small", "初始出牌分 " + signed(c.initial_card_score)));
       rules.append(li);
     }

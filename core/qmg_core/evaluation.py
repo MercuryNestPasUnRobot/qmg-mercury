@@ -15,6 +15,7 @@ from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
+from .status_scoring import is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 
 
@@ -79,6 +80,15 @@ class ScoreEvaluator:
             raise CoreError("Invalid economic forecast weights")
         if type(weights["max_simulation_nodes"]) is not int or not 1 <= weights["max_simulation_nodes"] <= 10000:
             raise CoreError("Invalid simulation budget")
+        self.status_weights = None
+        if "status_held_factor" in weights:
+            factor = weights["status_held_factor"]
+            if "economic_forecast" not in weights or type(factor) not in (int, float) or not 0 <= factor <= 1:
+                raise CoreError("Invalid status forecast settings")
+            self.status_weights = {"discount": weights["time_discount"], "held_factor": factor}
+            for card in rules.cards.values():
+                if is_status(card):
+                    verify_status(rules, card)
 
     @classmethod
     def load(cls, rules, path):
@@ -102,7 +112,7 @@ class ScoreEvaluator:
 
         return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
                                 lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
-                                visible_state, view["winner"])
+                                visible_state, view["winner"], status_weights=self.status_weights)
 
     def economic_from_state(self, rules, state):
         settings = self.weights.get("economic_forecast")
@@ -110,13 +120,16 @@ class ScoreEvaluator:
             return None
         return EconomicForecast(rules, settings, vars(state.turn), state.scores,
                                 lambda seat, kind: len(state.positions[zone(seat, kind)]),
-                                lambda: state, state.winner)
+                                lambda: state, state.winner, status_weights=self.status_weights)
 
     def hand_value(self, rules, state, country, card, legal, economy=None):
         w = self.weights
         weights = w["card_value_weights"]
         if card.get("simulation_unknown"):
             return weights["unknown"]
+        if economy and economy.status_weights and is_status(card):
+            return (economy.statuses.report(country, card["id"], held=True)["future"] +
+                    self.program_value(rules, state, country, card["effects"], economy))
         deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
         copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
         value = copies * weights["ability_ready"] + self.program_value(rules, state, country, card["effects"], economy)
@@ -162,6 +175,8 @@ class ScoreEvaluator:
                              for force in rules.controlled_forces(country))
                 return 0.65 if useful else 0.20
             raw = self.hand_value(rules, state, country, card, legal, economy)
+            if self.status_weights and is_status(card):
+                return raw
             if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
                 ready = condition_met(rules, state, country, card.get("content_condition"))
                 if ready:
@@ -279,7 +294,12 @@ class ScoreEvaluator:
             # Status source and its ability replicas represent the same resource: count replicas only.
             for t in s.tokens.values():
                 if t.owner_country == c and t.token_type == "ABILITY" and t.position_id == zone(c, "ABILITY_READY"):
+                    source = s.tokens.get(t.source_token_id)
+                    if self.status_weights and source and is_status(rules.cards.get(source.definition_id, {})):
+                        continue
                     cards += sign(c) * card_weights["ability_ready"]
+            if self.status_weights and (s.positions[zone(c, "STATUS")] or s.positions.get(zone(c, "DISABLED_STATUS"))):
+                cards += sign(c) * sum(economy.statuses.portfolio(c, True).values())
             if economy:
                 resources -= sign(c) * economy.future_loss(c)
             elif not s.positions[zone(c, "DECK")]:

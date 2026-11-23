@@ -1,5 +1,6 @@
 {
-  "profile": "ai-test-v1.4-uncalibrated",
+  "profile": "ai-test-v1.5-status-windows-uncalibrated",
+  "status_held_factor": 0.55,
   "economic_forecast": {
     "vp_pressure_bonus": 1.4,
     "closeout_bonus": 4,

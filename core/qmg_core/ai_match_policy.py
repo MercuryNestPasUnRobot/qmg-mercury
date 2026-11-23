@@ -6,6 +6,7 @@ from time import perf_counter
 from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .hand_retention import is_hand_choice
 from .model import CoreError, zone
+from .status_scoring import is_status
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price, stock_value
 
 
@@ -32,11 +33,12 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False):
 def paper_play_choices(ranked, mandatory):
     if not mandatory:
         return ranked
-    best = next((r for r in ranked if r["command"]["type"] == "PLAY_CARD"), None)
+    normal = ("PLAY_CARD", "USE_STATUS")
+    best = next((r for r in ranked if r["command"]["type"] in normal), None)
     if best is None:
         return ranked
     return [r for r in ranked if r["command"]["type"] == "REALLOCATE" or
-            (r["command"]["type"] == "PLAY_CARD" and r["rule_score"] == best["rule_score"])]
+            (r["command"]["type"] in normal and r["rule_score"] == best["rule_score"])]
 
 
 class RulePolicy:
@@ -66,6 +68,11 @@ class RulePolicy:
 
     def card_value(self, card, seat, economy, *, active=False, closeout=False):
         abilities = (self.rules.abilities[a]["effects"] for a in card.get("abilities", []))
+        if economy and economy.status_weights and is_status(card):
+            if active:
+                return economy.statuses.program(seat, seat, card["active_ability"], None, committed=True)
+            return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
+                    economy.statuses.report(seat, card["id"], held=not closeout)["future"])
         if active:
             return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], seat, economy, closeout=closeout)
         return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
@@ -94,6 +101,16 @@ class RulePolicy:
         seat = command["actor"]
         decision = view["decision"]
         kind, op = decision["decision_type"], decision["operation_type"]
+        sources = decision.get("response_sources", {})
+        if sources and economy and economy.status_weights:
+            key = decision.get("response_abilities", {}).get(option)
+            source = view["tokens"].get(sources.get(option))
+            if key and source and is_status(self.rules.cards.get(source["definition_id"], {})):
+                return economy.statuses.program(seat, decision.get("event_actor") or seat,
+                                                key, decision.get("event_region"), committed=True)
+            if option in ("decline", "pass") and all(is_status(self.rules.cards.get(
+                    view["tokens"].get(src, {}).get("definition_id"), {})) for src in sources.values()):
+                return 0
         if option in ("skip", "decline", "pass", "no", "done", "cancel"):
             return -100
         if kind in ("ABILITY", "RESPONSE_ORDER"):
@@ -106,7 +123,7 @@ class RulePolicy:
         if token := view["tokens"].get(option):
             if token["token_type"] == "CARD":
                 value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)
-                cost = op in ("DISCARD", "COST_SELECTED") or any(
+                cost = decision.get("status_hand_payment") or op in ("DISCARD", "COST_SELECTED") or any(
                     word in kind for word in ("COST", "DISCARD", "PAY", "REALLOCATE"))
                 return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
@@ -190,6 +207,10 @@ class RulePolicy:
                                     **({"forced": True} if forced_play_discard else {})}
             if slot_cost and command["type"] in ("PLAY_CARD", "USE_AIR"):
                 row["initial_card_score"] = -slot_cost
+            if economy and economy.status_weights and command["type"] == "PLAY_CARD":
+                card = self.rules.cards[view["tokens"][command["card"]]["definition_id"]]
+                if is_status(card) and not command.get("play_as"):
+                    row["status_forecast"] = economy.statuses.report(seat, card["id"])
         # Canonical tie-breaks also apply to own permitted choices out of the deck.
         def order(row):
             command = row["command"]
@@ -362,8 +383,8 @@ class SeatPolicy:
                 eligible = [r["command"] for r in preferred
                             if r["command"]["type"] != "ACTIVATE_CARD" and
                             (r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE" or
-                             (mandatory and r["command"]["type"] == "PLAY_CARD"))]
-                if len(eligible) > 1 or (mandatory and any(c["type"] == "PLAY_CARD" for c in eligible)):
+                             (mandatory and r["command"]["type"] in ("PLAY_CARD", "USE_STATUS")))]
+                if len(eligible) > 1 or (mandatory and any(c["type"] in ("PLAY_CARD", "USE_STATUS") for c in eligible)):
                     tried = eligible[:self.width]
                     exchange = next((c for c in eligible if c["type"] == "REALLOCATE"), None)
                     if exchange and exchange not in tried and self.width > 1:
