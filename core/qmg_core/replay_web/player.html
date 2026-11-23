@@ -26,9 +26,10 @@
         </header>
         <nav class="theaters" id="theaters" aria-label="地图区域"></nav>
         <div class="map-viewport" id="viewport">
-          <div class="map" id="map"><canvas id="routes" aria-hidden="true"></canvas><div id="regions"></div></div>
+          <div class="map" id="map"><img id="board-art" alt="桌游棋盘地图" hidden><canvas id="routes" aria-hidden="true"></canvas><div id="regions"></div></div>
         </div>
-        <div class="map-legend"><span>陆 陆军　海 海军　空 空军</span><span><b class="key changed"></b>本步变化</span><span><b class="key"></b>基础连接</span><a href="#card-zones">各国牌区 ↓</a></div>
+        <div class="map-legend"><div id="unit-key" class="unit-key" aria-label="兵种"></div><span><b class="key changed"></b>本步变化</span><a href="#card-zones">各国牌区 ↓</a></div>
+        <div class="force-legend" id="force-key" aria-label="国家棋子颜色"></div>
         <div id="region-detail" class="region-detail"></div>
       </section>
       <section class="table-panel" id="card-zones">

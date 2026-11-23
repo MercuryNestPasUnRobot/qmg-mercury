@@ -7,7 +7,7 @@ from conftest import card, make, move_initial
 from qmg_core import CoreAPI, RuleSet
 from qmg_core.ai_match import run_matches
 from qmg_core.model import CoreError, digest
-from qmg_core.replay import ReplayBatch, Tape, page, replay_game
+from qmg_core.replay import ReplayBatch, Tape, page, refresh_recordings, replay_game
 
 
 def test_tape_restores_board_status_hidden_response_and_score(data):
@@ -52,6 +52,10 @@ def test_match_replays_reconstruct_from_logs_and_publish_a_private_library(data,
     assert tape["batch"]["ai_version"] == "B v1"
     assert tape["frames"][-1]["scores"] == game["scores"] and tape["frames"][-1]["winner"] == game["winner"]
     assert len(tape["frames"]) == 1 + sum(game["decisions_by_seat"].values())
+    assert refresh_recordings(library) == 2
+    refreshed = recording.read_text(encoding="utf8")
+    assert json.loads(refreshed.split(marker)[1].split("</script>", 1)[0]) == tape
+    assert 'id="board-art"' in refreshed
     with pytest.raises(CoreError, match="reported result"):
         replay_game(rules, {**game, "record_head": "corrupt"}, source / game["decision_log"])
     lines = (source / game["decision_log"]).read_text(encoding="utf8").splitlines()

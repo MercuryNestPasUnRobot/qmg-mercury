@@ -22,6 +22,7 @@ COUNTRIES = dict(zip(TURN_ORDER, ("德国", "英国", "日本", "苏联", "意�
 TEAMS = {"axis": "轴心", "allies": "同盟", "draw": "平局"}
 COUNT_ZONES = ("HAND", "DECK", "DISCARD")
 CARD_ZONES = ("STATUS", "DISABLED_STATUS", "RESPONSE")
+DATA_TAG = '<script type="application/json" id="replay-data">'
 
 
 def write_text(path, content):
@@ -149,12 +150,36 @@ def page(title, body, payload=None):
     data = ""
     if payload is not None:
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-        data = f'<script type="application/json" id="replay-data">{encoded}</script>'
+        data = f'{DATA_TAG}{encoded}</script>'
     return f'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash_source(script)}; style-src {hash_source(style)}">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash_source(script)}; style-src {hash_source(style)}; img-src file:">
 <title>{escape(title)} · Mercury</title><style>{style}</style>
 </head><body>{body}{data}<script>{script}</script></body></html>'''
+
+
+def render_recording(path, payload):
+    title = f'{payload["batch"]["name"]} · {payload["game"]["game_id"]}'
+    body = (ASSETS / "player.html").read_text(encoding="utf-8")
+    write_text(path, page(title, body, payload))
+
+
+def refresh_recordings(root):
+    """Re-render the viewer from already verified recordings without executing games."""
+    refreshed = 0
+    for manifest in sorted(root.glob("batches/*/manifest.json")):
+        for key in read_json(manifest)["games"]:
+            if not fullmatch(r"[0-9a-f]{16}", key):
+                raise CoreError("Invalid recording key")
+            target = manifest.parent / (key + ".html")
+            _, found, data = target.read_text(encoding="utf-8").partition(DATA_TAG)
+            if not found or "</script>" not in data:
+                raise CoreError(f"Recording data missing in {target.name}")
+            payload = json.loads(data.split("</script>", 1)[0])
+            render_recording(target, payload)
+            refreshed += 1
+    refresh_library(root)
+    return refreshed
 
 
 class ReplayBatch:
@@ -181,9 +206,7 @@ class ReplayBatch:
         self.info["games"][key] = {k: game[k] for k in ("game_id", "seed", "search_team", "winner", "scores")}
         payload = {**tape.data(), "batch": {k: v for k, v in self.info.items() if k != "games"},
                    "game": self.info["games"][key]}
-        write_text(self.directory / (key + ".html"), page(
-            f'{self.info["name"]} · {game["game_id"]}', (ASSETS / "player.html").read_text(encoding="utf-8"),
-            payload))
+        render_recording(self.directory / (key + ".html"), payload)
         write_json(self.manifest, self.info)
         refresh_library(self.root)
 
@@ -236,13 +259,19 @@ def import_batch(source, root, rules, *, name, version, note):
 
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("--batch", type=Path, required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--batch", type=Path)
+    action.add_argument("--refresh", action="store_true", help="Update the appearance of saved recordings")
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--library", type=Path, default=LIBRARY)
     parser.add_argument("--name")
     parser.add_argument("--ai-version")
     parser.add_argument("--ai-note")
     args = parser.parse_args()
+    if args.refresh:
+        print(f'已更新 {refresh_recordings(args.library)} 局录像的界面')
+        print(args.library / "打开录像.html")
+        return
     report = read_json(args.batch / "summary.json")
     fingerprint = report["rules_digest"]
     if not fullmatch(r"[0-9a-f]{64}", fingerprint):
