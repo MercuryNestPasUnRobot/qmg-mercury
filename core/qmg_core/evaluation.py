@@ -1,12 +1,14 @@
 """Deterministic VP-equivalent diagnostics, with bounded within-card choice search."""
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import cache
 import json
 from math import isfinite
 from pathlib import Path
 
 from .api import CoreAPI, observed_position, simulation_from_observation
 from .definitions import RuleSet
+from .economic_scoring import EconomicForecast
 from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .hand_retention import score_retention
 from .map_influence import ScoringRoutes
@@ -57,6 +59,12 @@ class ScoreEvaluator:
                     or not weights["distance_weights"]):
                 raise CoreError("Invalid route forecast settings")
             numbers.extend(route.values())
+        if "economic_forecast" in weights:
+            economy = weights["economic_forecast"]
+            if not isinstance(economy, dict) or set(economy) != {
+                    "vp_pressure_bonus", "closeout_bonus", "lead_vp_per_round", "future_shortfall_value"}:
+                raise CoreError("Invalid economic forecast settings")
+            numbers.extend(economy.values())
         if any(type(n) not in (int, float) or not isfinite(n) or n < 0 for n in numbers) or not 0 <= weights["time_discount"] <= 1:
             raise CoreError("Evaluation weights must be finite nonnegative values")
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
@@ -66,6 +74,9 @@ class ScoreEvaluator:
         if "route_forecast" in weights and not (
                 0 < route["distance_tail_decay"] < 1 and 0 < route["friendly_unit"] < 1 < route["enemy_unit"]):
             raise CoreError("Invalid route influence weights")
+        if "economic_forecast" in weights and not (
+                economy["lead_vp_per_round"] > 0 and 0 <= economy["future_shortfall_value"] <= 1):
+            raise CoreError("Invalid economic forecast weights")
         if type(weights["max_simulation_nodes"]) is not int or not 1 <= weights["max_simulation_nodes"] <= 10000:
             raise CoreError("Invalid simulation budget")
 
@@ -80,23 +91,48 @@ class ScoreEvaluator:
         belief = simulation_from_observation(self.rules, view)
         return self._value(belief, country)
 
-    def hand_value(self, rules, state, country, card, legal):
+    def economic_from_view(self, view):
+        settings = self.weights.get("economic_forecast")
+        if settings is None:
+            return None
+
+        @cache
+        def visible_state():
+            return observed_position(self.rules, view)[1]
+
+        return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
+                                lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
+                                visible_state, view["winner"])
+
+    def economic_from_state(self, rules, state):
+        settings = self.weights.get("economic_forecast")
+        if settings is None:
+            return None
+        return EconomicForecast(rules, settings, vars(state.turn), state.scores,
+                                lambda seat, kind: len(state.positions[zone(seat, kind)]),
+                                lambda: state, state.winner)
+
+    def hand_value(self, rules, state, country, card, legal, economy=None):
         w = self.weights
         weights = w["card_value_weights"]
         if card.get("simulation_unknown"):
             return weights["unknown"]
         deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
         copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
-        value = copies * weights["ability_ready"] + self.program_value(rules, state, country, card["effects"])
+        value = copies * weights["ability_ready"] + self.program_value(rules, state, country, card["effects"], economy)
         return max(0.0, value) * (1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
 
-    def program_value(self, rules, state, country, steps):
+    def program_value(self, rules, state, country, steps, economy=None):
         w, value = self.weights, 0.0
         for instruction in steps:
             operation = instruction.get("operation", instruction)
             multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
-            if operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
-                value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"])
+            if operation["type"] == "GAIN_VP" and economy:
+                recipient = operation.get("score_country") or country
+                delta = multiplier if rules.team(recipient) == rules.team(country) else -multiplier
+                value += economy.points(country, delta, w["card_value_weights"]["GAIN_VP"])
+            elif operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
+                value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"], economy)
             else:
                 weights = w["card_value_weights"]
                 value += weights.get(operation["type"], weights.get(instruction["type"], 0)) * multiplier
@@ -112,6 +148,7 @@ class ScoreEvaluator:
 
         rules, state = observed_position(self.rules, view)
         legal = LegalActionGenerator(rules)
+        economy = self.economic_from_state(rules, state)
 
         def short_term(card):
             if card.get("implementation", {}).get("status") == "blocked":
@@ -124,11 +161,11 @@ class ScoreEvaluator:
                 useful = any(air_options(rules, state, country, {"force": force, "actions": actions})
                              for force in rules.controlled_forces(country))
                 return 0.65 if useful else 0.20
-            raw = self.hand_value(rules, state, country, card, legal)
+            raw = self.hand_value(rules, state, country, card, legal, economy)
             if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
                 ready = condition_met(rules, state, country, card.get("content_condition"))
                 if ready:
-                    attached = max((self.program_value(rules, state, country, rules.abilities[k]["effects"])
+                    attached = max((self.program_value(rules, state, country, rules.abilities[k]["effects"], economy)
                                     for k in card.get("abilities", ())), default=0)
                     raw += 0.5 * max(0, attached) + (0.35 if card.get("modifiers") else 0)
                     if kind == "bolster":
@@ -233,16 +270,19 @@ class ScoreEvaluator:
         cards, resources = 0.0, 0.0
         legal = LegalActionGenerator(rules)
         card_weights = w["card_value_weights"]
+        economy = self.economic_from_state(rules, s)
         for c in TURN_ORDER:
             hand = s.positions[zone(c, "HAND")]
             for token_id in hand:
                 card = rules.cards[s.tokens[token_id].definition_id]
-                cards += sign(c) * self.hand_value(rules, s, c, card, legal)
+                cards += sign(c) * self.hand_value(rules, s, c, card, legal, economy)
             # Status source and its ability replicas represent the same resource: count replicas only.
             for t in s.tokens.values():
                 if t.owner_country == c and t.token_type == "ABILITY" and t.position_id == zone(c, "ABILITY_READY"):
                     cards += sign(c) * card_weights["ability_ready"]
-            if not s.positions[zone(c, "DECK")]:
+            if economy:
+                resources -= sign(c) * economy.future_loss(c)
+            elif not s.positions[zone(c, "DECK")]:
                 resources -= sign(c) * w["resource_penalties"]["empty_deck"]
         terminal = 2 if s.winner == team else -2 if s.winner == enemy else 0
         return PositionValue(float(actual), map_value, cards, resources, actual + map_value + cards + resources,
@@ -287,13 +327,17 @@ def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights)
     ]}
 
 
-def effect_potential(rules, state, seat, effect, weights):
+def effect_potential(rules, state, seat, effect, weights, economy=None):
     from .content_effects import condition_met
+    if economy:
+        dynamic = economy.effect(seat, effect, weights["points"])
+        if dynamic is not None:
+            return dynamic
     if not condition_met(rules, state, seat, effect.get("when")):
         return 0.0
     kind = effect["type"]
     if kind == "choose-one":
-        return max((sum(effect_potential(rules, state, seat, child, weights) for child in option["effects"])
+        return max((sum(effect_potential(rules, state, seat, child, weights, economy) for child in option["effects"])
                     for option in effect["options"]), default=0.0)
     if kind == "points":
         award = effect["side"]
@@ -360,9 +404,10 @@ class OneStepPlanner:
         """Evaluate the ordinary play of one representative of the estimated acquisition."""
         state, rules = root.state, root.rules
         legal = LegalActionGenerator(rules)
+        economy = self.evaluator.economic_from_state(rules, state)
 
         def hand_value(card):
-            return self.evaluator.hand_value(rules, state, country, card, legal)
+            return self.evaluator.hand_value(rules, state, country, card, legal, economy)
 
         plans = payment_plans(rules, view, country, lambda card: -hand_value(card))
         plan = max(plans, key=lambda p: price(p, hand_value(rules.cards[p["definition"]]))["total"], default=None)

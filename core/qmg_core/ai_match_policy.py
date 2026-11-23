@@ -16,11 +16,15 @@ EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle
                    "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
 
 
-def effect_priority(effect, team):
+def effect_priority(effect, team, economy=None, seat=None, *, closeout=False):
+    if economy:
+        dynamic = economy.effect(seat, effect, ACTION_PRIORITY["GAIN_VP"], closeout=closeout)
+        if dynamic is not None:
+            return dynamic
     if effect["type"] == "points":
         return effect["amount"] * ACTION_PRIORITY["GAIN_VP"] * (1 if effect["side"] in ("self", team) else -1)
     if effect["type"] == "choose-one":
-        return max((sum(effect_priority(e, team) for e in option["effects"])
+        return max((sum(effect_priority(e, team, economy, seat, closeout=closeout) for e in option["effects"])
                     for option in effect["options"]), default=0)
     return EFFECT_PRIORITY.get(effect["type"], 0.2)
 
@@ -45,58 +49,66 @@ class RulePolicy:
             region = site["region"]
             self.sites[region] = self.sites.get(region, 0) + site["vp"]
 
-    def instructions(self, steps, team):
+    def instructions(self, steps, seat, economy, *, closeout=False):
+        team = self.rules.team(seat)
         value = 0
         for step in steps:
             op = step.get("operation", step)
             if op["type"] == "CARD_EFFECT":
-                value += effect_priority(op["effect"], team)
+                value += effect_priority(op["effect"], team, economy, seat, closeout=closeout)
+            elif op["type"] == "GAIN_VP" and economy:
+                recipient = op.get("score_country") or seat
+                delta = op["amount"] if self.rules.team(recipient) == team else -op["amount"]
+                value += economy.points(seat, delta, ACTION_PRIORITY["GAIN_VP"], closeout=closeout)
             else:
                 value += ACTION_PRIORITY.get(op["type"], 0.25) * op.get("amount", 1)
         return value
 
-    def card_value(self, card, seat, *, active=False):
+    def card_value(self, card, seat, economy, *, active=False, closeout=False):
         abilities = (self.rules.abilities[a]["effects"] for a in card.get("abilities", []))
-        team = self.rules.team(seat)
         if active:
-            return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], team)
-        return self.instructions(card["effects"], team) + 0.35 * sum(self.instructions(e, team) for e in abilities)
+            return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], seat, economy, closeout=closeout)
+        return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
+                0.35 * sum(self.instructions(e, seat, economy) for e in abilities))
 
-    def discard_value(self, card, seat):
-        return -max(0, self.card_value(card, seat))
+    def discard_value(self, card, seat, economy):
+        return -max(0, self.card_value(card, seat, economy))
 
-    def play_card_value(self, card, seat):
+    def play_card_value(self, card, seat, economy):
         slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
-        return self.card_value(card, seat) - slot_cost
+        return self.card_value(card, seat, economy, closeout=True) - slot_cost
 
-    def reallocation_plan(self, view, seat):
-        plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat))
-        return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat))
+    def reallocation_plan(self, view, seat, economy):
+        plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy))
+        return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
                     for plan in plans),
                    key=lambda plan: plan["total"], default=None)
 
-    def acquisition_value(self, info, seat, source, definition):
+    def acquisition_value(self, info, seat, source, definition, economy):
         card = self.rules.cards[definition]
-        return (self.play_card_value(card, seat) +
+        return (self.play_card_value(card, seat, economy) +
                 stock_value(info["deck"], source, card["legacy_kind"])["deck_score"])
 
-    def choice_value(self, view, command, region_scores):
+    def choice_value(self, view, command, region_scores, economy):
         option = command["option"]
+        seat = command["actor"]
         decision = view["decision"]
         kind, op = decision["decision_type"], decision["operation_type"]
         if option in ("skip", "decline", "pass", "no", "done", "cancel"):
             return -100
         if kind in ("ABILITY", "RESPONSE_ORDER"):
             source = view["tokens"].get(decision.get("response_sources", {}).get(option))
-            return 1 + self.card_value(self.rules.cards[source["definition_id"]], command["actor"]) if source else 1
+            return 1 + self.card_value(self.rules.cards[source["definition_id"]], seat, economy) if source else 1
+        if economy and "deck_discard_count" in decision and option in self.rules.countries:
+            return economy.mill(seat, option, decision["deck_discard_count"], ACTION_PRIORITY["GAIN_VP"], closeout=True)
         if option in ("confirm", "air", "discard-top"):
             return 100
         if token := view["tokens"].get(option):
             if token["token_type"] == "CARD":
-                value = self.card_value(self.rules.cards[token["definition_id"]], command["actor"])
+                value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)
                 cost = op in ("DISCARD", "COST_SELECTED") or any(
                     word in kind for word in ("COST", "DISCARD", "PAY", "REALLOCATE"))
-                return (self.discard_value(self.rules.cards[token["definition_id"]], command["actor"])
+                return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
             if token["token_type"] == "UNIT":
                 return self.sites.get(token["position_id"], 0) * (1 if kind == "BATTLE_VICTIM" else -1)
@@ -113,6 +125,7 @@ class RulePolicy:
             return []
         seat = commands[0]["actor"]
         phase = view["turn"]["phase"]
+        economy = self.evaluator.economic_from_view(view) if self.evaluator else None
         slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
         forced_play_discard = phase == "Play" and any(c["type"] == "DISCARD_CARD" for c in commands)
         retention = (self.evaluator.retention(view, seat)
@@ -123,12 +136,12 @@ class RulePolicy:
         slots = max(0, self.rules.settings["hand_limit"] - hand)
         replacement_available = view["positions"][zone(seat, "DECK")]["count"] > slots
         info = view.get("reallocation", {})
-        plan = (self.reallocation_plan(view, seat)
+        plan = (self.reallocation_plan(view, seat, economy)
                 if "payment" in info or any(c["type"] == "REALLOCATE" for c in commands) else None)
         source_values = {}
         if "sources" in info:
             for source, definition, _ in acquisitions(self.rules, view, seat):
-                value = self.acquisition_value(info, seat, source, definition)
+                value = self.acquisition_value(info, seat, source, definition, economy)
                 source_values[source] = max(value, source_values.get(source, float("-inf")))
 
         def score(command):
@@ -138,10 +151,10 @@ class RulePolicy:
                 if option in retention:
                     return -retention[option]["net"]
                 if option in info.get("targets", {}):
-                    return self.acquisition_value(info, seat, info["source"], info["targets"][option])
+                    return self.acquisition_value(info, seat, info["source"], info["targets"][option], economy)
                 if option in info.get("sources", {}):
                     return source_values.get(info["sources"][option], -10)
-                return self.choice_value(view, command, region_scores)
+                return self.choice_value(view, command, region_scores, economy)
             if kind == "END_PHASE":
                 if slot_cost and phase in ("Play", "Air", "Discard"):
                     return 0
@@ -150,7 +163,7 @@ class RulePolicy:
                 net = retention.get(command["card"], {}).get("net", 0)
                 if forced_play_discard:
                     return -net if retention else self.discard_value(
-                        self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat)
+                        self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat, economy)
                 return -net if net < 0 and replacement_available else -1
             if kind == "FORFEIT_PLAY":
                 return -1
@@ -164,8 +177,8 @@ class RulePolicy:
                 return ACTION_PRIORITY.get(mode, 0.4) - slot_cost
             token = view["tokens"][command["card"]]
             card = self.rules.cards[token["definition_id"]]
-            return (self.play_card_value(card, seat) if kind == "PLAY_CARD" else
-                    self.card_value(card, seat, active=kind == "USE_STATUS"))
+            return (self.play_card_value(card, seat, economy) if kind == "PLAY_CARD" else
+                    self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
         for row in rows:
             command = row["command"]

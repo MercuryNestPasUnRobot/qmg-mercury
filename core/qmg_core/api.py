@@ -116,6 +116,9 @@ def observation(processor, controlled_countries, *, include_history=True):
                 decision["response_sources"] = {
                     "use" if len(candidates) == 1 else key: s.tokens[key].source_token_id for key in candidates
                 }
+            if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
+                    s.decision.continuation["effect"]["type"] == "choose-country"):
+                decision["deck_discard_count"] = s.decision.continuation["effect"]["count"]
     resolution = []
     for frame in s.stack:
         ability_id = frame.context.get("ability_token")
