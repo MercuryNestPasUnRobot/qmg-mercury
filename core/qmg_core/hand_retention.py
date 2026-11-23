@@ -5,13 +5,13 @@ from .content_actions import BASIC_KINDS
 from .model import TURN_ORDER, zone
 
 
-def is_hand_choice(view, seat):
+def is_hand_choice(view, seat, *, forced_play_discard=False):
     decision = view["decision"]
     phase = view["turn"]["phase"]
     if decision:
         return (decision["required_country"] == seat and decision.get("operation_type") == "DISCARD" and
                 phase in ("Setup", "Discard"))
-    return phase == "Discard" and TURN_ORDER[view["turn"]["country_index"]] == seat
+    return (phase == "Discard" or forced_play_discard) and TURN_ORDER[view["turn"]["country_index"]] == seat
 
 
 def score_retention(rules, state, seat, settings, short_term):

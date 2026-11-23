@@ -184,6 +184,8 @@ class RuleSet:
                 raise CoreError(f"Invalid setting: {k}")
         if self.settings["setup_discard"] > self.settings["initial_hand"] or self.settings["max_atomic_steps"] == 0 or self.settings["max_rounds"] == 0:
             raise CoreError("Invalid setup or execution budget")
+        if type(self.settings.get("mandatory_turn_play", False)) is not bool:
+            raise CoreError("Invalid mandatory play setting")
         self.fingerprint = digest(self.data)
         self.bound_abilities = {}
         for card in self.cards.values():

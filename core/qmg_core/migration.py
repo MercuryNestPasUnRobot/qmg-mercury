@@ -204,7 +204,8 @@ def compile_transcriptions(export):
                           "trigger": {"operation_type": "TURN_END"}, "effects": [], "on_settle": [
                               {"type": "TRANSFER", "token": "$object", "destination": "$owner_ready"}]})
     rules = RuleSet({
-        "ruleset_version": f"transcribed-{pack['id']}-v{pack['version']}" + ("-board-reviewed" if printed_board else ""),
+        "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
+                            + ("-board-reviewed" if printed_board else "") + "-mandatory-play"),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],
@@ -213,7 +214,7 @@ def compile_transcriptions(export):
         "units": [{"id": "army", "kind": "ARMY"}, {"id": "navy", "kind": "NAVY"}, {"id": "air", "kind": "AIR"}],
         "cards": cards, "abilities": abilities, "score_sites": sites, "initial_tokens": initial,
         "settings": {"initial_hand": 12, "setup_discard": 5, "hand_limit": 7, "plays_per_turn": 1,
-                     "max_rounds": 20, "victory_margin": 30, "deck_exhaustion_vp": -1,
+                     "mandatory_turn_play": True, "max_rounds": 20, "victory_margin": 30, "deck_exhaustion_vp": -1,
                      "max_atomic_steps": 10000, "allied_supply": False,
                      "unit_responses": ["unit-protection", "unit-supply"], "area_responses": area_responses,
                      "record_turn_start": True, "air_phase": True, "temporary_status_disable": True,

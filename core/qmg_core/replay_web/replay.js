@@ -54,7 +54,7 @@ const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "�
   RESPONSE: "响应区", RESERVE_ARMY: "陆军预备", RESERVE_NAVY: "海军预备", RESERVE_AIR: "空军预备",
   ABILITY_READY: "可用区", ABILITY_PENDING: "待结算", OBJECT_POOL: "对象池",
   RESOLUTION: "结算区", SCORE_DORMANT: "计分休眠区", SET_ASIDE: "待命区"};
-const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "主动弃牌", CHOOSE: "选择", USE_STATUS: "发动状态牌",
+const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "弃牌", FORFEIT_PLAY: "无牌可弃，扣 1 VP", CHOOSE: "选择", USE_STATUS: "发动状态牌",
   USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应",
   BUILD_ARMY: "建立陆军", BUILD_NAVY: "建立海军", LAND_BATTLE: "陆战", SEA_BATTLE: "海战", RECRUIT: "征召"};
 const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
@@ -79,7 +79,7 @@ const exchangeDetails = plan => [
 const retentionDetails = value => [
   "保留分 " + signed(value.net), "短期 " + signed(value.short_term), "初始 " + signed(value.slot_cost),
   "基础储备 " + signed(value.basic_reserve), "重复 " + signed(value.redundancy),
-  value.replacement_available ? "" : "无额外补牌",
+  value.forced ? "无牌可出，必须弃牌" : value.replacement_available ? "" : "无额外补牌",
 ].filter(Boolean).join(" · ");
 
 function pieceIcon(kind, color, label, count = 1) {
