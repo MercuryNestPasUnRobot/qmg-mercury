@@ -37,7 +37,8 @@ def check_catalog(rules, *, trace=False):
                 raise ValueError("Hand listener was not installed: " + definition["id"])
             row["result"] = "hand-listener-registered"
         else:
-            commands = [c for c in p.legal_commands(TURN_ORDER) if c.get("card") == source.token_id]
+            commands = [c for c in p.legal_commands(TURN_ORDER)
+                        if c.get("card") == source.token_id and c["type"] in ("PLAY_CARD", "USE_AIR")]
             if not commands:
                 row["result"] = "no-opening-target"
             else:

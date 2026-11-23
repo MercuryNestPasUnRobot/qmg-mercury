@@ -1,7 +1,13 @@
 {
-  "profile": "ai-test-v1.2-uncalibrated",
+  "profile": "ai-test-v1.3-uncalibrated",
   "seat_forecast": true,
   "distance_weights": [1, 0.65, 0.3, 0.1],
+  "route_forecast": {
+    "nearest_sites": 4,
+    "distance_tail_decay": 0.7,
+    "friendly_unit": 0.8,
+    "enemy_unit": 1.15
+  },
   "supply_weights": {
     "supplied": 1,
     "unsupplied": 0.25,
@@ -29,7 +35,7 @@
   },
   "effect_value_weights": {
     "default": 0.2,
-    "points": 0.35,
+    "points": 0.20,
     "build": 0.8,
     "recruit": 0.8,
     "choose-space": 0.7,

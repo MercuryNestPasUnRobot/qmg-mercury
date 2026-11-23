@@ -210,6 +210,8 @@ def check_phase_listeners(rules, seed):
         phase = phases[trigger]
         index = scenario_rules.phases.index(phase)
         state.turn.phase = scenario_rules.phases[index - 1]
+        if state.turn.phase == "Play":
+            state.turn.plays_remaining = 0
         state.turn.country_index = (TURN_ORDER.index(owner) - int(index == 0)) % len(TURN_ORDER)
         validate_state(scenario_rules, state)
         p = CommandProcessor(scenario_rules, state)

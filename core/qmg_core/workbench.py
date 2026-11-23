@@ -8,7 +8,7 @@ from uuid import uuid4
 import json
 
 from .api import CoreAPI
-from .ai_match_policy import RulePolicy
+from .ai_match_policy import CandidateView, RulePolicy, paper_play_choices
 from .catalog import ContentCatalog
 from .engine import CommandProcessor
 from .evaluation import OneStepPlanner, SimulationIncomplete, acceptable_play
@@ -68,7 +68,11 @@ class Workbench:
             if not available:
                 raise CoreError("当前没有可执行的指令。")
             actor_view = client.observe(include_history=False)
-            if self.planner.evaluator.hand_slot_cost and is_hand_choice(actor_view, actor):
+            mandatory = bool(actor_view["turn"]["phase"] == "Play" and
+                             self.processor.rules.settings.get("mandatory_turn_play"))
+            forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in available)
+            if (self.planner.evaluator.hand_slot_cost and
+                    is_hand_choice(actor_view, actor, forced_play_discard=forced_play_discard)):
                 self.ai_choices = []
                 command = self.rule_policy.rank(actor_view, available)[0]["command"]
             elif view["decision"]:
@@ -78,17 +82,23 @@ class Workbench:
                 self.ai_choices = [c for c in self.ai_choices if c["expected_version"] > view["version"]] if planned else []
                 if planned:
                     command = planned
-                elif actor_view.get("reallocation"):
+                elif mandatory or actor_view.get("reallocation"):
                     command = self.rule_policy.rank(actor_view, available)[0]["command"]
                 else:
                     command = self.planner.choose(client, actor)
             else:
-                ranked = self.planner.rank(client, actor)
-                best = next((row for row in ranked if acceptable_play(row)), None)
+                rules_ranked = self.rule_policy.rank(actor_view, available) if mandatory else []
+                preferred = paper_play_choices(rules_ranked, mandatory)
+                candidates = CandidateView(actor_view, [row["command"] for row in preferred]) if mandatory else client
+                ranked = self.planner.rank(candidates, actor)
+                best = next((row for row in ranked if acceptable_play(row, mandatory=mandatory)), None)
                 if best is None:
-                    raise SimulationIncomplete("当前预算内没有完成模拟的行动。")
-                command = best["command"]
-                self.ai_choices = [choice for choice in best["continuations"] if choice["actor"] == actor]
+                    if not preferred:
+                        raise SimulationIncomplete("当前预算内没有完成模拟的行动。")
+                    command, self.ai_choices = preferred[0]["command"], []
+                else:
+                    command = best["command"]
+                    self.ai_choices = [choice for choice in best["continuations"] if choice["actor"] == actor]
             client.submit(command)
         elif fields["action"] == "human":
             commands = self.human.legal_commands()
@@ -169,6 +179,8 @@ class Workbench:
                 options.append(button("human", f"调配资源 · 弃 {cost} 找 1", i))
             elif command["type"] == "DISCARD_CARD":
                 options.append(button("human", f"弃置 {token_name(command['card'])}", i))
+            elif command["type"] == "FORFEIT_PLAY":
+                options.append(button("human", "无牌可弃，扣 1 VP", i))
         waiting = f'等待 {COUNTRY_NAMES[decision["required_country"]]} 选择' if decision else "本阶段行动"
         if decision and "decision_type" in decision:
             kind = {"ABILITY": "使用或放弃能力", "RESPONSE_ORDER": "选择先发动的响应", "COST": "选择支付牌", "TARGET": "选择合法目标",
@@ -289,7 +301,9 @@ def main():
     rules = (ContentCatalog.load(args.catalog) if args.catalog else
              ContentCatalog.cached(DATA / "architecture_fixture.json", CATALOG_CACHE))
     weights = json.loads((DATA / "evaluation_weights.json").read_text(encoding="utf-8"))
-    weights["hand_retention"] = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))["hand_retention"]
+    ai_weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
+    for key in ("hand_retention", "route_forecast"):
+        weights[key] = ai_weights[key]
     with make_server(Workbench(args.save_dir, rules, weights), args.port) as server:
         print(f"Mercury Core: http://127.0.0.1:{server.server_port}", flush=True)
         try:

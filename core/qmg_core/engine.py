@@ -372,6 +372,15 @@ class CommandProcessor:
                 if available and self.legal.can_start_card(
                         s, country, {**card, "effects": self.rules.abilities[active]["effects"]}, activating=True):
                     commands.append({"type": "USE_STATUS", "actor": country, "expected_version": s.version, "card": token_id})
+            if self.rules.settings.get("mandatory_turn_play"):
+                commands = [command for command in commands if command["type"] != "END_PHASE"]
+                if not any(command["type"] in ("PLAY_CARD", "USE_STATUS") for command in commands):
+                    hand = s.positions[zone(country, "HAND")]
+                    if hand:
+                        commands.extend({"type": "DISCARD_CARD", "actor": country, "expected_version": s.version,
+                                         "card": key} for key in hand)
+                    else:
+                        commands.append({"type": "FORFEIT_PLAY", "actor": country, "expected_version": s.version})
         return commands + interrupts
 
     def submit(self, command, controlled_countries, auto_resolve=True):
@@ -387,10 +396,13 @@ class CommandProcessor:
             if "ability_token" in frame.context:
                 op.update(object_token_id=frame.context["ability_token"], object_origin=frame.context.get("origin"))
         def apply(s):
-            if command["type"] == "DISCARD_CARD":
-                s.stack.append(CardInterpreter.frame(s, command["actor"], None,
-                    [{"type": "DISCARD", "target_token": command["card"]}]))
-                return outcome("DISCARD_CARD")
+            if command["type"] in ("DISCARD_CARD", "FORFEIT_PLAY"):
+                if s.turn.phase == "Play":
+                    s.turn.plays_remaining -= 1
+                effect = ({"type": "DISCARD", "target_token": command["card"]} if command["type"] == "DISCARD_CARD"
+                          else {"type": "GAIN_VP", "amount": -1})
+                s.stack.append(CardInterpreter.frame(s, command["actor"], None, [effect]))
+                return outcome(command["type"])
             if command["type"] in ("USE_AIR", "REALLOCATE"):
                 from .content_actions import begin_action
                 return begin_action(self, s, command)

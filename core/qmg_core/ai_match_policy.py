@@ -9,20 +9,30 @@ from .model import CoreError, zone
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price, stock_value
 
 
-ACTION_PRIORITY = {"GAIN_VP": 2.0, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NAVY": 1.4,
+ACTION_PRIORITY = {"GAIN_VP": 0.75, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NAVY": 1.4,
                    "LAND_BATTLE": 1.3, "SEA_BATTLE": 1.3, "DRAW": 0.45}
 EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle": 1.3,
                    "battle-series": 1.3, "choose-unit": 1.2, "air-action": 1.0,
-                   "discard-top": 0.65, "play-from-zone": 0.6, "search-deck": 0.35}
+                   "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
 
 
 def effect_priority(effect, team):
     if effect["type"] == "points":
-        return effect["amount"] * (2 if effect["side"] in ("self", team) else -2)
+        return effect["amount"] * ACTION_PRIORITY["GAIN_VP"] * (1 if effect["side"] in ("self", team) else -1)
     if effect["type"] == "choose-one":
         return max((sum(effect_priority(e, team) for e in option["effects"])
                     for option in effect["options"]), default=0)
     return EFFECT_PRIORITY.get(effect["type"], 0.2)
+
+
+def paper_play_choices(ranked, mandatory):
+    if not mandatory:
+        return ranked
+    best = next((r for r in ranked if r["command"]["type"] == "PLAY_CARD"), None)
+    if best is None:
+        return ranked
+    return [r for r in ranked if r["command"]["type"] == "REALLOCATE" or
+            (r["command"]["type"] == "PLAY_CARD" and r["rule_score"] == best["rule_score"])]
 
 
 class RulePolicy:
@@ -70,7 +80,7 @@ class RulePolicy:
         return (self.play_card_value(card, seat) +
                 stock_value(info["deck"], source, card["legacy_kind"])["deck_score"])
 
-    def choice_value(self, view, command):
+    def choice_value(self, view, command, region_scores):
         option = command["option"]
         decision = view["decision"]
         kind, op = decision["decision_type"], decision["operation_type"]
@@ -91,6 +101,8 @@ class RulePolicy:
             if token["token_type"] == "UNIT":
                 return self.sites.get(token["position_id"], 0) * (1 if kind == "BATTLE_VICTIM" else -1)
         if option in self.rules.regions:
+            if option in region_scores:
+                return region_scores[option]
             site_value = self.sites.get(option, 0)
             occupants = view["positions"][option].get("tokens", [])
             return site_value + 0.25 * bool(occupants)
@@ -102,7 +114,11 @@ class RulePolicy:
         seat = commands[0]["actor"]
         phase = view["turn"]["phase"]
         slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
-        retention = self.evaluator.retention(view, seat) if slot_cost and is_hand_choice(view, seat) else {}
+        forced_play_discard = phase == "Play" and any(c["type"] == "DISCARD_CARD" for c in commands)
+        retention = (self.evaluator.retention(view, seat)
+                     if slot_cost and is_hand_choice(view, seat, forced_play_discard=forced_play_discard) else {})
+        regions = {c["option"] for c in commands if c.get("option") in self.rules.regions}
+        region_scores = self.evaluator.target_proximity(view, seat, regions) if self.evaluator and regions else {}
         hand = view["positions"][zone(seat, "HAND")]["count"]
         slots = max(0, self.rules.settings["hand_limit"] - hand)
         replacement_available = view["positions"][zone(seat, "DECK")]["count"] > slots
@@ -125,14 +141,19 @@ class RulePolicy:
                     return self.acquisition_value(info, seat, info["source"], info["targets"][option])
                 if option in info.get("sources", {}):
                     return source_values.get(info["sources"][option], -10)
-                return self.choice_value(view, command)
+                return self.choice_value(view, command, region_scores)
             if kind == "END_PHASE":
                 if slot_cost and phase in ("Play", "Air", "Discard"):
                     return 0
                 return -1
             if kind == "DISCARD_CARD":
                 net = retention.get(command["card"], {}).get("net", 0)
+                if forced_play_discard:
+                    return -net if retention else self.discard_value(
+                        self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat)
                 return -net if net < 0 and replacement_available else -1
+            if kind == "FORFEIT_PLAY":
+                return -1
             if kind == "REALLOCATE":
                 return plan["total"] if plan else -2
             if kind == "ACTIVATE_CARD":
@@ -152,7 +173,8 @@ class RulePolicy:
                 row["reallocation"] = plan
             key = command.get("option", command.get("card"))
             if key in retention and command["type"] in ("DISCARD_CARD", "CHOOSE"):
-                row["retention"] = {**retention[key], "replacement_available": replacement_available}
+                row["retention"] = {**retention[key], "replacement_available": replacement_available,
+                                    **({"forced": True} if forced_play_discard else {})}
             if slot_cost and command["type"] in ("PLAY_CARD", "USE_AIR"):
                 row["initial_card_score"] = -slot_cost
         # Canonical tie-breaks also apply to own permitted choices out of the deck.
@@ -296,11 +318,16 @@ class SeatPolicy:
         if not commands or any(c["actor"] != country for c in commands):
             raise CoreError("No legal action for the AI seat")
         ranked = self.rule.rank(view, commands)
-        chosen = ranked[0]["command"]
+        phase = view["turn"]["phase"]
+        mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
+        preferred = paper_play_choices(ranked, mandatory)
+        chosen = preferred[0]["command"]
         mode, status, tried, rows, selected = "rules", "rules-only", [], [], None
         if len(commands) == 1:
             mode, status = "forced", "only-legal-command"
-        if self.rule.evaluator and self.rule.evaluator.hand_slot_cost and is_hand_choice(view, country):
+        forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in commands)
+        if (self.rule.evaluator and self.rule.evaluator.hand_slot_cost and
+                is_hand_choice(view, country, forced_play_discard=forced_play_discard)):
             status = "hand-retention"
         elif self.search:
             if self.exchange and (not view["decision"] or self.exchange[0] != view["turn"]["turn_id"]):
@@ -319,10 +346,11 @@ class SeatPolicy:
                 status = "pending-choice"
             else:
                 self.plan = []
-                eligible = [r["command"] for r in ranked
+                eligible = [r["command"] for r in preferred
                             if r["command"]["type"] != "ACTIVATE_CARD" and
-                            (r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE")]
-                if len(eligible) > 1:
+                            (r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE" or
+                             (mandatory and r["command"]["type"] == "PLAY_CARD"))]
+                if len(eligible) > 1 or (mandatory and any(c["type"] == "PLAY_CARD" for c in eligible)):
                     tried = eligible[:self.width]
                     exchange = next((c for c in eligible if c["type"] == "REALLOCATE"), None)
                     if exchange and exchange not in tried and self.width > 1:
@@ -335,11 +363,11 @@ class SeatPolicy:
                     reserve_ms = min(10, self.budget_ms * 0.05)
                     rows, status = self.search.run(view, tried, country, started + (self.budget_ms - reserve_ms) / 1000)
                     completed = [row for row in rows if row["complete"]]
-                    rejected = [row["command"] for row in completed if not acceptable_play(row)]
-                    selected = max((row for row in completed if acceptable_play(row)),
+                    rejected = [row["command"] for row in completed if not acceptable_play(row, mandatory=mandatory)]
+                    selected = max((row for row in completed if acceptable_play(row, mandatory=mandatory)),
                                    key=candidate_key, default=None)
                     if selected is None and chosen in rejected:
-                        chosen = next(row["command"] for row in ranked if row["command"] not in rejected)
+                        chosen = next(row["command"] for row in preferred if row["command"] not in rejected)
                     if selected:
                         mode, chosen = "search", selected["command"]
                         if selected.get("reallocation"):

@@ -9,6 +9,7 @@ from .api import CoreAPI, observed_position, simulation_from_observation
 from .definitions import RuleSet
 from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .hand_retention import score_retention
+from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
@@ -48,12 +49,23 @@ class ScoreEvaluator:
                     "slot_cost", "basic_floor", "duplicate_penalty", "basic_congestion"}:
                 raise CoreError("Invalid hand retention settings")
             numbers.extend(retention.values())
+        if "route_forecast" in weights:
+            route = weights["route_forecast"]
+            if (not isinstance(route, dict) or set(route) != {
+                    "nearest_sites", "distance_tail_decay", "friendly_unit", "enemy_unit"}
+                    or type(route["nearest_sites"]) is not int or route["nearest_sites"] < 1
+                    or not weights["distance_weights"]):
+                raise CoreError("Invalid route forecast settings")
+            numbers.extend(route.values())
         if any(type(n) not in (int, float) or not isfinite(n) or n < 0 for n in numbers) or not 0 <= weights["time_discount"] <= 1:
             raise CoreError("Evaluation weights must be finite nonnegative values")
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
             raise CoreError("Invalid planning horizon or saturation")
         if "hand_retention" in weights and not 0 < retention["slot_cost"] < retention["basic_floor"]:
             raise CoreError("Basic reserve must exceed the hand slot cost")
+        if "route_forecast" in weights and not (
+                0 < route["distance_tail_decay"] < 1 and 0 < route["friendly_unit"] < 1 < route["enemy_unit"]):
+            raise CoreError("Invalid route influence weights")
         if type(weights["max_simulation_nodes"]) is not int or not 1 <= weights["max_simulation_nodes"] <= 10000:
             raise CoreError("Invalid simulation budget")
 
@@ -125,6 +137,13 @@ class ScoreEvaluator:
 
         return score_retention(rules, state, country, self.weights["hand_retention"], short_term)
 
+    def target_proximity(self, view, country, regions):
+        if "route_forecast" not in self.weights:
+            return {}
+        rules, state = observed_position(self.rules, view)
+        routes = ScoringRoutes(rules, state, board_units(rules, state), self.weights)
+        return {region: routes.target_value(country, region) for region in regions}
+
     def _value(self, processor, country, *, excluded_unit=None):
         s, rules, w = processor.state, processor.rules, self.weights
         team = rules.team(country)
@@ -136,7 +155,11 @@ class ScoreEvaluator:
             pieces = [piece for piece in pieces if piece.token_id != excluded_unit.token_id]
         supply = SupplyResolver(rules)
         supplied = {force: supply.supplied(s, force, units=pieces) for force in rules.force_controllers}
-        distances_by_unit = {t.token_id: MapGraph(rules).distances(t.position_id, s, t.owner_country) for t in pieces}
+        routes = ScoringRoutes(rules, s, pieces, w) if "route_forecast" in w else None
+        if routes:
+            nearby_sites = {t.token_id: routes.nearest(t.owner_country, t.position_id) for t in pieces}
+        else:
+            distances_by_unit = {t.token_id: MapGraph(rules).distances(t.position_id, s, t.owner_country) for t in pieces}
         opportunities = ()
         seat_rates = {}
         if w.get("seat_forecast"):
@@ -155,9 +178,17 @@ class ScoreEvaluator:
                 continue
             friendly, hostile = 0.0, 0.0
             for t in pieces:
-                distances = distances_by_unit[t.token_id]
-                distance = min((distances.get(p, 100000) for p in regions), default=100000)
-                dw = w["distance_weights"][distance] if distance < len(w["distance_weights"]) else 0.0
+                route_factor = 1.0
+                if routes:
+                    site_route = nearby_sites[t.token_id].get(site_id)
+                    if site_route is None:
+                        continue
+                    distance, route_factor = site_route
+                    distance_weight = routes.distance_weight(distance)
+                else:
+                    distances = distances_by_unit[t.token_id]
+                    distance = min(distances.get(p, 100000) for p in regions)
+                    distance_weight = w["distance_weights"][distance] if distance < len(w["distance_weights"]) else 0.0
                 supply_weight = w["supply_weights"]["supplied" if t.token_id in supplied[t.owner_country] else "unsupplied"]
                 kind = rules.units[t.definition_id]["kind"]
                 reserve = len(s.positions[zone(t.owner_country, "RESERVE_" + kind)])
@@ -165,9 +196,10 @@ class ScoreEvaluator:
                         and kind == rules.units[excluded_unit.definition_id]["kind"]):
                     reserve += 1
                 resource = 1.0 if distance == 0 else (1.0 if reserve else w["supply_weights"]["no_reserve_expansion"])
-                strength = w["military_weights"][kind] * dw * supply_weight * resource
+                strength = w["military_weights"][kind] * distance_weight * route_factor * supply_weight * resource
                 influences.append({"token": t.token_id, "site": site_id, "distance": distance,
-                                   "score_influence": strength, "military_influence": strength, "supply_weight": supply_weight})
+                                   "score_influence": strength, "military_influence": strength,
+                                   "supply_weight": supply_weight, "route_factor": route_factor})
                 if sign(t.owner_country) > 0:
                     friendly += strength
                 else:
@@ -279,8 +311,9 @@ def candidate_key(row):
             row["q"] if row["q"] is not None else float("-inf"))
 
 
-def acceptable_play(row):
-    return row["complete"] and (not row.get("initial_card_score") or row["q"] > 0 or row["terminal_rank"] == 2)
+def acceptable_play(row, *, mandatory=False):
+    return row["complete"] and (not row.get("initial_card_score") or row["q"] > 0 or row["terminal_rank"] == 2
+                                or (mandatory and row["command"]["type"] == "PLAY_CARD"))
 
 
 class OneStepPlanner:
