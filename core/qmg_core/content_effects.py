@@ -100,6 +100,23 @@ def condition_met(rules, state, country, condition):
     return condition["min"] <= count <= condition.get("max", count)
 
 
+def point_award(rules, state, country, effect):
+    kind, side = effect["type"], effect["side"]
+    team = rules.team(country)
+    enemy = "allies" if team == "axis" else "axis"
+    recipient = next(c for c in TURN_ORDER if rules.team(c) == enemy) if side in ("enemy", enemy) else country
+    if kind == "points-per-unit":
+        return recipient, len(filtered_units(rules, state, country, effect["filter"])) * effect["amountPer"]
+    if kind == "points-per-occupied-space":
+        occupied_by = effect["occupiedBy"]
+        occupied_team = {"self": team, "enemy": enemy}.get(occupied_by, occupied_by)
+        spaces = {t.position_id for t in board_units(rules, state)
+                  if rules.team(t.owner_country) == occupied_team and t.position_id in effect["spaces"]
+                  and rules.units[t.definition_id]["kind"] == "ARMY"}
+        return recipient, len(spaces) * effect["amountPer"]
+    return recipient, effect.get("amount", 0)
+
+
 def instruction(effect):
     return {"type": "CARD_EFFECT", "effect": deepcopy(effect)}
 
@@ -625,21 +642,7 @@ def execute_effect(engine, state, frame, op):
                                            "destination": zone(target.owner_country, "DISCARD")})
         return outcome("EFFECT_EXPANDED"), False
     if kind in ("points", "points-per-unit", "points-per-occupied-space"):
-        side = effect["side"]
-        recipient = country
-        if side == "enemy" or (side in ("axis", "allies") and side != rules.team(country)):
-            recipient = next(c for c in TURN_ORDER if rules.team(c) != rules.team(country))
-        amount = effect.get("amount", 0)
-        if kind == "points-per-unit":
-            amount = len(filtered_units(rules, state, country, effect["filter"])) * effect["amountPer"]
-        elif kind == "points-per-occupied-space":
-            side = effect["occupiedBy"]
-            team = rules.team(country) if side == "self" else (
-                "allies" if rules.team(country) == "axis" else "axis") if side == "enemy" else side
-            spaces = {t.position_id for t in board_units(rules, state)
-                      if rules.team(t.owner_country) == team and t.position_id in effect["spaces"]
-                      and rules.units[t.definition_id]["kind"] == "ARMY"}
-            amount = len(spaces) * effect["amountPer"]
+        recipient, amount = point_award(rules, state, country, effect)
         frame.remaining_operations.append({"type": "GAIN_VP", "amount": amount, "score_country": recipient})
         return outcome("EFFECT_EXPANDED"), False
     if kind in ("discard-top", "discard-top-per-unit"):

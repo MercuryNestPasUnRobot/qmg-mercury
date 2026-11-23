@@ -1,5 +1,11 @@
 {
-  "profile": "ai-test-v1.3-uncalibrated",
+  "profile": "ai-test-v1.4-uncalibrated",
+  "economic_forecast": {
+    "vp_pressure_bonus": 1.4,
+    "closeout_bonus": 4,
+    "lead_vp_per_round": 4,
+    "future_shortfall_value": 0.6
+  },
   "seat_forecast": true,
   "distance_weights": [1, 0.65, 0.3, 0.1],
   "route_forecast": {
