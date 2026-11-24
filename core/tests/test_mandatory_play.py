@@ -47,7 +47,12 @@ def test_unplayable_hand_requires_discard_even_without_replacement(data):
 def test_empty_hand_costs_exactly_one_vp_and_consumes_the_play(data):
     p, client = start(data)
     assert [c["type"] for c in client.legal_commands()] == ["FORFEIT_PLAY"]
-    client.submit(client.legal_commands()[0])
+    weights = profile()
+    weights["scoring_units"]["vp"] = 2
+    policy = SeatPolicy(p.rules, evaluator=ScoreEvaluator(p.rules, weights))
+    action, row = policy.decide(client, "germany")
+    assert row["rule_scores"][0]["rule_score"] == -2
+    client.submit(action)
     assert p.state.scores == {"axis": -1, "allies": 0}
     assert p.state.turn.plays_remaining == 0
     assert any(r["operation_type"] == "GAIN_VP" and r["outcome"]["score_changes"] == [{"team": "axis", "amount": -1}]

@@ -75,8 +75,7 @@ def test_rule_policy_selects_attack_on_enemy_site_over_rear_build(data, split_ba
     assert rank(previous)[0]["command"]["card"] == "g-build"
     picked = rank(current)[0]
     assert picked["command"]["card"] == "g-battle"
-    base = 1.55 if split_battle else 1.6
-    assert picked["rule_score"] == pytest.approx(base - 0.55 + 2)
+    assert picked["rule_score"] == pytest.approx(1.6 - 1 + 4 + 2)
     client.submit(picked["command"])
     view = client.observe()
     assert view["decision"]["map_force"] == "germany" and view["decision"]["map_battle"]
@@ -89,16 +88,20 @@ def test_rule_policy_selects_attack_on_enemy_site_over_rear_build(data, split_ba
 
 def test_held_income_weight_applies_symmetrically_only_to_forecast(data):
     two_sites(data)
+    data["settings"]["max_rounds"] = 5
     # Use disconnected sites: no approaching enemy and no change in threat between profiles.
     data["connections"] = [c for c in data["connections"] if not c["id"].startswith("to-")]
     engine = make(data)
+    historical_weights = profile()
+    historical_weights["frontier_scoring"]["held_forecast"] = 1
     for seat in ("germany", "united-kingdom"):
         client = CoreAPI(engine, (seat,))
-        old, new = [ScoreEvaluator(engine.rules, w).evaluate(client, seat) for w in (previous_weights(), profile())]
+        old, new = [ScoreEvaluator(engine.rules, w).evaluate(client, seat) for w in (historical_weights, profile())]
         assert new.actual_vp == old.actual_vp == 0
         for a, b in zip(old.score_points, new.score_points, strict=True):
             assert b["baseline_vp"] == a["baseline_vp"] > 0
-            assert b["value"] == pytest.approx(1.25 * a["value"])
+            assert b["fixed_score"] == a["fixed_score"] and abs(b["fixed_score"]) == 4
+            assert b["long_term_score"] == pytest.approx(1.25 * a["long_term_score"])
 
 
 def test_hidden_replacements_cannot_change_frontier_scores(data):

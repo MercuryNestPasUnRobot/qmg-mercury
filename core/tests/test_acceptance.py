@@ -389,11 +389,14 @@ def test_browser_forms_share_core_and_continue_after_restart(tmp_path, data, wei
 
 def test_browser_ai_executes_and_records_the_same_core_command(tmp_path, data, weights):
     session = Workbench(tmp_path, RuleSet(deepcopy(data)), weights)
-    expected = session.planner.choose(session.human, "germany")
-    with http(session) as connection:
-        _, page = request(connection, "GET")
-        path, fields = Forms(page).forms["让 AI 执行一步"]
-        assert request(connection, "POST", path, fields)[0] == 303
+    try:
+        expected, _ = session.policies["germany"].decide(session.human, "germany")
+        with http(session) as connection:
+            _, page = request(connection, "GET")
+            path, fields = Forms(page).forms["让 AI 执行一步"]
+            assert request(connection, "POST", path, fields)[0] == 303
+    finally:
+        session.close()
     actual = session.processor.records[0]
     assert actual["operation_type"] == expected["type"]
     assert actual["source"] == expected.get("card")

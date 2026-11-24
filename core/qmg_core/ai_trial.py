@@ -7,7 +7,7 @@ from statistics import median
 from time import perf_counter
 
 from .api import CoreAPI
-from .ai_match_policy import CandidateView
+from .ai_match_policy import CandidateView, RulePolicy
 from .content_verify import settle_choices
 from .definitions import RuleSet
 from .engine import CommandProcessor
@@ -16,46 +16,10 @@ from .model import TURN_ORDER, digest
 
 
 DATA = Path(__file__).resolve().parent.parent / "data"
-ACTION_PRIORITY = {"GAIN_VP": 2.0, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NAVY": 1.4,
-                   "LAND_BATTLE": 1.3, "SEA_BATTLE": 1.3, "DRAW": 0.45}
-EFFECT_PRIORITY = {"points": 1.5, "choose-space": 1.55, "recruit": 1.55, "build": 1.55,
-                   "battle": 1.3, "battle-series": 1.3, "choose-unit": 1.2, "air-action": 1.0,
-                   "discard-top": 0.65, "play-from-zone": 0.6, "search-deck": 0.35}
-
-
-def priority(rules, visible, command):
-    if command["type"] == "END_PHASE":
-        return -1
-    if command["type"] == "REALLOCATE":
-        return 0.1
-    if command["type"] == "USE_AIR":
-        return 1.0
-    token = visible.get(command.get("card"))
-    if token is None:
-        return 0.0
-    if mode := command.get("play_as"):
-        return ACTION_PRIORITY.get(mode, 0.4)
-    card = rules.cards[token["definition_id"]]
-    effects = card["effects"]
-    if command["type"] == "USE_STATUS":
-        effects = rules.abilities[card["active_ability"]]["effects"]
-    total = 0.25 if card["type"] in ("RESPONSE", "STATUS") else 0.0
-    for step in effects:
-        op = step.get("operation", step)
-        if op["type"] == "CARD_EFFECT":
-            effect = op["effect"]
-            total += EFFECT_PRIORITY.get(effect["type"], 0.2)
-        elif op["type"] == "GAIN_VP":
-            total += ACTION_PRIORITY["GAIN_VP"] * max(0, op["amount"])
-        else:
-            total += ACTION_PRIORITY.get(op["type"], 0.25)
-    return total
-
-
 def compare_candidates(planner, client, seat, width):
     view = client.observe()
-    ordered = sorted(client.legal_commands(), key=lambda c: priority(planner.evaluator.rules, view["tokens"], c),
-                     reverse=True)
+    policy = RulePolicy(planner.evaluator.rules, planner.evaluator)
+    ordered = [row["command"] for row in policy.rank(view, client.legal_commands())]
     short = ordered[:width]
     fallback = next((c for c in ordered if c["type"] == "END_PHASE"), None)
     if fallback is not None and fallback not in short:

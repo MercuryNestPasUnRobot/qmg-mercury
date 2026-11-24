@@ -6,6 +6,7 @@ from .definitions import BATTLES, CONSTRUCTION
 from .model import Token, canonical
 from .operations import ScoreResolver
 from .rules import LegalActionGenerator, MapGraph, unit_rule_matches
+from .score_units import ScoreUnits
 
 
 class ScoringRoutes:
@@ -15,6 +16,7 @@ class ScoringRoutes:
         self.weights = weights
         self.config = weights["route_forecast"]
         self.frontier = weights.get("frontier_scoring")
+        self.units = ScoreUnits.from_weights(weights)
         self.pieces = pieces
         self.seat_rates = None
         self.direct_income = {}
@@ -178,14 +180,21 @@ class ScoringRoutes:
         victim = self.state.tokens[token_id]
         if unit_rule_matches(self.rules, self.state, victim, "protection"):
             return 0.0
+        return self._without_unit(token_id).target_value(
+            victim.owner_country, victim.position_id, construction=True, local_only=local_only)
+
+    def _without_unit(self, token_id):
         if token_id not in self.removal_routes:
             remaining = [t for t in self.pieces if t.token_id != token_id]
             self.removal_routes[token_id] = ScoringRoutes(self.rules, self.state, remaining, self.weights)
-        return self.removal_routes[token_id].target_value(
-            victim.owner_country, victim.position_id, construction=True, local_only=local_only)
+        return self.removal_routes[token_id]
 
-    def target_value(self, force, region, *, battle=False, construction=False, local_only=False):
-        cache_key = (force, region, battle, construction, local_only)
+    def capture_value(self, force, region):
+        remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
+        return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
+
+    def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True):
+        cache_key = (force, region, battle, construction, local_only, include_capture)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
         if battle and self.weights.get("mirrored_attacks"):
@@ -201,13 +210,16 @@ class ScoringRoutes:
         total = self.frontier["battle_target"] if self.frontier and battle and victim else 0.0
         construction_factors = self.construction_factors(force, region) if construction else {}
         income_weight = (self.frontier or {}).get("direct_site_income", 0) if construction else 0
-        if income_weight:
+        if construction and self.units.enabled and include_capture:
+            total += self.capture_value(force, region)
+        elif income_weight:
             total += income_weight * self.direct_site_gain(force, region)
         for key, (distance, factor) in self.nearest(force, region).items():
             if distance > 2 and local_only:
                 continue
             if self.frontier and distance <= 2:
-                already_allied = income_weight and distance == 0 and team in self.surface[region]
+                already_allied = (construction and (self.units.enabled or income_weight)
+                                  and distance == 0 and team in self.surface[region])
                 if already_allied or self.safely_held(force, key):
                     factor *= self.frontier["friendly_target"]
                 factor *= construction_factors.get(key, 1)
@@ -215,13 +227,19 @@ class ScoringRoutes:
                     if local_only:
                         continue
                     factor *= self.frontier["friendly_target"]
-            total += self.rules.sites[key]["vp"] * self.distance_weight(distance) * factor
+            total += self.units.vp_score(self.rules.sites[key]["vp"]) * self.distance_weight(distance) * factor
         self.target_scores[cache_key] = total
         return total
 
     def paper_bonus(self, force, region, *, battle=False):
-        value = self.target_value(force, region, battle=battle, construction=not battle, local_only=True)
-        return min(self.frontier["paper_cap"], self.frontier["paper_fraction"] * value)
+        if self.units.enabled and battle and self.weights.get("mirrored_attacks"):
+            return max((self._without_unit(t.token_id).paper_bonus(t.owner_country, region)
+                        for t in self._removable_targets(force, region)), default=0.0)
+        value = self.target_value(force, region, battle=battle, construction=not battle, local_only=True,
+                                  include_capture=not self.units.enabled)
+        future = min(self.units.vp_score(self.frontier["paper_cap"]), self.frontier["paper_fraction"] * value)
+        fixed = self.capture_value(force, region) if not battle and self.units.enabled else 0
+        return fixed + future
 
     def best_action_bonus(self, seat, op, *, attack_premium=0):
         """Price a concrete, immediately available placement or battle from the observed board."""

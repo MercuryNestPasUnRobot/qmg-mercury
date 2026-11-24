@@ -1,5 +1,6 @@
 {
-  "profile": "ai-test-v1.10-shared-sites-uncalibrated",
+  "profile": "ai-test-v1.11-standard-scoring-units",
+  "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "mirrored_attacks": true,
   "construction_search_width": 3,
   "basic_usage_cost": 1.2,
@@ -19,8 +20,7 @@
     "battle_target": 0.7,
     "paper_fraction": 0.45,
     "paper_cap": 2,
-    "build_friendly_neighbor": 0.75,
-    "direct_site_income": 1.5
+    "build_friendly_neighbor": 0.75
   },
   "route_forecast": {
     "nearest_sites": 4,

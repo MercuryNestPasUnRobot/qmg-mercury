@@ -20,26 +20,25 @@ def economy(data):
     return data
 
 
-def test_vp_rises_with_calendar_and_both_sides_win_pressure(economy):
+def test_guaranteed_vp_is_one_to_one_and_end_pressure_still_limits_the_horizon(economy):
     engine = make(economy)
     scorer = ScoreEvaluator(engine.rules, profile())
     initial = CoreAPI(engine, ("germany",)).observe(include_history=False)
     start = scorer.economic_from_view(initial)
     assert start.gaps("axis") == (30, 30)
-    assert start.points("germany", 1, 0.75) == 0.75
+    assert start.points("germany", 1, 0.75) == 1
 
     late = deepcopy(initial)
     late["turn"]["round_id"] = 20
-    assert scorer.economic_from_view(late).points("germany", 1, 0.75) > 1.5
+    assert scorer.economic_from_view(late).points("germany", 1, 0.75) == 1
     for team in ("axis", "allies"):
         close = deepcopy(initial)
         close["scores"][team] = 29
         forecast = scorer.economic_from_view(close)
         assert forecast.gaps("axis") == ((1, 59) if team == "axis" else (59, 1))
         assert forecast.horizon == 2
-        expected = forecast.points("germany", 1, 0.75)
-        assert expected > 1.5
-        assert forecast.points("germany", 1, 0.75, closeout=True) == pytest.approx(expected + (4 if team == "axis" else 0))
+        assert forecast.closes_game("germany", 1) is (team == "axis")
+        assert forecast.points("germany", 1, 0.75, closeout=True) == 1
 
 
 def test_milling_counts_only_added_shortfalls_and_checks_if_draws_will_happen(economy):
@@ -56,8 +55,8 @@ def test_milling_counts_only_added_shortfalls_and_checks_if_draws_will_happen(ec
     assert forecast.mill("germany", "united-kingdom", 2, 0.75) == pytest.approx(0.60)
     deck["count"] = 0
     # Both penalties are immediate, with no future draw removed from an already empty deck.
-    assert forecast.mill("germany", "united-kingdom", 2, 0.75) == 1.50
-    assert forecast.mill("soviet-union", "united-kingdom", 2, 0.75) == -1.50
+    assert forecast.mill("germany", "united-kingdom", 2, 0.75) == 2
+    assert forecast.mill("soviet-union", "united-kingdom", 2, 0.75) == -2
 
     deck["count"] = 9
     view["turn"]["round_id"] = 20
