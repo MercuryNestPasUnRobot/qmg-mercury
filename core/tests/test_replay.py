@@ -28,6 +28,11 @@ def test_tape_restores_board_status_hidden_response_and_score(data):
     assert "g-restore" in hidden["seats"]["germany"]["RESPONSE"]
     assert start["seats"]["germany"]["DECK"] == 2
     assert isinstance(start["seats"]["germany"]["HAND"], int)
+    assert "g-build" in start["seats"]["germany"]["piles"]["HAND"]
+    assert "g-build" not in after["seats"]["germany"]["piles"]["HAND"]
+    assert "g-build" in after["seats"]["germany"]["piles"]["DISCARD"]
+    assert start["seats"]["germany"]["piles"]["DISCARD"] == []
+    assert all(set(seat["piles"]) == {"HAND", "DISCARD"} for seat in start["seats"].values())
     unit = next(key for key in after["board"]["B"] if tape.tokens[key]["unit"] == "ARMY")
     assert any(unit == key and to == "B" for event in after["events"] for key, _, to in event["moves"])
     assert after["scores"] == {"axis": 2, "allies": 0}

@@ -8,7 +8,6 @@ from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import CandidateView, RulePolicy, SeatPolicy
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER, zone
-from qmg_core.reallocation_scoring import stock_value
 
 
 def add_card(data, seat, suffix, position, *, kind="other", effects=()):
@@ -131,7 +130,8 @@ def test_exchange_scores_same_observation_and_only_the_payer_sees_search_targets
     for row in (a, scores[0]):
         plan = row["reallocation"]
         assert len(plan["payment"]) == 3 and plan["discard_score"] <= 0
-        assert plan["total"] == pytest.approx(plan["play_score"] + plan["discard_score"] + plan["deck_score"])
+        assert "deck_score" not in plan
+        assert plan["total"] == pytest.approx(plan["play_score"] + plan["discard_score"])
     assert p.state == initial
     execute(client, "REALLOCATE")
     for _ in range(3):
@@ -143,16 +143,6 @@ def test_exchange_scores_same_observation_and_only_the_payer_sees_search_targets
     opposing = CoreAPI(p, ("united-kingdom",)).observe()
     assert "reallocation" not in opposing and opposing["decision"] == {"required_country": "germany"}
     assert client.observe()["positions"]["germany:DECK"] == {"count": 4}
-
-
-def test_stock_penalty_is_nonlinear_and_only_charged_against_the_selected_family():
-    kinds = {"build-army": 1, "land-battle": 0, "build-navy": 3, "sea-battle": 3}
-    land = stock_value(kinds, "deck", "build-army")
-    sea = stock_value(kinds, "deck", "sea-battle")
-    assert (land["land_remaining"], land["naval_remaining"]) == (1, 6)
-    assert land["deck_score"] < sea["deck_score"] < 0
-    assert stock_value({**kinds, "build-army": 7}, "deck", "build-army")["deck_score"] > land["deck_score"]
-    assert stock_value(kinds, "discard", "sea-battle")["deck_score"] == 0
 
 
 def test_projected_payment_retires_a_listener_bound_to_a_paid_hand_card(data, weights):

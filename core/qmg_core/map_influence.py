@@ -35,6 +35,7 @@ class ScoringRoutes:
         self.cache = {}
         self.target_scores = {}
         self.action_scores = {}
+        self.friendly_neighbors = {}
 
     def _site_route(self, paths, force, start, end):
         distance, factor = paths[end]
@@ -94,8 +95,19 @@ class ScoringRoutes:
             self.safe_sites[force, site] = all(enemy not in self.surface[p] for p in approach)
         return self.safe_sites[force, site]
 
-    def target_value(self, force, region, *, battle=False, local_only=False):
-        cache_key = (force, region, battle, local_only)
+    def construction_factor(self, force, region, *, already_present=False):
+        decay = (self.frontier or {}).get("build_friendly_neighbor", 1)
+        if decay == 1:
+            return 1.0
+        key = force, region
+        if key not in self.friendly_neighbors:
+            team = self.rules.team(force)
+            nearby = self.adjacency[force][region] | {region}
+            self.friendly_neighbors[key] = sum(self.occupancy[p][team] for p in nearby)
+        return decay ** (self.friendly_neighbors[key] - int(already_present))
+
+    def target_value(self, force, region, *, battle=False, construction=False, local_only=False):
+        cache_key = (force, region, battle, construction, local_only)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
         team = self.rules.team(force)
@@ -108,6 +120,8 @@ class ScoringRoutes:
             if self.frontier and distance <= 2:
                 if self.safely_held(force, key):
                     factor *= self.frontier["friendly_target"]
+                if construction:
+                    factor *= self.construction_factor(force, region)
                 if battle and not victim:
                     if local_only:
                         continue
@@ -117,7 +131,7 @@ class ScoringRoutes:
         return total
 
     def paper_bonus(self, force, region, *, battle=False):
-        value = self.target_value(force, region, battle=battle, local_only=True)
+        value = self.target_value(force, region, battle=battle, construction=not battle, local_only=True)
         return min(self.frontier["paper_cap"], self.frontier["paper_fraction"] * value)
 
     def best_action_bonus(self, seat, op):

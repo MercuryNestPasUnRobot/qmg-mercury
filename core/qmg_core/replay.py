@@ -91,6 +91,7 @@ class Tape:
             seat_zones[seat] = {
                 **{kind: view["positions"].get(zone(seat, kind), {}).get("count", 0) for kind in COUNT_ZONES},
                 **{kind: view["positions"].get(zone(seat, kind), {}).get("tokens", []) for kind in CARD_ZONES},
+                "piles": {kind: view["positions"][zone(seat, kind)]["tokens"] for kind in ("HAND", "DISCARD")},
             }
         self.frames.append({
             "turn": view["turn"], "version": view["version"], "scores": view["scores"], "winner": view["winner"],

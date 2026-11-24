@@ -73,12 +73,14 @@ const shortReason = reason => ({
 })[reason] || statusNames[reason] || reason || "未完成";
 const signed = n => (n > 0 ? "+" : "") + Number(n).toFixed(Number.isInteger(n) ? 0 : 2);
 const exchangeDetails = plan => [
-  "出牌 " + signed(plan.play_score), "弃牌 " + signed(plan.discard_score), "牌库 " + signed(plan.deck_score),
-  "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining,
+  "出牌 " + signed(plan.play_score), "弃牌 " + signed(plan.discard_score),
+  ...(plan.deck_score === undefined ? [] : ["牌库 " + signed(plan.deck_score),
+    "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining]),
 ].join(" · ");
 const retentionDetails = value => [
   "保留分 " + signed(value.net), "短期 " + signed(value.short_term), "初始 " + signed(value.slot_cost),
   "基础储备 " + signed(value.basic_reserve), "重复 " + signed(value.redundancy),
+  value.used_basic_cost ? "弃置成本 " + signed(-value.used_basic_cost) : "",
   value.forced ? "无牌可出，必须弃牌" : value.replacement_available ? "" : "无额外补牌",
 ].filter(Boolean).join(" · ");
 
@@ -251,6 +253,7 @@ async function mount(data) {
   }
 
   const judge = () => $("reveal").checked;
+  let activePile = null;
   const tokenName = key => {
     const t = tokens[key];
     if (!t) return optionNames[key] || regions[key]?.name || country(key);
@@ -390,7 +393,29 @@ async function mount(data) {
       const head = node("div", undefined, "seat-head");
       head.append(node("strong", country(id)), node("span", teamNames[team], "seat-side"),
         node("span", team === game.search_team ? "B" : "A", "seat-side"));
-      pane.append(head, node("small", "手牌 " + seat.HAND + " · 牌库 " + seat.DECK + " · 弃牌 " + seat.DISCARD));
+      pane.append(head);
+      if (seat.piles) {
+        const controls = node("div", undefined, "pile-controls");
+        for (const [kind, label] of [["HAND", "手牌"], ["DISCARD", "弃牌堆"]]) {
+          const button = node("button", label + " " + seat[kind]);
+          button.setAttribute("aria-label", country(id) + label);
+          button.setAttribute("aria-controls", "pile-view");
+          button.setAttribute("aria-pressed", String(activePile?.id === id && activePile.kind === kind));
+          button.addEventListener("click", () => {
+            activePile = {id, kind};
+            for (const other of $("seats").querySelectorAll("[aria-pressed]")) {
+              other.setAttribute("aria-pressed", String(other === button));
+            }
+            paintPile(frames[i]);
+            $("pile-view").scrollIntoView({block: "nearest"});
+          });
+          controls.append(button);
+        }
+        controls.append(node("small", "牌库 " + seat.DECK));
+        pane.append(controls);
+      } else {
+        pane.append(node("small", "手牌 " + seat.HAND + " · 牌库 " + seat.DECK + " · 弃牌 " + seat.DISCARD));
+      }
       const cards = node("div", undefined, "cards");
       for (const key of seat.STATUS) cards.append(cardButton(key, "status", ""));
       for (const key of seat.DISABLED_STATUS) cards.append(cardButton(key, "disabled", "停用 · "));
@@ -406,6 +431,25 @@ async function mount(data) {
       if (!cards.childElementCount) cards.append(node("small", "场上无状态牌或响应"));
       pane.append(cards);
       $("seats").append(pane);
+    }
+  }
+
+  function paintPile(frame) {
+    const pile = $("pile-view");
+    pile.hidden = !activePile;
+    if (!activePile) return;
+    const {id, kind} = activePile;
+    const keys = frame.seats[id].piles[kind];
+    const label = kind === "HAND" ? "手牌" : "弃牌堆";
+    $("pile-title").textContent = country(id) + " · " + label + " · " + keys.length + " 张";
+    const cards = $("pile-cards");
+    cards.replaceChildren();
+    if (kind === "HAND" && !judge()) {
+      cards.append(node("small", "打开上方的「裁判视角」查看手牌内容。"));
+    } else if (!keys.length) {
+      cards.append(node("small", "此时没有牌。"));
+    } else {
+      for (const key of keys) cards.append(cardButton(key, "", ""));
     }
   }
 
@@ -522,6 +566,7 @@ async function mount(data) {
       ["第 " + turn.round_id + " 轮", country(data.turn_order[turn.country_index]), phaseNames[turn.phase] || turn.phase].join(" · ");
     paintMap(frame);
     paintSeats(frame);
+    paintPile(frame);
     paintAction(frame);
     paintEvents(frame);
     paintEvaluation(frame);
@@ -569,6 +614,13 @@ async function mount(data) {
   $("turns").addEventListener("change", event => jump(Number(event.target.value)));
   $("position").addEventListener("input", event => jump(Number(event.target.value)));
   $("reveal").addEventListener("change", render);
+  $("pile-close").addEventListener("click", () => {
+    const selected = $("seats").querySelector('[aria-pressed="true"]');
+    activePile = null;
+    selected?.setAttribute("aria-pressed", "false");
+    paintPile(frames[i]);
+    selected?.focus();
+  });
   document.addEventListener("keydown", event => {
     if (event.target.matches("input,select,button,a") || $("card-dialog").open) return;
     if (event.key === "ArrowLeft") jump(i - 1);

@@ -14,7 +14,7 @@ def is_hand_choice(view, seat, *, forced_play_discard=False):
     return (phase == "Discard" or forced_play_discard) and TURN_ORDER[view["turn"]["country_index"]] == seat
 
 
-def score_retention(rules, state, seat, settings, short_term):
+def score_retention(rules, state, seat, settings, short_term, basic_cost=None):
     hand = state.positions[zone(seat, "HAND")]
     limit = rules.settings["hand_limit"]
     crowded = len(hand) >= max(3, limit - 1)
@@ -28,6 +28,8 @@ def score_retention(rules, state, seat, settings, short_term):
                        "basic_reserve": 0.0, "redundancy": 0.0}
         if kind in BASIC_KINDS:
             basic[kind].append(key)
+            if basic_cost:
+                values[key]["used_basic_cost"] = basic_cost(card)
     basic_count = sum(map(len, basic.values()))
     for copies in basic.values():
         copies.sort(key=lambda key: (-values[key]["short_term"], key))

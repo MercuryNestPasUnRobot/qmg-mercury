@@ -8,7 +8,7 @@ from .definitions import BATTLES, CONSTRUCTION
 from .hand_retention import is_hand_choice
 from .model import CoreError, zone
 from .status_scoring import is_status
-from .reallocation_scoring import acquisitions, payment_plans, planned_options, price, stock_value
+from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
 
 
 ACTION_PRIORITY = {"GAIN_VP": 0.75, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NAVY": 1.4,
@@ -92,23 +92,19 @@ class RulePolicy:
         return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
                 0.35 * sum(self.instructions(e, seat, economy) for e in abilities))
 
-    def discard_value(self, card, seat, economy):
-        return -max(0, self.card_value(card, seat, economy))
+    def discard_value(self, card, seat, economy, view):
+        cost = self.evaluator.basic_discard_cost(view, seat, card) if self.evaluator else 0
+        return -max(0, self.card_value(card, seat, economy)) - cost
 
     def play_card_value(self, card, seat, economy):
         slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
         return self.card_value(card, seat, economy, closeout=True) - slot_cost
 
     def reallocation_plan(self, view, seat, economy):
-        plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy))
+        plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view))
         return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
                     for plan in plans),
                    key=lambda plan: plan["total"], default=None)
-
-    def acquisition_value(self, info, seat, source, definition, economy):
-        card = self.rules.cards[definition]
-        return (self.play_card_value(card, seat, economy) +
-                stock_value(info["deck"], source, card["legacy_kind"])["deck_score"])
 
     def choice_value(self, view, command, region_scores, economy):
         option = command["option"]
@@ -137,9 +133,9 @@ class RulePolicy:
         if token := view["tokens"].get(option):
             if token["token_type"] == "CARD":
                 value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)
-                cost = decision.get("status_hand_payment") or op in ("DISCARD", "COST_SELECTED") or any(
+                cost = decision.get("hand_discard") or op in ("DISCARD", "COST_SELECTED") or any(
                     word in kind for word in ("COST", "DISCARD", "PAY", "REALLOCATE"))
-                return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy)
+                return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy, view)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
             if token["token_type"] == "UNIT":
                 return self.sites.get(token["position_id"], 0) * (1 if kind == "BATTLE_VICTIM" else -1)
@@ -171,7 +167,8 @@ class RulePolicy:
         if economy and economy.map_weights and decision.get("map_force"):
             regions = {option: option.split("|", 1)[-1] for option in options}
             region_scores = {option: economy.routes.target_value(decision["map_force"], region,
-                             battle=decision["map_battle"]) for option, region in regions.items() if region in self.rules.regions}
+                             battle=decision["map_battle"], construction=not decision["map_battle"])
+                             for option, region in regions.items() if region in self.rules.regions}
         else:
             regions = {option for option in options if option in self.rules.regions}
             region_scores = self.evaluator.target_proximity(view, seat, regions) if self.evaluator and regions else {}
@@ -184,7 +181,7 @@ class RulePolicy:
         source_values = {}
         if "sources" in info:
             for source, definition, _ in acquisitions(self.rules, view, seat):
-                value = self.acquisition_value(info, seat, source, definition, economy)
+                value = self.play_card_value(self.rules.cards[definition], seat, economy)
                 source_values[source] = max(value, source_values.get(source, float("-inf")))
 
         def score(command):
@@ -194,7 +191,7 @@ class RulePolicy:
                 if option in retention:
                     return -retention[option]["net"]
                 if option in info.get("targets", {}):
-                    return self.acquisition_value(info, seat, info["source"], info["targets"][option], economy)
+                    return self.play_card_value(self.rules.cards[info["targets"][option]], seat, economy)
                 if option in info.get("sources", {}):
                     return source_values.get(info["sources"][option], -10)
                 return self.choice_value(view, command, region_scores, economy)
@@ -206,7 +203,7 @@ class RulePolicy:
                 net = retention.get(command["card"], {}).get("net", 0)
                 if forced_play_discard:
                     return -net if retention else self.discard_value(
-                        self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat, economy)
+                        self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat, economy, view)
                 return -net if net < 0 and replacement_available else -1
             if kind == "FORFEIT_PLAY":
                 return -1
@@ -216,10 +213,10 @@ class RulePolicy:
                 return -101  # Choose within the open window, or advance the phase.
             if kind == "USE_AIR":
                 return 1 - slot_cost
-            if mode := command.get("play_as"):
-                return self.instructions([{"type": mode}], seat, economy, closeout=True) - slot_cost
             token = view["tokens"][command["card"]]
             card = self.rules.cards[token["definition_id"]]
+            if mode := command.get("play_as"):
+                return self.instructions([{"type": mode}], seat, economy, closeout=True) - slot_cost
             return (self.play_card_value(card, seat, economy) if kind == "PLAY_CARD" else
                     self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
