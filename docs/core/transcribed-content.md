@@ -77,3 +77,5 @@ npm run core:audit-content -- ../local-content/legacy-2026-11-19/content.json $c
 ```powershell
 npm run core:play -- --catalog ../local-content/baselines/board-reviewed-supply-v2/content.sqlite3 --save-dir ../.cache/supply-v2-matches
 ```
+
+共享分点版启用每个合格盟席各得 1 VP 的结算。本机新对局使用 `local-content/baselines/board-reviewed-shared-sites/content.sqlite3`。

@@ -195,8 +195,12 @@ class AbilityScanner:
 
 
 class CommandProcessor:
-    def __init__(self, rules, state, logger=None, record_head="0" * 64, checkpoint_path=None, *, legacy_snapshot=False):
+    def __init__(self, rules, state, logger=None, record_head="0" * 64, checkpoint_path=None, *,
+                 legacy_snapshot=False, search_projection=False):
+        if search_projection and (not rules.projected or logger is not None or checkpoint_path is not None):
+            raise CoreError("Lightweight records require an isolated search projection")
         self.rules = rules
+        self.search_projection = search_projection
         self._state = deepcopy(state)
         validate_state(rules, self._state, legacy_snapshot=legacy_snapshot)
         self.logger, self.record_head = logger, record_head
@@ -257,7 +261,7 @@ class CommandProcessor:
         return obj
 
     def _commit(self, op, apply):
-        before = self._state.to_dict()
+        before = None if self.search_projection else self._state.to_dict()
         draft = deepcopy(self._state)
         operation = deepcopy(op)
         operation.setdefault("operation_id", draft.new_id("operation"))
@@ -273,7 +277,6 @@ class CommandProcessor:
             self._close_terminal_resolution(draft, result)
         draft.version += 1
         validate_state(self.rules, draft)
-        after = draft.to_dict()
         record = {"sequence_id": draft.version, "game_id": draft.game_id,
                   "round_id": draft.turn.round_id, "turn_id": draft.turn.turn_id,
                   "resolution_id": operation.get("resolution_id") or result["context"].get("resolution_id"),
@@ -283,14 +286,16 @@ class CommandProcessor:
                   "targets": {k: operation[k] for k in ("target", "target_token", "token", "destination", "force") if k in operation},
                   "operation": operation, "outcome": result, "ruleset_version": self.rules.version,
                   "rules_digest": self.rules.fingerprint, "before_version": self._state.version,
-                  "after_version": draft.version, "before_hash": digest(before), "after_hash": digest(after),
-                  "previous_record": self.record_head,
-                  "state_patch": {k: deepcopy(v) for k, v in after.items() if before.get(k) != v}}
-        record["record_digest"] = digest(record)
-        if self.logger is not None:
-            self.logger.append(deepcopy(record))
+                  "after_version": draft.version}
+        if not self.search_projection:
+            after = draft.to_dict()
+            record.update(before_hash=digest(before), after_hash=digest(after), previous_record=self.record_head,
+                          state_patch={k: deepcopy(v) for k, v in after.items() if before.get(k) != v})
+            record["record_digest"] = digest(record)
+            if self.logger is not None:
+                self.logger.append(deepcopy(record))
         # Publish only after the durable append succeeds; a failed step changes nothing.
-        self._state, self.record_head = draft, record["record_digest"]
+        self._state, self.record_head = draft, record.get("record_digest", self.record_head)
         self._first_commit = False
         self.records.append(record)
         if self.checkpoint_path is not None and operation.get("advance_country"):

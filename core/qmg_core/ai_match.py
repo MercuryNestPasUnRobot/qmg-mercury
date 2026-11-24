@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import mean, median
 from time import perf_counter
 
-from .ai_match_policy import DeadlineSearch, SeatPolicy
+from .ai_match_policy import DEFAULT_BUDGET_MS, DeadlineSearch, SeatPolicy
 from .api import CoreAPI
 from .definitions import RuleSet
 from .engine import CommandProcessor
@@ -137,15 +137,15 @@ def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--seeds", type=int, nargs="+", default=[31, 73, 127])
-    parser.add_argument("--budget-ms", type=float, default=1500)
+    parser.add_argument("--budget-ms", type=float, default=DEFAULT_BUDGET_MS)
     parser.add_argument("--width", type=int, default=3)
     parser.add_argument("--nodes", type=int, default=16)
     parser.add_argument("--command-limit", type=int, default=10000)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--replay-library", type=Path, default=LIBRARY)
     parser.add_argument("--name", help="Readable batch name in the replay library")
-    parser.add_argument("--ai-version", default="AI 试验版 v1.9")
-    parser.add_argument("--ai-note", default="攻击按移除敌军所损失的扩张价值估分。有实际目标的战斗与同类建设使用对称基础分。")
+    parser.add_argument("--ai-version", default="AI 试验版 v1.10")
+    parser.add_argument("--ai-note", default="共享分点每席各 1 VP，建设纳入直接分点收益，B 决策预算为 3 秒。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:
         parser.error("Budget, shortlist width and command limit must be positive")

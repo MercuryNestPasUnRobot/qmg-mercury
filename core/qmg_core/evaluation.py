@@ -5,6 +5,7 @@ from functools import cache
 import json
 from math import isfinite
 from pathlib import Path
+from time import perf_counter
 
 from .api import CoreAPI, observed_position, simulation_from_observation
 from .definitions import RuleSet
@@ -42,6 +43,8 @@ class ScoreEvaluator:
         numbers.append(weights.get("basic_usage_cost", 0))
         if type(weights.get("seat_forecast", False)) is not bool:
             raise CoreError("Invalid seat forecast setting")
+        if type(weights.get("construction_search_width", 0)) is not int or weights.get("construction_search_width", 0) < 0:
+            raise CoreError("Invalid construction search width")
         if type(weights.get("mirrored_attacks", False)) is not bool or (
                 weights.get("mirrored_attacks") and "frontier_scoring" not in weights):
             raise CoreError("Mirrored attacks require frontier scoring")
@@ -69,7 +72,7 @@ class ScoreEvaluator:
             frontier = weights["frontier_scoring"]
             required = {"near_enemy", "held_forecast", "friendly_target", "battle_target", "paper_fraction", "paper_cap"}
             if (not isinstance(frontier, dict) or not required <= frontier.keys() or
-                    frontier.keys() - required - {"build_friendly_neighbor"} or "route_forecast" not in weights
+                    frontier.keys() - required - {"build_friendly_neighbor", "direct_site_income"} or "route_forecast" not in weights
                     or "economic_forecast" not in weights):
                 raise CoreError("Invalid frontier scoring settings")
             numbers.extend(frontier.values())
@@ -241,9 +244,11 @@ class ScoreEvaluator:
         seat_rates = {}
         if w.get("seat_forecast"):
             opportunities = scoring_opportunities(rules, s.turn)
+            supply_cache = {seat: set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
+                            for seat in TURN_ORDER}
+            scorer = ScoreResolver(rules)
             for seat in TURN_ORDER:
-                supplied_for_seat = set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
-                seat_rates[seat] = ScoreResolver(rules).sites(s, seat, pieces=pieces, supplied=supplied_for_seat)
+                seat_rates[seat] = scorer.sites(s, seat, pieces=pieces, supply_cache=supply_cache)
         locations = {}
         controlling_units = {}
         for site_id, site in rules.sites.items():
@@ -427,24 +432,26 @@ class OneStepPlanner:
     def rank(self, client, country):
         return sorted(self.iter_rank(client, country), key=candidate_key, reverse=True)
 
-    def iter_rank(self, client, country):
+    def iter_rank(self, client, country, *, deadline=None):
         view = client.observe()
-        root = simulation_from_observation(self.evaluator.rules, view)
+        root = simulation_from_observation(self.evaluator.rules, view, search_projection=True)
+        root_state = root.state
         before = self.evaluator._value(root, country)
         for command in client.legal_commands():
+            self._check_deadline(deadline)
             if command["actor"] != country:
                 continue
             nodes = [0]
             try:
                 if command["type"] == "REALLOCATE":
-                    yield self._rank_exchange(root, view, country, command, nodes)
+                    yield self._rank_exchange(root, view, country, command, nodes, deadline)
                     continue
-                candidate = CommandProcessor(root.rules, root.state)
+                candidate = CommandProcessor(root.rules, root_state, search_projection=True)
                 simulated_seat = CoreAPI(candidate, (country,))
                 if command not in simulated_seat.legal_commands():
                     raise SimulationIncomplete("Action cannot be represented from this observation")
-                simulated_seat.submit(command, include_history=False)
-                value, choices = self._finish(candidate, country, nodes)
+                simulated_seat.apply(command)
+                value, choices = self._finish(candidate, country, nodes, deadline)
                 initial = -self.evaluator.hand_slot_cost if command["type"] in ("PLAY_CARD", "USE_AIR") else 0.0
                 yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                        "weights_digest": digest(self.evaluator.weights),
@@ -460,7 +467,7 @@ class OneStepPlanner:
                 yield {"command": deepcopy(command), "complete": False,
                        "reason": str(e), "q": None, "nodes": nodes[0]}
 
-    def _rank_exchange(self, root, view, country, command, nodes):
+    def _rank_exchange(self, root, view, country, command, nodes, deadline=None):
         """Evaluate the ordinary play of one representative of the estimated acquisition."""
         state, rules = root.state, root.rules
         legal = LegalActionGenerator(rules)
@@ -487,7 +494,7 @@ class OneStepPlanner:
                 "owner_country": country, "source_token_id": None, "position_id": hand}
             positions[hand]["tokens"].append(target)
             positions[hand]["count"] += 1
-            stock = simulation_from_observation(self.evaluator.rules, projected)
+            stock = simulation_from_observation(self.evaluator.rules, projected, search_projection=True)
 
         post_payment = stock.state
         changes = outcome("ESTIMATED_REALLOCATION")
@@ -495,14 +502,15 @@ class OneStepPlanner:
             stock.executor.transfer(post_payment, key, discard, changes)
         if plan["source"] == "discard":
             stock.executor.transfer(post_payment, target, hand, changes)
-        ordinary = CommandProcessor(stock.rules, post_payment)
+        ordinary = CommandProcessor(stock.rules, post_payment, search_projection=True)
         before = self.evaluator._value(ordinary, country)
         outcomes = []
         for play in CoreAPI(ordinary, (country,)).legal_commands():
             if play["type"] == "PLAY_CARD" and play.get("card") == target:
-                branch = CommandProcessor(ordinary.rules, ordinary.state)
-                CoreAPI(branch, (country,)).submit(play, include_history=False)
-                value, _ = self._finish(branch, country, nodes)
+                self._check_deadline(deadline)
+                branch = CommandProcessor(ordinary.rules, post_payment, search_projection=True)
+                CoreAPI(branch, (country,)).apply(play)
+                value, _ = self._finish(branch, country, nodes, deadline)
                 outcomes.append(value)
         after = max(outcomes, key=lambda value: (value.terminal_rank, value.total), default=before)
         initial = -self.evaluator.hand_slot_cost if outcomes else 0.0
@@ -516,7 +524,13 @@ class OneStepPlanner:
                 "q": plan["total"], "terminal_rank": 0,
                 "continuations": [], "choice_signatures": [], "reallocation": plan}
 
-    def _finish(self, processor, country, nodes):
+    @staticmethod
+    def _check_deadline(deadline):
+        if deadline is not None and perf_counter() >= deadline:
+            raise TimeoutError("Projected search exceeded its deadline")
+
+    def _finish(self, processor, country, nodes, deadline=None):
+        self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
             raise SimulationIncomplete("Within-card choice budget exceeded; no partial score assigned")
@@ -531,11 +545,21 @@ class OneStepPlanner:
         decision = state.decision
         actor = decision.required_country
         signature = (decision.decision_type, decision.continuation["type"], sorted(decision.legal_options))
+        client = CoreAPI(processor, (actor,))
+        commands = client.legal_commands()
+        width = self.evaluator.weights.get("construction_search_width", 0)
+        if width and len(commands) > width:
+            view = client.observe(include_history=False)
+            if view["decision"].get("map_force") and not view["decision"]["map_battle"]:
+                from .ai_match_policy import RulePolicy
+                ranked = RulePolicy(processor.rules, self.evaluator).rank(view, commands)
+                commands = [row["command"] for row in ranked[:width]]
         branches = []
-        for command in CoreAPI(processor, (actor,)).legal_commands():
-            branch = CommandProcessor(processor.rules, state)
-            CoreAPI(branch, (actor,)).submit(command, include_history=False)
-            value, trail = self._finish(branch, country, nodes)
+        for command in commands:
+            self._check_deadline(deadline)
+            branch = CommandProcessor(processor.rules, state, search_projection=True)
+            CoreAPI(branch, (actor,)).apply(command)
+            value, trail = self._finish(branch, country, nodes, deadline)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

@@ -3,7 +3,7 @@ from collections import Counter, defaultdict, deque
 
 from .content_effects import action_for, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
-from .model import canonical
+from .model import Token, canonical
 from .operations import ScoreResolver
 from .rules import LegalActionGenerator, MapGraph, unit_rule_matches
 
@@ -16,7 +16,8 @@ class ScoringRoutes:
         self.config = weights["route_forecast"]
         self.frontier = weights.get("frontier_scoring")
         self.pieces = pieces
-        self.held_by = None
+        self.seat_rates = None
+        self.direct_income = {}
         self.safe_sites = {}
         self.locations = {key: {site["region"]} for key, site in rules.sites.items() if not site.get("dynamic")}
         for token in state.tokens.values():
@@ -85,12 +86,8 @@ class ScoringRoutes:
         return nearby[-1] * self.config["distance_tail_decay"] ** (distance - len(nearby) + 1)
 
     def safely_held(self, force, site):
-        if self.held_by is None:
-            scorer = ScoreResolver(self.rules)
-            self.held_by = {(self.rules.team(seat), key) for seat in self.rules.countries
-                            for key in scorer.sites(self.state, seat, pieces=self.pieces)}
         team = self.rules.team(force)
-        if (team, site) not in self.held_by:
+        if not any(site in rates for seat, rates in self.scoring_rates().items() if self.rules.team(seat) == team):
             return False
         if (force, site) not in self.safe_sites:
             enemy = "allies" if team == "axis" else "axis"
@@ -98,6 +95,39 @@ class ScoringRoutes:
             approach = locations.union(*(self.adjacency[force][region] for region in locations))
             self.safe_sites[force, site] = all(enemy not in self.surface[p] for p in approach)
         return self.safe_sites[force, site]
+
+    def scoring_rates(self):
+        if self.seat_rates is None:
+            scorer = ScoreResolver(self.rules)
+            supply_cache = {}
+            self.seat_rates = {seat: scorer.sites(self.state, seat, pieces=self.pieces, supply_cache=supply_cache)
+                               for seat in self.rules.countries}
+        return self.seat_rates
+
+    def direct_site_gain(self, force, region):
+        key = force, region
+        if key not in self.direct_income:
+            sites = {site for site, locations in self.locations.items() if region in locations}
+            if not sites:
+                return 0
+            seat = self.rules.force_controllers[force]
+            team = self.rules.team(force)
+            kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
+            unit = next((key for key, definition in self.rules.units.items() if definition["kind"] == kind), None)
+            if unit is None:
+                return 0
+            candidate = Token("projected-construction", unit, "UNIT", force, region)
+            pieces = [*self.pieces, candidate]
+            scorer = ScoreResolver(self.rules)
+            before = self.scoring_rates()
+            supply_cache = {}
+            change = 0
+            for ally in self.rules.countries:
+                if self.rules.team(ally) == team and (ally == seat or sites.intersection(before[ally])):
+                    after = scorer.sites(self.state, ally, pieces=pieces, supply_cache=supply_cache)
+                    change += sum(after.get(site, 0) - before[ally].get(site, 0) for site in sites)
+            self.direct_income[key] = change
+        return self.direct_income[key]
 
     def _site_distances_within_two(self, force, site):
         key = force, site
@@ -170,11 +200,15 @@ class ScoringRoutes:
         victim = enemy in self.surface[region]
         total = self.frontier["battle_target"] if self.frontier and battle and victim else 0.0
         construction_factors = self.construction_factors(force, region) if construction else {}
+        income_weight = (self.frontier or {}).get("direct_site_income", 0) if construction else 0
+        if income_weight:
+            total += income_weight * self.direct_site_gain(force, region)
         for key, (distance, factor) in self.nearest(force, region).items():
             if distance > 2 and local_only:
                 continue
             if self.frontier and distance <= 2:
-                if self.safely_held(force, key):
+                already_allied = income_weight and distance == 0 and team in self.surface[region]
+                if already_allied or self.safely_held(force, key):
                     factor *= self.frontier["friendly_target"]
                 factor *= construction_factors.get(key, 1)
                 if battle and not victim:

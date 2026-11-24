@@ -15,24 +15,44 @@ class ScoreResolver:
     def __init__(self, rules):
         self.rules = rules
 
-    def sites(self, state, country, *, pieces=None, supplied=None):
+    def sites(self, state, country, *, pieces=None, supplied=None, supply_cache=None):
         if pieces is None:
             pieces = board_units(self.rules, state)
-        if supplied is None:
-            supplied = SupplyResolver(self.rules).supplied_for_seat(state, country, pieces)
-        units = [piece for piece in pieces if self.rules.force_controllers[piece.owner_country] == country
-                 and self.rules.units[piece.definition_id]["kind"] != "AIR"]
+        supply = SupplyResolver(self.rules)
+        supplies = {} if supply_cache is None else supply_cache
+        if supplied is not None:
+            supplies[country] = supplied
+        def supplied_for(seat):
+            if seat not in supplies:
+                supplies[seat] = supply.supplied_for_seat(state, seat, pieces)
+            return supplies[seat]
+
+        units = [(piece, self.rules.force_controllers[piece.owner_country]) for piece in pieces
+                 if self.rules.units[piece.definition_id]["kind"] != "AIR"]
         result = {}
         for site_id, site in self.rules.sites.items():
+            if country not in site["countries"]:
+                continue
+            sources = ()
             if site.get("dynamic", False):
                 sources = [t for t in state.tokens.values() if t.token_type == "SCORE_SOURCE" and
-                           t.definition_id == site_id and t.owner_country in (None, country) and t.position_id in self.rules.regions]
-                locations = {t.position_id for t in sources}
+                           t.definition_id == site_id and t.position_id in self.rules.regions]
+                locations = {t.position_id for t in sources if t.owner_country in (None, country)}
             else:
                 locations = {site["region"]}
-            if country in site["countries"] and any(t.position_id in locations and
-                    (not site["requires_supply"] or t.token_id in supplied) for t in units):
-                result[site_id] = site["vp"]
+            for token, seat in units:
+                if (seat != country or token.position_id not in locations or
+                        (site["requires_supply"] and token.token_id not in supplied_for(country))):
+                    continue
+                shared = self.rules.settings.get("shared_site_scoring") and any(
+                    other != country and other in site["countries"] and self.rules.team(other) == self.rules.team(country)
+                    and ally.position_id == token.position_id
+                    and (not site["requires_supply"] or ally.token_id in supplied_for(other))
+                    and (not sources or any(t.position_id == token.position_id and t.owner_country in (None, other)
+                                            for t in sources))
+                    for ally, other in units)
+                points = min(1, site["vp"]) if shared else site["vp"]
+                result[site_id] = max(result.get(site_id, 0), points)
         for modifier in RuleModifierResolver(self.rules).resolve(state, country):
             if modifier["kind"] == "score_bonus" and modifier["site"] in result:
                 result[modifier["site"]] += modifier["amount"]

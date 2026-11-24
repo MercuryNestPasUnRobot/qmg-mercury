@@ -478,6 +478,7 @@
     "victory_margin": 1000,
     "max_atomic_steps": 300,
     "allied_supply": false,
+    "shared_site_scoring": true,
     "supply_revision": 2,
     "deck_exhaustion_vp": 0
   },
