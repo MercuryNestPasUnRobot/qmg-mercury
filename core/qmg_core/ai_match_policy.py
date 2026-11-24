@@ -16,6 +16,7 @@ ACTION_PRIORITY = {"GAIN_VP": 0.75, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NA
 EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle": 1.3,
                    "battle-series": 1.3, "choose-unit": 1.2, "air-action": 1.0,
                    "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
+BATTLE_BUILD = {"LAND_BATTLE": "BUILD_ARMY", "SEA_BATTLE": "BUILD_NAVY"}
 
 
 def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, frontier=False):
@@ -34,7 +35,10 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
                     for option in effect["options"]), default=0)
     value = EFFECT_PRIORITY.get(effect["type"], 0.2)
     if frontier and effect["type"] in ("choose-space", "recruit", "build", "battle"):
-        value += economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect})
+        attack_premium = (EFFECT_PRIORITY["choose-space"] - value if
+                          effect["type"] == "battle" and economy.map_weights.get("mirrored_attacks") else 0)
+        value += economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect},
+                                                  attack_premium=attack_premium)
     return value
 
 
@@ -76,7 +80,9 @@ class RulePolicy:
             else:
                 value += ACTION_PRIORITY.get(op["type"], 0.25) * op.get("amount", 1)
                 if frontier and op["type"] in CONSTRUCTION | BATTLES:
-                    value += economy.routes.best_action_bonus(seat, op)
+                    attack_premium = (ACTION_PRIORITY[BATTLE_BUILD[op["type"]]] - ACTION_PRIORITY[op["type"]]
+                                      if op["type"] in BATTLES and economy.map_weights.get("mirrored_attacks") else 0)
+                    value += economy.routes.best_action_bonus(seat, op, attack_premium=attack_premium)
             frontier = False  # Later military targets may depend on the outcome of this instruction.
         return value
 
@@ -138,6 +144,9 @@ class RulePolicy:
                 return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy, view)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
             if token["token_type"] == "UNIT":
+                if (kind == "BATTLE_VICTIM" and economy and economy.map_weights and
+                        economy.map_weights.get("mirrored_attacks")):
+                    return economy.routes.removal_value(option)
                 return self.sites.get(token["position_id"], 0) * (1 if kind == "BATTLE_VICTIM" else -1)
         if option in region_scores:
             return region_scores[option]

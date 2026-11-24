@@ -5,7 +5,7 @@ from .content_effects import action_for, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
 from .model import canonical
 from .operations import ScoreResolver
-from .rules import LegalActionGenerator, MapGraph
+from .rules import LegalActionGenerator, MapGraph, unit_rule_matches
 
 
 class ScoringRoutes:
@@ -25,9 +25,11 @@ class ScoringRoutes:
                     self.locations.setdefault(token.definition_id, set()).add(token.position_id)
         self.occupancy = defaultdict(Counter)
         self.surface = defaultdict(set)
+        self.units_by_region = defaultdict(list)
         for piece in pieces:
             team = rules.team(piece.owner_country)
             self.occupancy[piece.position_id][team] += 1
+            self.units_by_region[piece.position_id].append(piece)
             if rules.units[piece.definition_id]["kind"] != "AIR":
                 self.surface[piece.position_id].add(team)
         self.adjacency = {}
@@ -36,6 +38,8 @@ class ScoringRoutes:
         self.target_scores = {}
         self.action_scores = {}
         self.near_site_distances = {}
+        self.attack_victims = {}
+        self.removal_routes = {}
 
     def _site_route(self, paths, force, start, end):
         distance, factor = paths[end]
@@ -130,10 +134,37 @@ class ScoringRoutes:
                 factors[site] = decay ** sum(nearby.pop(p) for p in qualifying)
         return factors
 
+    def _removable_targets(self, force, region):
+        key = force, region
+        if key not in self.attack_victims:
+            kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
+            team = self.rules.team(force)
+            self.attack_victims[key] = [t for t in self.units_by_region[region] if
+                self.rules.team(t.owner_country) != team and self.rules.units[t.definition_id]["kind"] == kind
+                and not unit_rule_matches(self.rules, self.state, t, "protection")]
+        return self.attack_victims[key]
+
+    def removal_value(self, token_id, *, local_only=False):
+        victim = self.state.tokens[token_id]
+        if unit_rule_matches(self.rules, self.state, victim, "protection"):
+            return 0.0
+        if token_id not in self.removal_routes:
+            remaining = [t for t in self.pieces if t.token_id != token_id]
+            self.removal_routes[token_id] = ScoringRoutes(self.rules, self.state, remaining, self.weights)
+        return self.removal_routes[token_id].target_value(
+            victim.owner_country, victim.position_id, construction=True, local_only=local_only)
+
     def target_value(self, force, region, *, battle=False, construction=False, local_only=False):
         cache_key = (force, region, battle, construction, local_only)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
+        if battle and self.weights.get("mirrored_attacks"):
+            victims = self._removable_targets(force, region)
+            value = max((self.removal_value(t.token_id, local_only=local_only) for t in victims), default=0.0)
+            if victims and not local_only:
+                value += self.weights["military_weights"][self.rules.units[victims[0].definition_id]["kind"]]
+            self.target_scores[cache_key] = value
+            return value
         team = self.rules.team(force)
         enemy = "allies" if team == "axis" else "axis"
         victim = enemy in self.surface[region]
@@ -158,15 +189,16 @@ class ScoringRoutes:
         value = self.target_value(force, region, battle=battle, construction=not battle, local_only=True)
         return min(self.frontier["paper_cap"], self.frontier["paper_fraction"] * value)
 
-    def best_action_bonus(self, seat, op):
+    def best_action_bonus(self, seat, op, *, attack_premium=0):
         """Price a concrete, immediately available placement or battle from the observed board."""
-        cache_key = seat, canonical(op)
+        cache_key = seat, canonical(op), attack_premium
         if cache_key in self.action_scores:
             return self.action_scores[cache_key]
         if op["type"] == "CARD_EFFECT":
             effect = op["effect"]
             if effect["type"] == "battle" and effect["kind"] == "either":
-                return max(self.best_action_bonus(seat, {**op, "effect": {**effect, "kind": kind}})
+                return max(self.best_action_bonus(seat, {**op, "effect": {**effect, "kind": kind}},
+                                                  attack_premium=attack_premium)
                            for kind in ("army", "navy"))
             if (effect["type"] not in ("choose-space", "build", "recruit", "battle") or
                     effect.get("kind", "army") not in ("army", "navy") or
@@ -186,8 +218,10 @@ class ScoringRoutes:
                 targets = [p for p in targets if p == op["target"]]
         else:
             return 0
-        bonus = max((self.paper_bonus(action.get("force", seat), p, battle=action["type"] in BATTLES)
-                     for p in targets), default=0.0)
+        force, battle = action.get("force", seat), action["type"] in BATTLES
+        if battle and self.weights.get("mirrored_attacks"):
+            targets = [p for p in targets if self._removable_targets(force, p)]
+        bonus = max((self.paper_bonus(force, p, battle=battle) + attack_premium for p in targets), default=0.0)
         self.action_scores[cache_key] = bonus
         return bonus
 

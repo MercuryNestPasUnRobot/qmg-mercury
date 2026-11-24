@@ -1,5 +1,6 @@
 {
-  "profile": "ai-test-v1.8-distance-aware-construction-uncalibrated",
+  "profile": "ai-test-v1.9-mirrored-attacks-uncalibrated",
+  "mirrored_attacks": true,
   "basic_usage_cost": 1.2,
   "status_held_factor": 0.55,
   "economic_forecast": {

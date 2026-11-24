@@ -42,6 +42,9 @@ class ScoreEvaluator:
         numbers.append(weights.get("basic_usage_cost", 0))
         if type(weights.get("seat_forecast", False)) is not bool:
             raise CoreError("Invalid seat forecast setting")
+        if type(weights.get("mirrored_attacks", False)) is not bool or (
+                weights.get("mirrored_attacks") and "frontier_scoring" not in weights):
+            raise CoreError("Mirrored attacks require frontier scoring")
         if "effect_value_weights" in weights:
             effect_weights = weights["effect_value_weights"]
             if not isinstance(effect_weights, dict) or not {"default", "points"} <= set(effect_weights):
