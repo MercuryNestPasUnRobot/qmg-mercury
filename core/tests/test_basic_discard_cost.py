@@ -6,7 +6,7 @@ from conftest import card, choose, make, move_initial, play
 from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import CandidateView, RulePolicy
 from qmg_core.evaluation import OneStepPlanner, ScoreEvaluator
-from test_ai_match import profile
+from test_ai_match import fixed_capture_profile, profile
 
 
 def test_only_actual_play_increases_discard_cost_and_neither_policy_charges_play(data):
@@ -73,7 +73,7 @@ def test_local_friendly_crowding_discounts_building_and_leaves_battle_scores(dat
     move_initial(data, "italy-army-0", "B")
     engine = make(data)
     view = CoreAPI(engine, ("germany",)).observe()
-    weights = profile()
+    weights = fixed_capture_profile()
     old = deepcopy(weights)
     old["frontier_scoring"].pop("build_friendly_neighbor")
     base, new = [ScoreEvaluator(engine.rules, w).economic_from_view(view).routes for w in (old, weights)]

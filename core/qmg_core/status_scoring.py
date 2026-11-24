@@ -2,7 +2,9 @@
 from collections import Counter, defaultdict
 from dataclasses import replace
 from functools import lru_cache
+import json
 
+from .air import air_options
 from .content_effects import condition_met, filtered_units, point_award, unit_matches
 from .economic_scoring import POINT_EFFECTS
 from .model import CoreError, TURN_ORDER, Token, zone
@@ -14,10 +16,10 @@ TRIGGER_PHASE = {
     "discard-start": "Discard", "discard-stage-card": "Discard", "USE_STATUS": "Play",
     "after-build": "Play", "battle-space": "Play", "before-battle-removal": "Play",
     "economic-play": "Play", "play-army-card": "Play", "unit-activity": "Play",
-    "before-rule-use": "Play",
+    "before-rule-use": "Play", "after-air-action": "Air",
 }
 MAP_MODS = {"always_supplied", "supply_source", "deny_supply_source", "supply_sharing",
-            "connection", "recruit_region", "home"}
+            "connection", "recruit_region", "home", "score_bonus"}
 OTHER_MODS = {"reallocate_cost", "reallocate_discard", "economic_adjustment", "ignore_enemy_statuses"}
 EFFECTS = POINT_EFFECTS | {
     "discard-top", "prevent-removal", "battle", "build-at-battle-space", "choose-space", "recruit",
@@ -26,6 +28,8 @@ EFFECTS = POINT_EFFECTS | {
 }
 BASIC = {"army": ("build-army", "land-battle"), "navy": ("build-navy", "sea-battle")}
 BASIC_KINDS = frozenset(kind for pair in BASIC.values() for kind in pair)
+EXTRA_ACTIONS = {"build", "choose-space", "recruit", "battle", "build-at-battle-space"}
+EXTRA_TRIGGERS = {"after-build", "battle-space", "turn-start"}
 
 
 def is_status(card):
@@ -35,6 +39,11 @@ def is_status(card):
 def trigger_of(ability):
     trigger = ability["trigger"]
     return trigger.get("card_trigger") or {"type": trigger["operation_type"]}
+
+
+def is_airdrop(ability):
+    return any(step.get("effect", {}).get("nearAirAction") and step["effect"]["type"] in EXTRA_ACTIONS
+               for step in ability["effects"])
 
 
 def verify_status(rules, card):
@@ -61,6 +70,7 @@ class StatusForecast:
         self.turn = self.state.turn
         self.units = board_units(self.rules, self.state)
         self.legal = LegalActionGenerator(self.rules)
+        self.action_distance = bool(economy.map_weights and economy.map_weights.get("action_distance_scoring"))
         self.sites = Counter()
         for site in self.rules.sites.values():
             self.sites[site["region"]] += site["vp"]
@@ -78,7 +88,8 @@ class StatusForecast:
                       if t.token_type == "ABILITY" and t.position_id == zone(t.owner_country, "ABILITY_READY")}
         # Caches belong to this one observed position and expire with it.
         for name in ("hand", "targets", "adjacent", "supplied", "program", "signals", "board_changes",
-                     "entries", "portfolio", "report", "baseline_play", "possibility", "after_event_targets"):
+                     "entries", "portfolio", "report", "baseline_play", "possibility", "after_event_targets",
+                     "strategic_modifiers", "extra_reaction", "airdrop_value"):
             setattr(self, name, lru_cache(maxsize=None)(getattr(self, name)))
 
     def hand(self, owner):
@@ -100,14 +111,76 @@ class StatusForecast:
 
     @staticmethod
     def related_actions(card):
-        actions = set()
-        for step in card.get("effects", ()):
-            effect = step.get("effect", {})
+        by_native = {"BUILD_ARMY": "build-army", "BUILD_NAVY": "build-navy",
+                     "LAND_BATTLE": "land-battle", "SEA_BATTLE": "sea-battle"}
+        actions = set(by_native[mode] for mode in card.get("play_as", ()) if mode in by_native)
+
+        def visit(effect):
             kind = effect.get("kind", "army")
-            action = effect.get("action", effect.get("type"))
+            action = effect.get("action", effect["type"])
             if kind in BASIC and action in ("build", "battle"):
                 actions.add(BASIC[kind][action == "battle"])
+            if effect["type"] == "choose-one":
+                for branch in effect["options"]:
+                    for child in branch["effects"]:
+                        visit(child)
+            if effect["type"] == "battle" and kind == "either":
+                actions.update(("land-battle", "sea-battle"))
+
+        for step in card.get("effects", ()):
+            op = step.get("operation", step)
+            if op["type"] in by_native:
+                actions.add(by_native[op["type"]])
+            elif "effect" in op:
+                visit(op["effect"])
         return actions
+
+    def extra_reaction(self, owner, key):
+        ability = self.rules.abilities[key]
+        trigger = trigger_of(ability)
+        trigger_type = trigger["type"]
+        effects = [step["effect"] for step in ability["effects"]]
+        if trigger_type not in EXTRA_TRIGGERS or not any(e["type"] in EXTRA_ACTIONS for e in effects):
+            return None
+        if trigger_type == "turn-start":
+            trigger_cards = ()
+        else:
+            trigger_cards = (BASIC[trigger["kind"]][trigger_type == "battle-space"],)
+        matching_cards = sum(any(kind == card.get("legacy_kind") or kind in self.related_actions(card)
+                                 for kind in trigger_cards) for card in self.hand(owner))
+        net = sum(self.economy.units.action for effect in effects if effect["type"] in EXTRA_ACTIONS)
+        for effect in effects:
+            if effect["type"] == "discard-hand":
+                net -= self.economy.units.card_score(effect["count"])
+            elif effect["type"] == "discard-top":
+                target = owner if effect["target"] == "self" else effect["target"]
+                if target in TURN_ORDER:
+                    net += self.economy.mill(owner, target, effect["count"], 1)
+        return matching_cards + 1, net
+
+    def deck_top(self, owner, count):
+        seen = min(count, self.economy.count(owner, "DECK"))
+        if self.action_distance:
+            remaining = self.economy.routes.position.scoring_rounds(owner)
+            return self.economy.units.card_score(max(1, remaining * 0.25)) if seen >= 2 and remaining else 0
+        return 0.22 * max(0, seen - 1)
+
+    def airdrop_value(self, owner, key):
+        terrain = trigger_of(self.rules.abilities[key]).get("spaceKind")
+        options = air_options(self.rules, self.state, owner, {"actions": ["deploy", "marshal"]})
+        regions = {json.loads(option)[2] for option in options}
+        return max((self.program(owner, owner, key, region) for region in regions
+                    if terrain is None or self.rules.regions[region]["type"].lower() == terrain), default=0)
+
+    def discard_gain(self, owner, card):
+        values = []
+        for source, definition in self.sources[owner]:
+            for key in self.rules.cards[definition]["abilities"]:
+                trigger = trigger_of(self.rules.abilities[key])
+                if ((source, key) in self.ready and trigger["type"] == "discard-stage-card" and
+                        trigger.get("country") == owner and trigger["kind"] == card.get("legacy_kind")):
+                    values.append(self.program(owner, owner, key, None, committed=True))
+        return max(values, default=0)
 
     def targets(self, owner, force, kind, action):
         return self.action_targets(self.state, owner, force, kind, action)
@@ -147,6 +220,8 @@ class StatusForecast:
 
     def location_value(self, region, battle=False, *, force=None):
         units = self.economy.units
+        if self.action_distance and force:
+            return self.economy.routes.target_value(force, region, battle=battle, construction=not battle)
         value = units.action_score(0.425 if battle else 0.55) + units.vp_score(0.65 * self.sites[region])
         if force and self.economy.map_weights:
             value += self.economy.routes.paper_bonus(force, region, battle=battle)
@@ -247,6 +322,8 @@ class StatusForecast:
         chance = self.chance(actor, (BASIC[unit][0 if build else 1],), later)
         weights = {p: self.location_value(p, not build, force=actor) for p in targets}
         total = sum(weights.values())
+        if not total:
+            return ()
         signals = []
         for p, weight in weights.items():
             if trigger.get("spaces") and p not in trigger["spaces"]:
@@ -275,7 +352,14 @@ class StatusForecast:
             targets = set(self.after_event_targets(owner, force, unit, action, trigger["type"], trigger["kind"], region))
         else:
             targets = set(self.targets(owner, force, unit, action))
+        if self.action_distance and effect.get("nearAirAction"):
+            if not region:
+                return 0
+            nearby = self.adjacent(force)[region]
+            return self.economy.routes.position.best_adjacent_site(force, targets & nearby)
         if kind == "build-at-battle-space":
+            if self.action_distance and trigger["type"] in EXTRA_TRIGGERS:
+                return self.economy.units.action if region in targets else 0
             return self.location_value(region, force=force) if region in targets else 0
         if "space" in effect:
             targets &= {effect["space"]}
@@ -289,6 +373,8 @@ class StatusForecast:
         if action == "battle":
             targets = {p for p in targets if len(self.enemies(owner, p, unit)) >
                        int(bool(projected) and p == region and trigger["type"] == "battle-space")}
+        if self.action_distance and trigger["type"] in EXTRA_TRIGGERS:
+            return self.economy.units.action if targets else 0
         return max((self.location_value(p, action == "battle", force=force) for p in targets), default=0)
 
     def program(self, owner, actor, key, region, committed=False, later=0):
@@ -311,7 +397,7 @@ class StatusForecast:
                 target = actor if effect["target"] == "battle-attacker" else effect["target"]
                 target = owner if target == "self" else target
                 value = self.economy.mill(owner, target, effect["count"], 0.75)
-                if target == owner and not value:
+                if target == owner and not value and not self.action_distance:
                     value = -0.06 * effect["count"]
                 net += value
                 if effect["target"] == "battle-attacker" and region and not committed:
@@ -322,7 +408,7 @@ class StatusForecast:
                         if p != region and victims and not (protected and p in trigger.get("spaces", (p,))):
                             alternatives.append(self.location_value(p, True))
                     net = min(net, max(0, self.location_value(region, True) - max(alternatives, default=0)))
-            elif kind in ("choose-space", "battle", "recruit", "build-at-battle-space"):
+            elif kind in EXTRA_ACTIONS:
                 net += self.military_effect(owner, effect, region, trigger, committed)
             elif kind == "prevent-removal":
                 net += self.location_value(region) if region else self.economy.units.action_score(0.55)
@@ -350,7 +436,7 @@ class StatusForecast:
             elif kind == "put-hand-on-deck-bottom":
                 net += 0.28 * min(effect["max"], len(self.hand(owner)), self.economy.count(owner, "DECK"))
             elif kind == "order-deck-top":
-                net += 0.22 * max(0, min(effect["count"], self.economy.count(owner, "DECK")) - 1)
+                net += self.deck_top(owner, effect["count"])
             elif kind == "economic-discard-bonus":
                 bonus = effect.get("bonusIf", {})
                 extra = effect["amount"] + (bonus.get("amount", 0) if any(u.position_id == bonus.get("space") and
@@ -360,12 +446,7 @@ class StatusForecast:
                 net += max(self.economy.mill(owner, s, extra, 0.75) for s in targets)
         return net
 
-    def board_changes(self, owner, card_id, source):
-        """Counterfactual on projected pieces only. Separate supply already priced by B's map."""
-        card = self.rules.cards[card_id]
-        mods = [m for m in card.get("modifiers", ()) if m["kind"] in MAP_MODS or m["kind"] == "ignore_enemy_statuses"]
-        if not mods:
-            return 0, 0
+    def modifier_states(self, owner, card_id, source):
         state = replace(self.state, turn=replace(self.turn, country_index=TURN_ORDER.index(owner)))
         position = zone(owner, "STATUS")
         tokens = dict(state.tokens)
@@ -377,7 +458,37 @@ class StatusForecast:
             tokens[key] = Token(key, card_id, "CARD", owner, position)
             keys = [*state.positions[position], key]
         changed = replace(state, tokens=tokens, positions={**state.positions, position: keys})
-        before, after = (changed, state) if source and source not in self.disabled else (state, changed)
+        return (changed, state) if source and source not in self.disabled else (state, changed)
+
+    def strategic_modifiers(self, owner, card_id, source):
+        from .map_influence import ScoringRoutes
+
+        mods = self.rules.cards[card_id].get("modifiers", ())
+        endpoints = {region for m in mods if m["kind"] == "connection" for region in (m["a"], m["b"])}
+        bonuses = [m for m in mods if m["kind"] == "score_bonus"]
+        if not (endpoints or bonuses):
+            return 0
+        before, after = self.modifier_states(owner, card_id, source)
+        old = ScoringRoutes(self.rules, before, self.units, self.economy.map_weights).position
+        new = ScoringRoutes(self.rules, after, self.units, self.economy.map_weights).position
+        value = old.connection_change(new, owner, endpoints) if endpoints else 0
+        for modifier in bonuses:
+            site = modifier["site"]
+            sign = -1 if modifier["amount"] < 0 else 1
+            values = (new.closest_site_interest(owner, region, abs(modifier["amount"]), self.rules.sites[site]["countries"])
+                      for region in sorted(new.locations.get(site, ())))
+            value += sign * max(values, key=abs, default=0)
+        return value
+
+    def board_changes(self, owner, card_id, source):
+        """Counterfactual on projected pieces only. Separate supply already priced by B's map."""
+        card = self.rules.cards[card_id]
+        excluded = {"connection", "score_bonus"} if self.action_distance else set()
+        mods = [m for m in card.get("modifiers", ()) if m["kind"] not in excluded and
+                (m["kind"] in MAP_MODS or m["kind"] == "ignore_enemy_statuses")]
+        if not mods:
+            return 0, 0
+        before, after = self.modifier_states(owner, card_id, source)
         supply = SupplyResolver(self.rules)
         option_delta = supplied_delta = 0
         for force, seat in self.rules.force_controllers.items():
@@ -451,7 +562,16 @@ class StatusForecast:
         if held and first_play == 0 and self.turn.phase == "Play":
             first_play += seat_count
         rows = []
-        for delay in range(self.economy.horizon):
+        counted = Counter()
+        extras = ({key: result for key in card.get("abilities", ()) if (result := self.extra_reaction(owner, key))}
+                  if self.action_distance else {})
+        limit = self.economy.horizon
+        if extras and limit:
+            needed = max(count for count, _ in extras.values())
+            remaining = (self.rules.settings["max_rounds"] - self.turn.round_id + 1) * seat_count - self.turn.country_index
+            limit = max(limit, min(remaining, first_play + (needed + 1) * seat_count))
+        enabled = not self.action_distance or condition_met(self.rules, self.state, owner, card.get("content_condition"))
+        for delay in range(limit):
             actor = TURN_ORDER[(self.turn.country_index + delay) % seat_count]
             if (source in self.disabled and delay == 0) or (not source and delay < first_play) or (self.rules.team(owner) != self.rules.team(actor) and any(
                     any(m["kind"] == "ignore_enemy_statuses" for m in self.rules.cards[c].get("modifiers", ()))
@@ -461,8 +581,6 @@ class StatusForecast:
             weight = self.discount ** (delay / seat_count)
             development = max(0, (delay - (0 if source else first_play)) // seat_count)
             weight *= self.board_condition(owner, card.get("content_condition"), development)
-            if not weight:
-                continue
             for key in card.get("abilities", ()):
                 ability = self.rules.abilities[key]
                 trigger = trigger_of(ability)
@@ -479,6 +597,35 @@ class StatusForecast:
                     if kind in ("turn-start", "play-phase-start") or self.rules.settings["plays_per_turn"] <= 1:
                         continue
                 if source and delay == 0 and (source, key) not in self.ready:
+                    continue
+                if key in extras:
+                    count, net = extras[key]
+                    if (enabled and actor == owner and counted[key] < count and
+                            (net > 0 or ability["activation_mode"] != "OPTIONAL")):
+                        rows.append(((delay, kind, trigger.get("kind"), None), 1, net))
+                        counted[key] += 1
+                    continue
+                if delay >= self.economy.horizon:
+                    continue
+                if self.action_distance and actor == owner and enabled:
+                    if kind == "before-rule-use" and counted["strategic"] == 0:
+                        value = self.strategic_modifiers(owner, card_id, source)
+                        if value:
+                            rows.append(((delay, kind, "map-change", card_id), 1, value))
+                        counted["strategic"] += 1
+                    if any(step["effect"]["type"] == "order-deck-top" for step in ability["effects"]):
+                        if not counted[key]:
+                            rows.append(((delay, kind, "deck-top", None), 1, self.program(owner, actor, key, None)))
+                            counted[key] += 1
+                        continue
+                    if kind == "after-air-action":
+                        if not counted[key]:
+                            best = self.airdrop_value(owner, key)
+                            if best > 0:
+                                rows.append(((delay, kind, None, None), 1, best))
+                            counted[key] += 1
+                        continue
+                if not weight:
                     continue
                 if kind == "before-rule-use":
                     value = self.modifier(owner, actor, card_id, source, later, board)

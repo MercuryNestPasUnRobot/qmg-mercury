@@ -1,6 +1,7 @@
 {
-  "profile": "ai-test-v1.11-standard-scoring-units",
+  "profile": "ai-test-v1.12-action-distance-scoring",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
+  "action_distance_scoring": true,
   "mirrored_attacks": true,
   "construction_search_width": 3,
   "basic_usage_cost": 1.2,

@@ -1,13 +1,15 @@
 """Seat-local rule policy and time-bounded, observation-only candidate search."""
+import json
 import multiprocessing
 from itertools import takewhile
 from time import perf_counter
 
+from .content_effects import available_options, condition_met
 from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .definitions import BATTLES, CONSTRUCTION
 from .hand_retention import is_hand_choice
 from .model import CoreError, zone
-from .status_scoring import is_status
+from .status_scoring import is_airdrop, is_status
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
 from .score_units import ScoreUnits, VALUED_ACTIONS, equivalent_action
 
@@ -36,6 +38,27 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
         dynamic = economy.effect(seat, effect, ACTION_PRIORITY["GAIN_VP"], closeout=closeout)
         if dynamic is not None:
             return dynamic
+        if economy.map_weights and economy.map_weights.get("action_distance_scoring"):
+            if kind == "choose-unit":
+                state = economy.visible_state()
+                if not condition_met(economy.rules, state, seat, effect.get("when")):
+                    return 0
+                return max((economy.routes.removal_value(token) *
+                            (1 if economy.rules.team(state.tokens[token].owner_country) != team else -1)
+                            for token in available_options(economy.rules, state, seat, effect)), default=0)
+            if kind == "battle":
+                return (economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect})
+                        if frontier else units.action)
+            if kind == "battle-series":
+                state = economy.visible_state()
+                targets = available_options(economy.rules, state, seat, effect)
+                values = sorted((economy.routes.removal_value(token) for token in targets
+                                 if economy.rules.team(state.tokens[token].owner_country) != team), reverse=True)
+                return sum(values[:effect["max"]])
+            if kind in ("eliminate-built-unit", "eliminate-air-superiority-attacker"):
+                return units.action
+            if kind == "order-deck-top" and economy.statuses:
+                return economy.statuses.deck_top(seat, effect["count"])
     if kind == "points":
         return effect["amount"] * operation_priority("GAIN_VP", units) * (1 if effect["side"] in ("self", team) else -1)
     if kind == "choose-one":
@@ -109,6 +132,18 @@ class RulePolicy:
             else:
                 count = op.get("count", 1) if op["type"] == "DRAW" and self.units.enabled else op.get("amount", 1)
                 priority = operation_priority(op["type"], self.units)
+                if op["type"] == "TRANSFER" and self.evaluator and self.evaluator.action_distance and economy:
+                    token = economy.visible_state().tokens.get(op["token"])
+                    if token and token.token_type == "SCORE_SOURCE":
+                        destinations = op.get("destinations", economy.rules.regions) if op["destination"] == "$choice" else (
+                            op["destination"],)
+                        value += max((economy.routes.position.source_move(seat, token, p) for p in destinations), default=0)
+                        frontier = False
+                        continue
+                if self.evaluator and self.evaluator.action_distance and op["type"] in BATTLES:
+                    value += economy.routes.best_action_bonus(seat, op) if frontier else self.units.action
+                    frontier = False
+                    continue
                 value += priority * count
                 if frontier and op["type"] in CONSTRUCTION | BATTLES:
                     attack_premium = (operation_priority(BATTLE_BUILD[op["type"]], self.units) - priority
@@ -118,7 +153,6 @@ class RulePolicy:
         return value
 
     def card_value(self, card, seat, economy, *, active=False, closeout=False):
-        abilities = (self.rules.abilities[a]["effects"] for a in card.get("abilities", []))
         if economy and economy.status_weights and is_status(card):
             if active:
                 return economy.statuses.program(seat, seat, card["active_ability"], None, committed=True)
@@ -126,8 +160,12 @@ class RulePolicy:
                     economy.statuses.report(seat, card["id"], held=not closeout)["future"])
         if active:
             return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], seat, economy, closeout=closeout)
+        abilities = [self.rules.abilities[a] for a in card.get("abilities", ())]
+        airdrop = [ability for ability in abilities if economy and economy.status_weights and
+                   self.evaluator.action_distance and is_airdrop(ability)]
         return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
-                0.35 * sum(self.instructions(e, seat, economy) for e in abilities))
+                sum(max(0, economy.statuses.airdrop_value(seat, ability["id"])) for ability in airdrop) +
+                0.35 * sum(self.instructions(a["effects"], seat, economy) for a in abilities if a not in airdrop))
 
     def discard_value(self, card, seat, economy, view):
         cost = self.evaluator.basic_discard_cost(view, seat, card) if self.evaluator else 0
@@ -168,9 +206,16 @@ class RulePolicy:
             if key and source and is_status(self.rules.cards.get(source["definition_id"], {})):
                 return economy.statuses.program(seat, decision.get("event_actor") or seat,
                                                 key, decision.get("event_region"), committed=True)
-            if option in ("decline", "pass") and all(is_status(self.rules.cards.get(
-                    view["tokens"].get(src, {}).get("definition_id"), {})) for src in sources.values()):
-                return 0
+            if key and source and self.evaluator.action_distance:
+                if is_airdrop(self.rules.abilities[key]):
+                    return economy.statuses.program(seat, decision.get("event_actor") or seat,
+                                                    key, decision.get("event_region"), committed=True)
+            if option in ("decline", "pass"):
+                air_response = self.evaluator.action_distance and any(is_airdrop(self.rules.abilities[key])
+                    for key in decision.get("response_abilities", {}).values())
+                if air_response or all(is_status(self.rules.cards.get(
+                        view["tokens"].get(src, {}).get("definition_id"), {})) for src in sources.values()):
+                    return 0
         if option in ("skip", "decline", "pass", "no", "done", "cancel"):
             return -100
         if kind in ("ABILITY", "RESPONSE_ORDER"):
@@ -180,6 +225,20 @@ class RulePolicy:
             return economy.mill(seat, option, decision["deck_discard_count"], ACTION_PRIORITY["GAIN_VP"], closeout=True)
         if option in ("confirm", "air", "discard-top"):
             return 100
+        if op == "AIR_ACTION_SELECTED" and economy and self.evaluator.action_distance and economy.status_weights:
+            action, _, region, victim = json.loads(option)
+            if victim:
+                return economy.routes.removal_value(victim)
+            if action in ("deploy", "marshal"):
+                return max((economy.statuses.program(seat, seat, t.definition_id, region, committed=True)
+                            for t in economy.visible_state().tokens.values() if t.token_type == "ABILITY" and
+                            t.owner_country == seat and t.position_id == zone(seat, "ABILITY_READY") and
+                            is_airdrop(self.rules.abilities[t.definition_id]) and
+                            economy.visible_state().tokens[t.source_token_id].position_id == zone(seat, "RESPONSE")),
+                           default=0)
+        if economy and self.evaluator.action_distance and (source := decision.get("score_source")):
+            token = economy.visible_state().tokens[source]
+            return economy.routes.position.source_move(seat, token, option)
         if token := view["tokens"].get(option):
             if token["token_type"] == "CARD":
                 value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)
@@ -188,6 +247,9 @@ class RulePolicy:
                 return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy, view)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
             if token["token_type"] == "UNIT":
+                if op == "ELIMINATE" and economy and self.evaluator.action_distance:
+                    value = economy.routes.removal_value(option)
+                    return value if self.rules.team(token["owner_country"]) != self.rules.team(seat) else -value
                 if (kind == "BATTLE_VICTIM" and economy and economy.map_weights and
                         economy.map_weights.get("mirrored_attacks")):
                     return economy.routes.removal_value(option)
@@ -258,6 +320,13 @@ class RulePolicy:
                 if forced_play_discard:
                     return -net if retention else self.discard_value(
                         self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat, economy, view)
+                if economy and self.evaluator.action_distance and economy.status_weights and phase == "Discard":
+                    card = self.rules.cards[view["tokens"][command["card"]]["definition_id"]]
+                    gain = economy.statuses.discard_gain(seat, card)
+                    cost = max(0, retention.get(command["card"], {}).get("short_term", 0))
+                    if not replacement_available:
+                        cost += self.units.card
+                    return gain - cost if gain > cost else -1
                 return -net if net < 0 and replacement_available else -1
             if kind == "FORFEIT_PLAY":
                 return self.units.vp_score(-1)
