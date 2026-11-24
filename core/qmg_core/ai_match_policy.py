@@ -11,7 +11,7 @@ from .hand_retention import is_hand_choice
 from .model import CoreError, zone
 from .status_scoring import is_airdrop, is_status
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
-from .score_units import ScoreUnits, VALUED_ACTIONS, equivalent_action
+from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 
 
 ACTION_PRIORITY = {"GAIN_VP": 0.75, "BUILD_ARMY": 1.6, "RECRUIT": 1.6, "BUILD_NAVY": 1.4,
@@ -57,8 +57,6 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
                 return sum(values[:effect["max"]])
             if kind in ("eliminate-built-unit", "eliminate-air-superiority-attacker"):
                 return units.action
-            if kind == "order-deck-top" and economy.statuses:
-                return economy.statuses.deck_top(seat, effect["count"])
     if kind == "points":
         return effect["amount"] * operation_priority("GAIN_VP", units) * (1 if effect["side"] in ("self", team) else -1)
     if kind == "choose-one":
@@ -76,7 +74,7 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
     value = EFFECT_PRIORITY.get(kind, 0.2)
     if action:
         value = operation_priority(action, units)
-    elif kind in ("air-action", "battle-series", "play-from-zone"):
+    elif kind in ACTION_SUPPORT_EFFECTS or kind in ("air-action", "battle-series", "play-from-zone"):
         value = units.action_score(value / 2)
     elif kind == "search-deck":
         value = units.card_score(value)
@@ -140,6 +138,16 @@ class RulePolicy:
                         value += max((economy.routes.position.source_move(seat, token, p) for p in destinations), default=0)
                         frontier = False
                         continue
+                    if token and token.token_type == "CARD":
+                        owner = token.owner_country
+                        discard, hand = zone(owner, "DISCARD"), zone(owner, "HAND")
+                        destination = op["destination"]
+                        going_back = (destination == zone(owner, "DECK") and token.position_id in (discard, hand) or
+                                      token.position_id == discard and destination in (hand, zone(owner, "RESPONSE")))
+                        if going_back:
+                            value += self.units.card_score(1 if self.rules.team(owner) == team else -1)
+                            frontier = False
+                            continue
                 if self.evaluator and self.evaluator.action_distance and op["type"] in BATTLES:
                     value += economy.routes.best_action_bonus(seat, op) if frontier else self.units.action
                     frontier = False
@@ -200,6 +208,9 @@ class RulePolicy:
         decision = view["decision"]
         kind, op = decision["decision_type"], decision["operation_type"]
         sources = decision.get("response_sources", {})
+        if economy and self.evaluator.action_distance and "return_discard_cost" in decision:
+            cost = decision["return_discard_cost"]
+            return self.units.card_score(1 - cost) if option == "return" else 0
         if sources and economy and economy.status_weights:
             key = decision.get("response_abilities", {}).get(option)
             source = view["tokens"].get(sources.get(option))

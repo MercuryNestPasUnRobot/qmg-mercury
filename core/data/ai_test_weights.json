@@ -1,5 +1,5 @@
 {
-  "profile": "ai-test-v1.12-action-distance-scoring",
+  "profile": "ai-test-v1.13-regional-and-card-value",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "action_distance_scoring": true,
   "mirrored_attacks": true,
@@ -10,7 +10,8 @@
     "vp_pressure_bonus": 1.4,
     "closeout_bonus": 4,
     "lead_vp_per_round": 4,
-    "future_shortfall_value": 0.6
+    "future_shortfall_value": 0.6,
+    "deck_top_look": 0.3
   },
   "seat_forecast": true,
   "distance_weights": [1.6, 1, 0.5, 0.1],

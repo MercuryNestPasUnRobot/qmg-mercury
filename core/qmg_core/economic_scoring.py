@@ -9,6 +9,8 @@ from .score_units import ScoreUnits
 
 POINT_EFFECTS = {"points", "points-per-unit", "points-per-occupied-space"}
 MILL_EFFECTS = {"discard-top", "discard-top-per-unit", "choose-country"}
+CARD_RETURN_EFFECTS = {"put-hand-on-deck-bottom", "recover-discard", "return-declared-army-card",
+                       "return-played-card", "return-revealed-discard", "shuffle-used-card"}
 
 
 class EconomicForecast:
@@ -37,7 +39,12 @@ class EconomicForecast:
         from .map_influence import ScoringRoutes
         from .rules import board_units
         state = self.visible_state()
-        return ScoringRoutes(self.rules, state, board_units(self.rules, state), self.map_weights)
+
+        def regional_points(force, region):
+            return self.statuses.regional_placement(force, region)
+
+        callback = regional_points if self.status_weights and self.map_weights.get("action_distance_scoring") else None
+        return ScoringRoutes(self.rules, state, board_units(self.rules, state), self.map_weights, regional_points=callback)
 
     @cached_property
     def statuses(self):
@@ -104,8 +111,35 @@ class EconomicForecast:
         return (self.points(seat, immediate, base, closeout=closeout)
                 + sign * self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * future))
 
+    def top_value(self, seen, remaining_rounds):
+        if seen == 1:
+            return self.units.card_score(self.settings.get("deck_top_look", 0.3))
+        return self.units.card_score(max(1, remaining_rounds * 0.25)) if seen > 1 and remaining_rounds else 0
+
+    def return_value(self, seat, effect):
+        target = force_id(effect.get("target"), seat)
+        kind = effect["type"]
+        if kind == "put-hand-on-deck-bottom":
+            count = min(effect["max"], self.count(seat, "HAND"))
+            return self.units.card_score(count) if count >= effect["min"] else 0
+        if kind == "recover-discard":
+            available = available_options(self.rules, self.visible_state(), seat, effect)
+            count = min(effect.get("count", 1), len(available))
+            return self.units.card_score(count if self.rules.team(target) == self.rules.team(seat) else -count)
+        if kind == "return-played-card":
+            return self.units.card_score(max(0, 1 - effect["discardHandCount"]))
+        if kind == "return-revealed-discard":
+            return 0  # Recipient and number are known only from the reveal's actual settlement.
+        return self.units.card_score(1)
+
     def effect(self, seat, effect, base, *, closeout=False):
         kind = effect["type"]
+        if self.map_weights and self.map_weights.get("action_distance_scoring"):
+            if kind in CARD_RETURN_EFFECTS:
+                return self.return_value(seat, effect)
+            if kind == "order-deck-top":
+                seen = min(effect["count"], self.count(seat, "DECK"))
+                return self.top_value(seen, self.routes.position.scoring_rounds(seat))
         if kind not in POINT_EFFECTS and kind not in MILL_EFFECTS:
             return None
         if kind in POINT_EFFECTS:

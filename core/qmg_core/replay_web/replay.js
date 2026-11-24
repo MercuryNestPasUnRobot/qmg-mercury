@@ -520,6 +520,7 @@ async function mount(data) {
           node("small", [vp, "地图 " + signed(c.map_delta),
             "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
         if (c.unit_removal_score) li.append(node("small", "地图分中移除单位 " + signed(c.unit_removal_score)));
+        if (c.card_event_score) li.append(node("small", "牌分中返牌与牌库顶操作 " + signed(c.card_event_score)));
       } else {
         li.append(node("small", shortReason(c.reason)));
       }

@@ -100,14 +100,20 @@ def condition_met(rules, state, country, condition):
     return condition["min"] <= count <= condition.get("max", count)
 
 
-def point_award(rules, state, country, effect):
-    kind, side = effect["type"], effect["side"]
+def point_recipient(rules, country, side):
     team = rules.team(country)
     enemy = "allies" if team == "axis" else "axis"
-    recipient = next(c for c in TURN_ORDER if rules.team(c) == enemy) if side in ("enemy", enemy) else country
+    return next(c for c in TURN_ORDER if rules.team(c) == enemy) if side in ("enemy", enemy) else country
+
+
+def point_award(rules, state, country, effect):
+    kind = effect["type"]
+    recipient = point_recipient(rules, country, effect["side"])
     if kind == "points-per-unit":
         return recipient, len(filtered_units(rules, state, country, effect["filter"])) * effect["amountPer"]
     if kind == "points-per-occupied-space":
+        team = rules.team(country)
+        enemy = "allies" if team == "axis" else "axis"
         occupied_by = effect["occupiedBy"]
         occupied_team = {"self": team, "enemy": enemy}.get(occupied_by, occupied_by)
         spaces = {t.position_id for t in board_units(rules, state)

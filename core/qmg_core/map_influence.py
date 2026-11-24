@@ -11,7 +11,7 @@ from .score_units import ScoreUnits
 
 
 class ScoringRoutes:
-    def __init__(self, rules, state, pieces, weights, *, include_connections=True):
+    def __init__(self, rules, state, pieces, weights, *, include_connections=True, regional_points=None):
         self.rules = rules
         self.state = state
         self.weights = weights
@@ -44,6 +44,7 @@ class ScoringRoutes:
         self.near_site_distances = {}
         self.attack_victims = {}
         self.removal_routes = {}
+        self.regional_points = regional_points
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections)
                          if self.weights.get("action_distance_scoring") else None)
@@ -199,7 +200,7 @@ class ScoringRoutes:
 
     def capture_value(self, force, region):
         if self.position:
-            return sum(self.position.capture(force, region, self.rules.sites[site]["vp"])
+            return sum(self.position.site_base(force, region, site)
                        for site, locations in self.locations.items() if region in locations)
         remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
         return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
@@ -211,6 +212,8 @@ class ScoringRoutes:
         if self.position:
             value = (max((self.removal_value(t.token_id) for t in self._removable_targets(force, region)), default=0)
                      if battle else self.position.value(force, region))
+            if construction and self.regional_points:
+                value += self.regional_points(force, region)
             self.target_scores[cache_key] = value
             return value
         if battle and self.weights.get("mirrored_attacks"):
@@ -249,7 +252,7 @@ class ScoringRoutes:
 
     def paper_bonus(self, force, region, *, battle=False):
         if self.position:
-            return self.target_value(force, region, battle=battle)
+            return self.target_value(force, region, battle=battle, construction=not battle)
         if self.units.enabled and battle and self.weights.get("mirrored_attacks"):
             return max((self._without_unit(t.token_id).paper_bonus(t.owner_country, region)
                         for t in self._removable_targets(force, region)), default=0.0)

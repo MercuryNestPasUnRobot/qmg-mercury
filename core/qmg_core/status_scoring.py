@@ -1,14 +1,15 @@
 """Value remaining public status opportunities from a single seat's projected position."""
 from collections import Counter, defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import lru_cache
 import json
+from math import inf
 
 from .air import air_options
-from .content_effects import condition_met, filtered_units, point_award, unit_matches
-from .economic_scoring import POINT_EFFECTS
+from .content_effects import condition_met, filtered_units, point_award, point_recipient, unit_matches
+from .economic_scoring import CARD_RETURN_EFFECTS, POINT_EFFECTS
 from .model import CoreError, TURN_ORDER, Token, zone
-from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
+from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units, status_enabled
 
 STAGES = ("Setup", "Play", "Air", "Supply", "Victory", "Discard", "Draw")
 TRIGGER_PHASE = {
@@ -16,12 +17,12 @@ TRIGGER_PHASE = {
     "discard-start": "Discard", "discard-stage-card": "Discard", "USE_STATUS": "Play",
     "after-build": "Play", "battle-space": "Play", "before-battle-removal": "Play",
     "economic-play": "Play", "play-army-card": "Play", "unit-activity": "Play",
-    "before-rule-use": "Play", "after-air-action": "Air",
+    "before-rule-use": "Play", "air-phase-start": "Air", "after-air-action": "Air",
 }
 MAP_MODS = {"always_supplied", "supply_source", "deny_supply_source", "supply_sharing",
             "connection", "recruit_region", "home", "score_bonus"}
 OTHER_MODS = {"reallocate_cost", "reallocate_discard", "economic_adjustment", "ignore_enemy_statuses"}
-EFFECTS = POINT_EFFECTS | {
+EFFECTS = POINT_EFFECTS | CARD_RETURN_EFFECTS | {
     "discard-top", "prevent-removal", "battle", "build-at-battle-space", "choose-space", "recruit",
     "discard-hand", "play-from-zone", "request-hand-discard", "economic-discard-bonus",
     "order-deck-top", "put-hand-on-deck-bottom", "return-declared-army-card",
@@ -30,6 +31,43 @@ BASIC = {"army": ("build-army", "land-battle"), "navy": ("build-navy", "sea-batt
 BASIC_KINDS = frozenset(kind for pair in BASIC.values() for kind in pair)
 EXTRA_ACTIONS = {"build", "choose-space", "recruit", "battle", "build-at-battle-space"}
 EXTRA_TRIGGERS = {"after-build", "battle-space", "turn-start"}
+REGION_FILTER_FIELDS = {"force", "forces", "kind", "kinds", "spaces", "excludeSpaces"}
+
+
+@dataclass(frozen=True)
+class RegionalAward:
+    spaces: tuple
+    filters: dict
+    amount: int
+    mode: str
+    gates: tuple
+
+
+def regional_award(effect, condition):
+    kind = effect["type"]
+    when = effect.get("when")
+    gates = tuple(gate for gate in (condition, when) if gate)
+    if kind == "points-per-occupied-space":
+        return RegionalAward(tuple(dict.fromkeys(effect["spaces"])), {"kind": "army", "occupiedBy": effect["occupiedBy"]},
+                             effect["amountPer"], "each-space", gates)
+    if kind == "points-per-unit":
+        filters = effect["filter"]
+        amount, mode = effect["amountPer"], "each-unit"
+    elif kind == "points":
+        occupation = next((gate for gate in (when, condition) if gate and gate["type"] == "unit-count"
+                           and gate["min"] == 1 and "max" not in gate and gate["filter"].get("spaces")), None)
+        if occupation is None:
+            return None
+        filters, amount, mode = occupation["filter"], effect["amount"], "single"
+        gates = tuple(gate for gate in gates if gate is not occupation)
+    else:
+        return None
+    if not filters.get("spaces") or filters.keys() - REGION_FILTER_FIELDS:
+        return None
+    excluded = set(filters.get("excludeSpaces", ()))
+    spaces = tuple(space for space in dict.fromkeys(filters["spaces"]) if space not in excluded)
+    return RegionalAward(spaces, {key: value for key, value in filters.items() if key not in ("spaces", "excludeSpaces")},
+                         amount, mode, gates)
 
 
 def is_status(card):
@@ -89,7 +127,7 @@ class StatusForecast:
         # Caches belong to this one observed position and expire with it.
         for name in ("hand", "targets", "adjacent", "supplied", "program", "signals", "board_changes",
                      "entries", "portfolio", "report", "baseline_play", "possibility", "after_event_targets",
-                     "strategic_modifiers", "extra_reaction", "airdrop_value"):
+                     "strategic_modifiers", "extra_reaction", "airdrop_value", "regional_awards", "regional_placement"):
             setattr(self, name, lru_cache(maxsize=None)(getattr(self, name)))
 
     def hand(self, owner):
@@ -162,7 +200,7 @@ class StatusForecast:
         seen = min(count, self.economy.count(owner, "DECK"))
         if self.action_distance:
             remaining = self.economy.routes.position.scoring_rounds(owner)
-            return self.economy.units.card_score(max(1, remaining * 0.25)) if seen >= 2 and remaining else 0
+            return self.economy.top_value(seen, remaining)
         return 0.22 * max(0, seen - 1)
 
     def airdrop_value(self, owner, key):
@@ -181,6 +219,78 @@ class StatusForecast:
                         trigger.get("country") == owner and trigger["kind"] == card.get("legacy_kind")):
                     values.append(self.program(owner, owner, key, None, committed=True))
         return max(values, default=0)
+
+    def regional_awards(self, card_id):
+        card = self.rules.cards[card_id]
+        awards = {}
+        for key in card.get("abilities", ()):
+            ability = self.rules.abilities[key]
+            if trigger_of(ability)["type"] != "during-victory":
+                continue
+            awards[key] = {index: award for index, step in enumerate(ability["effects"])
+                           if (award := regional_award(step["effect"], card.get("content_condition")))}
+        return {key: rows for key, rows in awards.items() if rows}
+
+    def regional_award_value(self, owner, key, rows, *, added=None):
+        position = self.economy.routes.position
+        ability = self.rules.abilities[key]
+        team = self.rules.team(owner)
+        value = 0.0
+        for index, award in rows.items():
+            if not all(condition_met(self.rules, self.state, owner, gate) for gate in award.gates):
+                continue
+            effect = ability["effects"][index]["effect"]
+            recipient = point_recipient(self.rules, owner, effect["side"])
+            side = 1 if self.rules.team(recipient) == team else -1
+            occupier = award.filters.get("occupiedBy")
+            if occupier:
+                foe = "allies" if team == "axis" else "axis"
+                occupied_team = {"self": team, "enemy": foe}.get(occupier, occupier)
+                filters = {"force": "team" if occupied_team == team else "enemy", "kind": "army"}
+            else:
+                filters = award.filters
+            pieces = self.units if added is None else (*self.units, added)
+            eligible = [t for t in pieces if unit_matches(self.rules, self.state, owner, t, filters)]
+            estimates = []
+            for region in award.spaces:
+                base = position.proportional_base(owner, region, abs(award.amount))
+                distances = [position.distances(t.owner_country, t.position_id).get(region, inf) for t in eligible]
+                present = distances.count(0)
+                if award.mode == "each-unit" and present:
+                    estimates.append(base * present)
+                else:
+                    estimates.append(position.distance_value(base, min(distances, default=inf)))
+            area = max(estimates, default=0) if award.mode == "single" else sum(estimates)
+            value += side * area * (-1 if award.amount < 0 else 1)
+        return max(0, value) if ability["activation_mode"] == "OPTIONAL" else value
+
+    def regional_placement(self, force, region):
+        active = defaultdict(list)
+        for owner, cards in self.sources.items():
+            for source, card in cards:
+                if status_enabled(self.rules, self.state, self.state.tokens[source]):
+                    active[owner].extend(self.regional_awards(card).items())
+        active = {owner: awards for owner, awards in active.items() if awards}
+        if not active:
+            return 0
+        kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
+        definition = next((key for key, unit in self.rules.units.items() if unit["kind"] == kind), None)
+        if definition is None:
+            return 0
+        added = Token("forecast:regional-placement", definition, "UNIT", force, region)
+
+        def value(owner, awards, placement=None):
+            optional, mandatory = 0, 0
+            for key, rows in awards:
+                estimate = self.regional_award_value(owner, key, rows, added=placement)
+                if self.rules.abilities[key]["activation_mode"] == "OPTIONAL":
+                    optional = max(optional, estimate)
+                else:
+                    mandatory += estimate
+            return optional + mandatory
+
+        return sum((1 if self.rules.team(owner) == self.rules.team(force) else -1) *
+                   (value(owner, awards, added) - value(owner, awards)) for owner, awards in active.items())
 
     def targets(self, owner, force, kind, action):
         return self.action_targets(self.state, owner, force, kind, action)
@@ -226,6 +336,12 @@ class StatusForecast:
         if force and self.economy.map_weights:
             value += self.economy.routes.paper_bonus(force, region, battle=battle)
         return value
+
+    def support_value(self, force, region, battle=False):
+        if not self.action_distance:
+            return self.location_value(region, battle)
+        action = self.economy.units.action_score(0.425 if battle else 0.55)
+        return action + (0.65 * self.economy.routes.capture_value(force, region) if region else 0)
 
     def possibility(self, owner, force, kind, spaces, later):
         """Chance that one additional unit can enter a named scoring area by a later window."""
@@ -377,16 +493,20 @@ class StatusForecast:
             return self.economy.units.action if targets else 0
         return max((self.location_value(p, action == "battle", force=force) for p in targets), default=0)
 
-    def program(self, owner, actor, key, region, committed=False, later=0):
+    def program(self, owner, actor, key, region, committed=False, later=0, excluded_steps=()):
         ability = self.rules.abilities[key]
         trigger = trigger_of(ability)
         net = 0
-        for step in ability["effects"]:
+        for index, step in enumerate(ability["effects"]):
+            if index in excluded_steps:
+                continue
             effect = step["effect"]
             kind = effect["type"]
             if not condition_met(self.rules, self.state, owner, effect.get("when")):
                 continue
-            if kind in POINT_EFFECTS:
+            if self.action_distance and kind in CARD_RETURN_EFFECTS:
+                net += self.economy.return_value(owner, effect)
+            elif kind in POINT_EFFECTS:
                 recipient, value = point_award(self.rules, self.state, owner, effect)
                 if later and kind != "points":
                     f = effect.get("filter", {"force": "team", "kind": "army", "spaces": effect.get("spaces", ())})
@@ -411,7 +531,7 @@ class StatusForecast:
             elif kind in EXTRA_ACTIONS:
                 net += self.military_effect(owner, effect, region, trigger, committed)
             elif kind == "prevent-removal":
-                net += self.location_value(region) if region else self.economy.units.action_score(0.55)
+                net += self.support_value(owner, region) if region else self.economy.units.action_score(0.55)
             elif kind == "discard-hand":
                 n = effect["count"]
                 hand = self.hand(owner)
@@ -475,7 +595,11 @@ class StatusForecast:
         for modifier in bonuses:
             site = modifier["site"]
             sign = -1 if modifier["amount"] < 0 else 1
-            values = (new.closest_site_interest(owner, region, abs(modifier["amount"]), self.rules.sites[site]["countries"])
+            countries = tuple(seat for seat in self.rules.sites[site]["countries"]
+                              if (modifier.get("scope", "owner") == "all" or seat == owner)
+                              and modifier.get("force", seat) == seat
+                              and modifier.get("team", self.rules.team(seat)) == self.rules.team(seat))
+            values = (new.closest_site_interest(owner, region, abs(modifier["amount"]), countries)
                       for region in sorted(new.locations.get(site, ())))
             value += sign * max(values, key=abs, default=0)
         return value
@@ -500,7 +624,8 @@ class StatusForecast:
             second = supply.supplied(after, force, units=self.units)
             for piece in self.units:
                 change = int(piece.token_id in second) - int(piece.token_id in first)
-                supplied_delta += sign * change * self.location_value(piece.position_id)
+                if change:
+                    supplied_delta += sign * change * self.support_value(force, piece.position_id)
             for action, unit in (("BUILD_ARMY", "ARMY"), ("BUILD_NAVY", "NAVY"), ("LAND_BATTLE", "ARMY"), ("SEA_BATTLE", "NAVY")):
                 op = {"type": action, "unit_kind": unit, "force": force, "allied_effect": True}
                 old = set(self.legal.targets(before, seat, op))
@@ -511,7 +636,7 @@ class StatusForecast:
                     new = {p for p in new if self.enemies(seat, p, unit.lower())}
                 if new != old:
                     def options_value(regions):
-                        values = sorted((self.location_value(p, battle) for p in regions), reverse=True)
+                        values = sorted((self.support_value(force, p, battle) for p in regions), reverse=True)
                         return sum(v / 2 ** i for i, v in enumerate(values[:4]))
                     option_delta += sign * 0.32 * (options_value(new) - options_value(old))
         return supplied_delta, option_delta
@@ -563,12 +688,25 @@ class StatusForecast:
             first_play += seat_count
         rows = []
         counted = Counter()
+        regional = self.regional_awards(card_id) if self.action_distance else {}
+        repeating_look = set()
+        if self.action_distance and self.economy.count(owner, "DECK"):
+            for key in card.get("abilities", ()):
+                ability = self.rules.abilities[key]
+                steps = ability["effects"]
+                if (len(steps) == 1 and steps[0]["effect"]["type"] == "order-deck-top"
+                        and steps[0]["effect"]["count"] == 1 and not ability.get("discard_cost")
+                        and trigger_of(ability)["type"] in ("turn-start", "play-phase-start", "air-phase-start",
+                                                            "during-victory", "discard-start")):
+                    repeating_look.add(key)
         extras = ({key: result for key in card.get("abilities", ()) if (result := self.extra_reaction(owner, key))}
                   if self.action_distance else {})
         limit = self.economy.horizon
+        remaining = (self.rules.settings["max_rounds"] - self.turn.round_id + 1) * seat_count - self.turn.country_index
+        if repeating_look and limit:
+            limit = max(limit, remaining)
         if extras and limit:
             needed = max(count for count, _ in extras.values())
-            remaining = (self.rules.settings["max_rounds"] - self.turn.round_id + 1) * seat_count - self.turn.country_index
             limit = max(limit, min(remaining, first_play + (needed + 1) * seat_count))
         enabled = not self.action_distance or condition_met(self.rules, self.state, owner, card.get("content_condition"))
         for delay in range(limit):
@@ -589,7 +727,7 @@ class StatusForecast:
                 if kind == "before-rule-use" and any(m["kind"] in MAP_MODS for m in card.get("modifiers", ())):
                     stage = STAGES.index("Supply")
                 if delay == 0 and (stage < phase or (stage == phase and
-                        (kind in ("turn-start", "play-phase-start", "during-victory", "discard-start") or
+                        (kind in ("turn-start", "play-phase-start", "air-phase-start", "during-victory", "discard-start") or
                          (stage == 1 and self.turn.plays_remaining < 1)))):
                     continue
                 if not source and delay == first_play and stage <= 1 and actor == owner:
@@ -605,8 +743,20 @@ class StatusForecast:
                         rows.append(((delay, kind, trigger.get("kind"), None), 1, net))
                         counted[key] += 1
                     continue
+                if key in repeating_look:
+                    if enabled and actor == owner:
+                        rows.append(((delay, kind, "deck-look", None), 1, self.deck_top(owner, 1)))
+                    continue
                 if delay >= self.economy.horizon:
                     continue
+                if key in regional and actor == owner and not counted[("regional", key)]:
+                    value = self.regional_award_value(owner, key, regional[key])
+                    if value:
+                        window = (delay, kind, "regional", None)
+                        if ability["activation_mode"] != "OPTIONAL":
+                            window += (source or card_id, key)
+                        rows.append((window, 1, value))
+                    counted[("regional", key)] += 1
                 if self.action_distance and actor == owner and enabled:
                     if kind == "before-rule-use" and counted["strategic"] == 0:
                         value = self.strategic_modifiers(owner, card_id, source)
@@ -633,7 +783,8 @@ class StatusForecast:
                         rows.append(((delay, "modifier", card_id), weight, value))
                     continue
                 for region, probability in self.signals(owner, actor, key, later):
-                    net = self.program(owner, actor, key, region, later=development)
+                    net = self.program(owner, actor, key, region, later=development,
+                                       excluded_steps=tuple(regional.get(key, ())))
                     if kind == "USE_STATUS":
                         net = max(0, net - self.baseline_play(owner))
                     if ability["activation_mode"] == "OPTIONAL":
