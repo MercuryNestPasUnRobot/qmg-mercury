@@ -5,7 +5,8 @@ from dataclasses import replace
 
 from .model import CoreError, TURN_ORDER, Token, TurnClock, GameState, zone
 from .engine import CommandProcessor
-from .definitions import RuleSet
+from .definitions import BATTLES, CONSTRUCTION, RuleSet
+from .content_effects import action_for
 from .rules import MapGraph, initial_abilities
 
 PUBLIC_ZONES = {"DISCARD", "STATUS", "DISABLED_STATUS", "RESERVE_ARMY", "RESERVE_NAVY", "RESERVE_AIR"}
@@ -132,6 +133,18 @@ def observation(processor, controlled_countries, *, include_history=True):
             decision.update(decision_id=s.decision.decision_id, decision_type=s.decision.decision_type,
                             legal_options=list(s.decision.legal_options), optional_flag=s.decision.optional_flag,
                             operation_type=s.decision.continuation["type"])
+            continuation = s.decision.continuation
+            action = continuation
+            if action["type"] == "CARD_EFFECT_SELECTED":
+                effect = action["effect"]
+                if effect["type"] in ("choose-space", "recruit", "build", "battle"):
+                    action = action_for(effect, s.decision.required_country)
+                elif effect["type"] == "choose-one":
+                    decision["effect_branches"] = {str(i): deepcopy(option["effects"])
+                        for i, option in enumerate(effect["options"]) if str(i) in s.decision.legal_options}
+            if action["type"] in BATTLES | CONSTRUCTION:
+                decision.update(map_force=action.get("force", s.decision.required_country),
+                                map_battle=action["type"] in BATTLES)
             if s.decision.continuation["type"] == "RESPONSE_SELECTED":
                 candidates = s.decision.continuation["candidates"]
                 decision["response_sources"] = {

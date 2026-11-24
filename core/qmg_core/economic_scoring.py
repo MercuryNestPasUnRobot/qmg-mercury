@@ -11,7 +11,7 @@ MILL_EFFECTS = {"discard-top", "discard-top-per-unit", "choose-country"}
 
 
 class EconomicForecast:
-    def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None):
+    def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None, map_weights=None):
         self.rules, self.settings = rules, settings
         self.scores, self.count, self.visible_state = scores, count, visible_state
         self.margin = rules.settings["victory_margin"]
@@ -27,6 +27,14 @@ class EconomicForecast:
         self.turn = turn
         self.penalty = max(0, -rules.settings.get("deck_exhaustion_vp", 0))
         self.status_weights = status_weights
+        self.map_weights = map_weights
+
+    @cached_property
+    def routes(self):
+        from .map_influence import ScoringRoutes
+        from .rules import board_units
+        state = self.visible_state()
+        return ScoringRoutes(self.rules, state, board_units(self.rules, state), self.map_weights)
 
     @cached_property
     def statuses(self):

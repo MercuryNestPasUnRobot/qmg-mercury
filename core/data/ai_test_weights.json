@@ -1,5 +1,5 @@
 {
-  "profile": "ai-test-v1.5-status-windows-uncalibrated",
+  "profile": "ai-test-v1.6-expansion-uncalibrated",
   "status_held_factor": 0.55,
   "economic_forecast": {
     "vp_pressure_bonus": 1.4,
@@ -8,7 +8,15 @@
     "future_shortfall_value": 0.6
   },
   "seat_forecast": true,
-  "distance_weights": [1, 0.65, 0.3, 0.1],
+  "distance_weights": [1.6, 1, 0.5, 0.1],
+  "frontier_scoring": {
+    "near_enemy": 1.4,
+    "held_forecast": 1.25,
+    "friendly_target": 0.35,
+    "battle_target": 0.7,
+    "paper_fraction": 0.45,
+    "paper_cap": 2
+  },
   "route_forecast": {
     "nearest_sites": 4,
     "distance_tail_decay": 0.7,
