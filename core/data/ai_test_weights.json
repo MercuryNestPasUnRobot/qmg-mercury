@@ -1,5 +1,6 @@
 {
-  "profile": "ai-test-v1.6-expansion-uncalibrated",
+  "profile": "ai-test-v1.7-basic-discard-cost-uncalibrated",
+  "basic_usage_cost": 1.2,
   "status_held_factor": 0.55,
   "economic_forecast": {
     "vp_pressure_bonus": 1.4,
@@ -15,7 +16,8 @@
     "friendly_target": 0.35,
     "battle_target": 0.7,
     "paper_fraction": 0.45,
-    "paper_cap": 2
+    "paper_cap": 2,
+    "build_friendly_neighbor": 0.75
   },
   "route_forecast": {
     "nearest_sites": 4,

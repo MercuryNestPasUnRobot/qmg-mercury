@@ -33,8 +33,12 @@
         <div id="region-detail" class="region-detail"></div>
       </section>
       <section class="table-panel" id="card-zones">
-        <header><h2>各国牌区</h2><p>点击状态牌查看牌文。裁判视角可翻看盖牌和当时 AI 的候选。</p></header>
+        <header><h2>各国牌区</h2><p>点击牌名可看牌文。开启裁判视角可看手牌、盖牌和 AI 候选。</p></header>
         <div id="seats" class="seats"></div>
+        <section id="pile-view" class="pile-view" aria-labelledby="pile-title" hidden>
+          <div class="pile-head"><h3 id="pile-title"></h3><button id="pile-close">收起</button></div>
+          <div id="pile-cards" class="cards"></div>
+        </section>
       </section>
     </div>
     <aside class="inspector" aria-label="当前步骤">

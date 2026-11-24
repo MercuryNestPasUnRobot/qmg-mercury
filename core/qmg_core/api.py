@@ -161,10 +161,11 @@ def observation(processor, controlled_countries, *, include_history=True):
                     s.decision.continuation["effect"]["type"] == "choose-country"):
                 decision["deck_discard_count"] = s.decision.continuation["effect"]["count"]
             if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
-                    s.decision.continuation["effect"]["type"] == "discard-hand" and
-                    s.stack[-1].source_card_id in visible and
-                    rules.cards.get(visible[s.stack[-1].source_card_id]["definition_id"], {}).get("type") == "STATUS"):
-                decision["status_hand_payment"] = True
+                    s.decision.continuation["effect"]["type"] == "discard-hand"):
+                decision["hand_discard"] = True
+                if (s.stack[-1].source_card_id in visible and
+                        rules.cards.get(visible[s.stack[-1].source_card_id]["definition_id"], {}).get("type") == "STATUS"):
+                    decision["status_hand_payment"] = True
     resolution = []
     for frame in s.stack:
         ability_id = frame.context.get("ability_token")
@@ -175,12 +176,14 @@ def observation(processor, controlled_countries, *, include_history=True):
             resolution.append({"source": source, "country": frame.actor_country})
     reallocation = _reallocation_view(rules, s, controlled, visible)
     spent = _public_spent_statuses(processor, s, controlled)
+    basic_use = processor.basic_card_use(controlled)
     return {"game_id": s.game_id, "ruleset_version": rules.version, "version": s.version,
             "tokens": visible, "positions": positions, "turn": deepcopy(s.turn.__dict__),
             "scores": dict(s.scores), "winner": s.winner, "decision": decision,
             "resolution_depth": len(s.stack), "resolution": resolution, "history": history,
             **({"reallocation": reallocation} if reallocation is not None else {}),
             **({"public_status_uses": spent} if spent else {}),
+            **({"basic_card_use": basic_use} if basic_use else {}),
             **({"turn_start": deepcopy(s.turn_start)} if s.turn_start else {})}
 
 

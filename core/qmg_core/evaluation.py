@@ -39,6 +39,7 @@ class ScoreEvaluator:
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
                    *weights["resource_penalties"].values(), weights["time_discount"], weights["saturation"],
                    weights["expansion_weight"], weights["threat_weight"], weights["unusable_card_weight"]]
+        numbers.append(weights.get("basic_usage_cost", 0))
         if type(weights.get("seat_forecast", False)) is not bool:
             raise CoreError("Invalid seat forecast setting")
         if "effect_value_weights" in weights:
@@ -63,8 +64,9 @@ class ScoreEvaluator:
         self.map_weights = None
         if "frontier_scoring" in weights:
             frontier = weights["frontier_scoring"]
-            if (not isinstance(frontier, dict) or set(frontier) != {"near_enemy", "held_forecast", "friendly_target",
-                    "battle_target", "paper_fraction", "paper_cap"} or "route_forecast" not in weights
+            required = {"near_enemy", "held_forecast", "friendly_target", "battle_target", "paper_fraction", "paper_cap"}
+            if (not isinstance(frontier, dict) or not required <= frontier.keys() or
+                    frontier.keys() - required - {"build_friendly_neighbor"} or "route_forecast" not in weights
                     or "economic_forecast" not in weights):
                 raise CoreError("Invalid frontier scoring settings")
             numbers.extend(frontier.values())
@@ -80,7 +82,8 @@ class ScoreEvaluator:
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
             raise CoreError("Invalid planning horizon or saturation")
         if self.map_weights and (frontier["near_enemy"] < route["enemy_unit"] or
-                                 frontier["friendly_target"] > 1 or frontier["held_forecast"] < 1):
+                                 frontier["friendly_target"] > 1 or frontier["held_forecast"] < 1 or
+                                 not 0 < frontier.get("build_friendly_neighbor", 1) <= 1):
             raise CoreError("Invalid frontier influence weights")
         if "hand_retention" in weights and not 0 < retention["slot_cost"] < retention["basic_floor"]:
             raise CoreError("Basic reserve must exceed the hand slot cost")
@@ -167,6 +170,12 @@ class ScoreEvaluator:
     def hand_slot_cost(self):
         return self.weights.get("hand_retention", {}).get("slot_cost", 0.0)
 
+    def basic_discard_cost(self, view, seat, card):
+        kind = card.get("legacy_kind")
+        use = view.get("basic_card_use", {}).get(seat, {}).get(kind)
+        weight = self.weights.get("basic_usage_cost", 0)
+        return weight * use["played"] / use["total"] if use else 0.0
+
     def retention(self, view, country):
         from .air import air_options
         from .content_effects import condition_met
@@ -199,7 +208,8 @@ class ScoreEvaluator:
                         raw += 0.20
             return raw
 
-        return score_retention(rules, state, country, self.weights["hand_retention"], short_term)
+        return score_retention(rules, state, country, self.weights["hand_retention"], short_term,
+                               lambda card: self.basic_discard_cost(view, country, card))
 
     def target_proximity(self, view, country, regions):
         if "route_forecast" not in self.weights:
@@ -231,6 +241,7 @@ class ScoreEvaluator:
             for seat in TURN_ORDER:
                 supplied_for_seat = set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
                 seat_rates[seat] = ScoreResolver(rules).sites(s, seat, pieces=pieces, supplied=supplied_for_seat)
+        held_sites = {site for rates in seat_rates.values() for site in rates}
         point_values, influences, map_value = [], [], 0.0
         for site_id, site in rules.sites.items():
             if site.get("dynamic"):
@@ -240,6 +251,11 @@ class ScoreEvaluator:
                 regions = [site["region"]]
             if not regions:
                 continue
+            controllers = [t for t in pieces if t.position_id in regions
+                           and rules.force_controllers[t.owner_country] in site["countries"] and
+                           rules.units[t.definition_id]["kind"] != "AIR" and
+                           (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
+            held = site_id in held_sites if w.get("seat_forecast") else bool(controllers)
             friendly, hostile = 0.0, 0.0
             for t in pieces:
                 route_factor = 1.0
@@ -261,6 +277,8 @@ class ScoreEvaluator:
                     reserve += 1
                 resource = 1.0 if distance == 0 else (1.0 if reserve else w["supply_weights"]["no_reserve_expansion"])
                 strength = w["military_weights"][kind] * distance_weight * route_factor * supply_weight * resource
+                if routes and not held and distance <= 2:
+                    strength *= routes.construction_factor(t.owner_country, t.position_id, already_present=True)
                 influences.append({"token": t.token_id, "site": site_id, "distance": distance,
                                    "score_influence": strength, "military_influence": strength,
                                    "supply_weight": supply_weight, "route_factor": route_factor})
@@ -269,10 +287,6 @@ class ScoreEvaluator:
                 else:
                     hostile += strength
             advantage = max(-1.0, min(1.0, (friendly - hostile) / w["saturation"]))
-            controllers = [t for t in pieces if t.position_id in regions
-                           and rules.force_controllers[t.owner_country] in site["countries"] and
-                           rules.units[t.definition_id]["kind"] != "AIR" and
-                           (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
             control = sign(controllers[0].owner_country) if controllers else 0
             relevant = {rules.force_controllers[t.owner_country] for t in controllers} if controllers else set(site["countries"])
             remaining = 0
@@ -444,7 +458,8 @@ class OneStepPlanner:
         def hand_value(card):
             return self.evaluator.hand_value(rules, state, country, card, legal, economy)
 
-        plans = payment_plans(rules, view, country, lambda card: -hand_value(card))
+        plans = payment_plans(rules, view, country, lambda card: -hand_value(card) -
+                              self.evaluator.basic_discard_cost(view, country, card))
         plan = max(plans, key=lambda p: price(p, hand_value(rules.cards[p["definition"]]))["total"], default=None)
         if plan is None:
             raise SimulationIncomplete("No exchange plan from the seat's visible inventory")
@@ -486,7 +501,7 @@ class OneStepPlanner:
                 "actual_vp_delta": after.actual_vp - before.actual_vp,
                 "map_delta": after.map_value - before.map_value,
                 "card_delta": after.card_value - before.card_value + plan["discard_score"] + initial,
-                "resource_delta": after.resource_adjustment - before.resource_adjustment + plan["deck_score"],
+                "resource_delta": after.resource_adjustment - before.resource_adjustment,
                 "q": plan["total"], "terminal_rank": 0,
                 "continuations": [], "choice_signatures": [], "reallocation": plan}
 

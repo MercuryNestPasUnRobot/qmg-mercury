@@ -1,6 +1,8 @@
 """One serial executor shared by human clients and AI. No callbacks execute data."""
 from copy import deepcopy
+from collections import Counter
 from dataclasses import replace
+from functools import cached_property
 
 from .model import CoreError, DecisionRequest, ResolutionFrame, TURN_ORDER, digest, zone
 from .rules import LegalActionGenerator, SupplyResolver, board_units, initialize, status_enabled, validate_state
@@ -200,12 +202,41 @@ class CommandProcessor:
         self.logger, self.record_head = logger, record_head
         self.checkpoint_path = checkpoint_path
         self.records = []
+        self._basic_record_cursor = 0
+        self._played_basics = set()
+        self._basic_play_counts = Counter()
         self._first_commit = True
         self.executor, self.legal = OperationExecutor(rules), LegalActionGenerator(rules)
 
     @property
     def state(self):
         return deepcopy(self._state)
+
+    @cached_property
+    def _basic_inventory(self):
+        from .content_actions import BASIC_KINDS
+
+        return {token["token_id"]: (token["owner_country"], kind)
+                for token in self.rules.data["initial_tokens"] if token["token_type"] == "CARD"
+                and (kind := self.rules.cards[token["definition_id"]].get("legacy_kind")) in BASIC_KINDS}
+
+    @cached_property
+    def _basic_totals(self):
+        return Counter(self._basic_inventory.values())
+
+    def basic_card_use(self, controlled):
+        if not controlled or not self._basic_inventory:
+            return {}
+        for record in self.records[self._basic_record_cursor:]:
+            key = record["source"]
+            if (record["operation_type"] == "PLAY_CARD" and record["outcome"]["success"]
+                    and key in self._basic_inventory and key not in self._played_basics):
+                self._played_basics.add(key)
+                self._basic_play_counts[self._basic_inventory[key]] += 1
+        self._basic_record_cursor = len(self.records)
+        return {seat: {kind: {"played": self._basic_play_counts[seat, kind], "total": total}
+                       for (owner, kind), total in self._basic_totals.items() if owner == seat}
+                for seat in sorted(controlled)}
 
     @classmethod
     def create(cls, rules, seed=1, game_id="fixture-game", logger=None, checkpoint_path=None):

@@ -687,6 +687,48 @@ small {
   margin: 5px 0;
 }
 
+.pile-controls,.pile-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pile-controls {
+  flex-wrap: wrap;
+  margin: 5px 0 8px;
+}
+
+.pile-controls button {
+  padding: 3px 5px;
+  font-size: .76em;
+}
+
+.pile-controls button[aria-pressed="true"] {
+  outline: 1px solid currentColor;
+}
+
+.pile-view {
+  margin: 0 12px 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.pile-head {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.pile-head h3 {
+  margin: 0;
+  font-size: .9em;
+}
+
+.pile-view .cards {
+  max-height: 14rem;
+  overflow: auto;
+}
+
 .cards {
   display: flex;
   gap: 4px;

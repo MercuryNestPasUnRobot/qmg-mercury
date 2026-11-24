@@ -1,16 +1,7 @@
-"""Price the exchange using visible payments and the seat's aggregate basic-card stock."""
-from math import log1p
+"""Price the exchange using visible payments and eligible basic cards."""
 
 from .content_actions import BASIC_KINDS
 from .model import zone
-
-
-def stock_value(deck, source, kind):
-    land = sum(deck.get(k, 0) for k in ("build-army", "land-battle"))
-    navy = sum(deck.get(k, 0) for k in ("build-navy", "sea-battle"))
-    count = land if kind in ("build-army", "land-battle") else navy
-    marginal = 0.6 * (log1p(max(0, count - 1)) - log1p(count)) if source == "deck" else 0.0
-    return {"land_remaining": land, "naval_remaining": navy, "deck_score": marginal}
 
 
 def acquisitions(rules, view, seat, *, include_payment=False):
@@ -53,13 +44,12 @@ def payment_plans(rules, view, seat, discard_value):
         others = [key for key in cheap if key not in fixed][:cost - len(fixed)]
         payment = sorted(fixed | set(others), key=lambda key: (-fees[key], key))
         yield {"source": source, "definition": definition, "target": target, "kind": kind,
-               "payment": payment, "discard_score": sum(fees[key] for key in payment),
-               **stock_value(info["deck"], source, kind)}
+               "payment": payment, "discard_score": sum(fees[key] for key in payment)}
 
 
 def price(plan, play_score):
     return {**plan, "play_score": play_score,
-            "total": play_score + plan["discard_score"] + plan["deck_score"]}
+            "total": play_score + plan["discard_score"]}
 
 
 def planned_options(rules, info, plan):
