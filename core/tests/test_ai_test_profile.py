@@ -28,7 +28,8 @@ def test_forecast_uses_seat_opportunities_and_never_rescores_this_victory(data, 
     held = scorer.evaluate(client, "germany").score_points[0]
     assert [(r["seat"], r["delay"], r["vp"]) for r in held["opportunities"]] == [
         ("germany", 0, 1), ("italy", 4, 1)]
-    assert held["baseline_vp"] == pytest.approx(1 + profile["time_discount"] ** 4)
+    assert held["baseline_vp"] == held["fixed_score"] == 2
+    assert held["long_term_score"] == 0
     for _ in range(2):
         client.submit(next(c for c in client.legal_commands() if c["type"] == "END_PHASE"))
     value = scorer.evaluate(client, "germany")
@@ -48,7 +49,7 @@ def test_potential_counts_repeated_effects_but_only_one_exclusive_branch(data, p
     source["effects"].append(repeat)
     q = make(data)
     after = ScoreEvaluator(q.rules, profile).evaluate(CoreAPI(q, ("germany",)), "germany")
-    assert after.card_value - before.card_value == pytest.approx(4 * profile["effect_value_weights"]["points"])
+    assert after.card_value - before.card_value == pytest.approx(4 * profile["scoring_units"]["vp"])
     assert after.actual_vp == before.actual_vp == 0
 
 

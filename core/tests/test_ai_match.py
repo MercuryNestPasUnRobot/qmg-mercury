@@ -114,7 +114,8 @@ def test_search_projection_settles_through_core_without_journal_work(data):
 
 
 def test_search_rebinds_same_choice_window_and_uses_a_when_it_changes(data):
-    data["settings"]["victory_margin"] = 0
+    # Only this chain can win, after the pending choice that the test exercises.
+    data["settings"]["victory_margin"] = 101
     card(data, "g-chain")["effects"].append({"type": "GAIN_VP", "amount": 100})
     engine = make(data)
     client = CoreAPI(engine, ("germany",))

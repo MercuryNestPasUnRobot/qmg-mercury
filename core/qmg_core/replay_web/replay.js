@@ -514,8 +514,10 @@ async function mount(data) {
       const li = node("li", undefined, picked(c.command) ? "picked" : "");
       li.append(node("strong", commandLabel(c.command, false) + (picked(c.command) ? " ✓" : "")));
       if (c.complete) {
+        const vp = "实得 " + signed(c.actual_vp_delta) + " VP" +
+          (c.vp_score_delta != null && c.vp_score_delta !== c.actual_vp_delta ? "（折 " + signed(c.vp_score_delta) + " 分）" : "");
         li.append(node("small", "总分 " + signed(c.q) + (c.terminal_rank === 2 ? " · 获胜" : c.terminal_rank === -2 ? " · 落败" : "")),
-          node("small", ["实得 " + signed(c.actual_vp_delta), "地图 " + signed(c.map_delta),
+          node("small", [vp, "地图 " + signed(c.map_delta),
             "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
       } else {
         li.append(node("small", shortReason(c.reason)));

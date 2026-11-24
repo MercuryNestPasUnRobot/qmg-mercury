@@ -8,11 +8,10 @@ from uuid import uuid4
 import json
 
 from .api import CoreAPI
-from .ai_match_policy import CandidateView, RulePolicy, paper_play_choices
+from .ai_match_policy import DeadlineSearch, SeatPolicy
 from .catalog import ContentCatalog
 from .engine import CommandProcessor
-from .evaluation import OneStepPlanner, SimulationIncomplete, acceptable_play
-from .hand_retention import is_hand_choice
+from .evaluation import ScoreEvaluator
 from .model import CoreError, TURN_ORDER, zone
 from .persistence import OperationLogger, SaveRepository
 
@@ -53,60 +52,31 @@ class Workbench:
                 rules, game_id=str(uuid4()), logger=OperationLogger(journal), checkpoint_path=checkpoint
             )
         self.human = CoreAPI(self.processor, SEAT)
-        self.planner = OneStepPlanner(rules, weights)
-        self.rule_policy = RulePolicy(rules, self.planner.evaluator)
-        self.ai_choices = []
+        evaluator = ScoreEvaluator(rules, weights)
+        self.search = DeadlineSearch(rules, weights)
+        self.policies = {seat: SeatPolicy(rules, search=self.search, evaluator=evaluator) for seat in TURN_ORDER}
+
+    def close(self):
+        self.search.close()
 
     def act(self, fields):
-        view = self.human.observe()
+        view = self.human.observe(include_history=False)
         if int(fields["version"]) != view["version"]:
             raise CoreError("页面已更新，请从当前局面重新选择。")
         if fields["action"] == "ai":
             actor = view["decision"]["required_country"] if view["decision"] else TURN_ORDER[view["turn"]["country_index"]]
             client = CoreAPI(self.processor, (actor,))
-            available = client.legal_commands()
-            if not available:
-                raise CoreError("当前没有可执行的指令。")
-            actor_view = client.observe(include_history=False)
-            mandatory = bool(actor_view["turn"]["phase"] == "Play" and
-                             self.processor.rules.settings.get("mandatory_turn_play"))
-            forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in available)
-            if (self.planner.evaluator.hand_slot_cost and
-                    is_hand_choice(actor_view, actor, forced_play_discard=forced_play_discard)):
-                self.ai_choices = []
-                command = self.rule_policy.rank(actor_view, available)[0]["command"]
-            elif view["decision"]:
-                expected = next((c for c in self.ai_choices if c["actor"] == actor and c["expected_version"] == view["version"]), None)
-                planned = next((c for c in available if expected and c["type"] == "CHOOSE" and
-                                c["option"] == expected.get("option")), None)
-                self.ai_choices = [c for c in self.ai_choices if c["expected_version"] > view["version"]] if planned else []
-                if planned:
-                    command = planned
-                elif mandatory or actor_view.get("reallocation"):
-                    command = self.rule_policy.rank(actor_view, available)[0]["command"]
-                else:
-                    command = self.planner.choose(client, actor)
-            else:
-                rules_ranked = self.rule_policy.rank(actor_view, available) if mandatory else []
-                preferred = paper_play_choices(rules_ranked, mandatory)
-                candidates = CandidateView(actor_view, [row["command"] for row in preferred]) if mandatory else client
-                ranked = self.planner.rank(candidates, actor)
-                best = next((row for row in ranked if acceptable_play(row, mandatory=mandatory)), None)
-                if best is None:
-                    if not preferred:
-                        raise SimulationIncomplete("当前预算内没有完成模拟的行动。")
-                    command, self.ai_choices = preferred[0]["command"], []
-                else:
-                    command = best["command"]
-                    self.ai_choices = [choice for choice in best["continuations"] if choice["actor"] == actor]
-            client.submit(command)
+            command, _ = self.policies[actor].decide(client, actor)
+            client.apply(command)
         elif fields["action"] == "human":
             commands = self.human.legal_commands()
             index = int(fields["choice"])
             if not 0 <= index < len(commands):
                 raise CoreError("当前视角没有此选项。")
-            self.ai_choices = []
-            self.human.submit(commands[index])
+            for policy in self.policies.values():
+                policy.plan.clear()
+                policy.exchange = None
+            self.human.apply(commands[index])
         else:
             raise CoreError("未知操作。")
 
@@ -300,18 +270,16 @@ def main():
         parser.error("Keep the rules catalog outside the match save directory")
     rules = (ContentCatalog.load(args.catalog) if args.catalog else
              ContentCatalog.cached(DATA / "architecture_fixture.json", CATALOG_CACHE))
-    weights = json.loads((DATA / "evaluation_weights.json").read_text(encoding="utf-8"))
-    ai_weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
-    for key in ("hand_retention", "basic_usage_cost", "distance_weights", "route_forecast", "frontier_scoring",
-                "mirrored_attacks", "seat_forecast", "construction_search_width",
-                "economic_forecast", "effect_value_weights", "status_held_factor"):
-        weights[key] = ai_weights[key]
-    with make_server(Workbench(args.save_dir, rules, weights), args.port) as server:
-        print(f"Mercury Core: http://127.0.0.1:{server.server_port}", flush=True)
-        try:
+    weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
+    bench = Workbench(args.save_dir, rules, weights)
+    try:
+        with make_server(bench, args.port) as server:
+            print(f"Mercury Core: http://127.0.0.1:{server.server_port}", flush=True)
             server.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bench.close()
 
 
 if __name__ == "__main__":

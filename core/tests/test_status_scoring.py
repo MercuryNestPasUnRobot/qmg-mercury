@@ -46,7 +46,7 @@ def test_deployment_counts_only_windows_after_placement(data):
     row = next(r for r in policy.rank(client.observe(), client.legal_commands())
                if r["command"].get("card") == "g-status")
     assert row["status_forecast"] == initial
-    assert row["rule_score"] == pytest.approx(1.8 - .55)
+    assert row["rule_score"] == pytest.approx(1.8 - 1)
 
     scoring_status(data, phase="turn-start")
     forecast = view_forecast(make(data))

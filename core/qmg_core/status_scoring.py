@@ -146,7 +146,8 @@ class StatusForecast:
         return SupplyResolver(self.rules).supplied(self.state, force, units=self.units)
 
     def location_value(self, region, battle=False, *, force=None):
-        value = (0.85 if battle else 1.1) + 0.65 * self.sites[region]
+        units = self.economy.units
+        value = units.action_score(0.425 if battle else 0.55) + units.vp_score(0.65 * self.sites[region])
         if force and self.economy.map_weights:
             value += self.economy.routes.paper_bonus(force, region, battle=battle)
         return value
@@ -196,7 +197,7 @@ class StatusForecast:
 
     def baseline_play(self, owner):
         # Opportunity cost of spending the regular play; the fallback is one forced discard.
-        best = -0.45
+        best = self.economy.units.card_score(-0.45)
         for card in self.hand(owner):
             kind = card.get("legacy_kind")
             for unit, (build, battle) in BASIC.items():
@@ -206,7 +207,7 @@ class StatusForecast:
                     best = max([best] + [self.location_value(p, True, force=owner) for p in self.targets(owner, owner, unit, "battle")
                                           if self.enemies(owner, p, unit)])
             if kind and kind not in ("status", "response", "bolster", "air-power") and kind not in BASIC_KINDS:
-                best = max(best, 0.75)
+                best = max(best, self.economy.units.action_score(0.375))
         return best
 
     def signals(self, owner, actor, key, later):
@@ -305,7 +306,7 @@ class StatusForecast:
                     f = effect.get("filter", {"force": "team", "kind": "army", "spaces": effect.get("spaces", ())})
                     potential = self.possibility(owner, f["force"], f["kind"], tuple(f.get("spaces", ())), later)
                     value = value * 0.95 ** min(4, later) + effect["amountPer"] * potential
-                net += value if self.rules.team(recipient) == self.rules.team(owner) else -value
+                net += self.economy.units.vp_score(value if self.rules.team(recipient) == self.rules.team(owner) else -value)
             elif kind == "discard-top":
                 target = actor if effect["target"] == "battle-attacker" else effect["target"]
                 target = owner if target == "self" else target
@@ -324,7 +325,7 @@ class StatusForecast:
             elif kind in ("choose-space", "battle", "recruit", "build-at-battle-space"):
                 net += self.military_effect(owner, effect, region, trigger, committed)
             elif kind == "prevent-removal":
-                net += self.location_value(region) if region else 1.1
+                net += self.location_value(region) if region else self.economy.units.action_score(0.55)
             elif kind == "discard-hand":
                 n = effect["count"]
                 hand = self.hand(owner)
@@ -334,9 +335,10 @@ class StatusForecast:
                     eligible = len(hand)
                 if eligible < n:
                     return 0
-                net -= n * (0.8 if effect.get("kinds") else 0.55)
+                units = self.economy.units
+                net -= units.card_score(n if units.enabled else n * (0.8 if effect.get("kinds") else 0.55))
             elif kind == "request-hand-discard":
-                net += 0.55 * min(self.economy.count(effect["target"], "HAND"), effect["min"])
+                net += self.economy.units.card_score(0.55 * min(self.economy.count(effect["target"], "HAND"), effect["min"]))
             elif kind == "play-from-zone":
                 if not any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind") in effect["kinds"]
                            for k in self.state.positions[zone(owner, effect["zone"].upper())]) and not any(
@@ -344,7 +346,7 @@ class StatusForecast:
                     return 0
                 net += max((self.location_value(p, force=owner) for p in self.targets(owner, owner, "army", "build")), default=0)
             elif kind == "return-declared-army-card":
-                net += 0.8 if self.targets(owner, owner, "army", "build") else 0.3
+                net += self.economy.units.card_score(0.8 if self.targets(owner, owner, "army", "build") else 0.3)
             elif kind == "put-hand-on-deck-bottom":
                 net += 0.28 * min(effect["max"], len(self.hand(owner)), self.economy.count(owner, "DECK"))
             elif kind == "order-deck-top":
@@ -413,11 +415,12 @@ class StatusForecast:
             kind = m["kind"]
             if kind == "reallocate_cost" and actor == owner:
                 if len(self.hand(owner)) >= m["count"] and self.economy.count(owner, "DECK"):
-                    value += 0.35 * 0.55 * max(0, 3 - m["count"])
+                    units = self.economy.units
+                    value += units.card_score(0.35 * (1 if units.enabled else 0.55) * max(0, 3 - m["count"]))
             elif kind == "reallocate_discard" and actor == owner:
                 if any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind")
                        in BASIC_KINDS for k in self.state.positions[zone(owner, "DISCARD")]):
-                    value += 0.35 * (0.55 + 0.35 / (1 + self.economy.count(owner, "DECK")))
+                    value += self.economy.units.card_score(0.35 * (0.55 + 0.35 / (1 + self.economy.count(owner, "DECK"))))
             elif kind == "economic_adjustment":
                 if m["role"] == "actor" and actor == owner:
                     loss = max(self.economy.mill(owner, s, m["amount"], 0.75) for s in TURN_ORDER

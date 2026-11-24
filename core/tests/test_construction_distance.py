@@ -41,7 +41,7 @@ def test_rule_policy_and_search_build_directly_on_empty_surrounded_site(data):
     evaluator = ScoreEvaluator(engine.rules, weights)
     routes = evaluator.economic_from_view(view).routes
     assert routes.construction_factors("germany", "C") == {}
-    assert routes.target_value("germany", "C", construction=True) == routes.target_value("germany", "C") + 3
+    assert routes.target_value("germany", "C", construction=True) == routes.target_value("germany", "C") + 4
 
     card = next(c for c in client.legal_commands() if c.get("card") == "g-build")
     row, = OneStepPlanner(engine.rules, weights).rank(CandidateView(view, [card]), "germany")

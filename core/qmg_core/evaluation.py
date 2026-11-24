@@ -18,6 +18,7 @@ from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
 from .status_scoring import is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
+from .score_units import ScoreUnits, VALUED_ACTIONS, equivalent_action
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class ScoreEvaluator:
     def __init__(self, rules, weights):
         self.rules = RuleSet({**rules.data, "initial_tokens": []}, projected=True)
         self.weights = deepcopy(weights)
+        self.units = ScoreUnits.from_weights(weights)
+        self.seat_forecast = self.units.enabled or weights.get("seat_forecast", False)
         numbers = [*weights["distance_weights"], *weights["supply_weights"].values(),
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
                    *weights["resource_penalties"].values(), weights["time_discount"], weights["saturation"],
@@ -133,7 +136,8 @@ class ScoreEvaluator:
 
         return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
                                 lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
-                                visible_state, view["winner"], status_weights=self.status_weights, map_weights=self.map_weights)
+                                visible_state, view["winner"], status_weights=self.status_weights, map_weights=self.map_weights,
+                                units=self.units)
 
     def economic_from_state(self, rules, state):
         settings = self.weights.get("economic_forecast")
@@ -141,45 +145,58 @@ class ScoreEvaluator:
             return None
         return EconomicForecast(rules, settings, vars(state.turn), state.scores,
                                 lambda seat, kind: len(state.positions[zone(seat, kind)]),
-                                lambda: state, state.winner, status_weights=self.status_weights, map_weights=self.map_weights)
+                                lambda: state, state.winner, status_weights=self.status_weights, map_weights=self.map_weights,
+                                units=self.units)
 
-    def hand_value(self, rules, state, country, card, legal, economy=None):
+    def hand_value(self, rules, state, country, card, legal, economy=None, *, include_card=True):
         w = self.weights
         weights = w["card_value_weights"]
+        card_stock = self.units.card if self.units.enabled and include_card else 0
         if card.get("simulation_unknown"):
-            return weights["unknown"]
+            return card_stock + weights["unknown"]
         if economy and economy.status_weights and is_status(card):
-            return (economy.statuses.report(country, card["id"], held=True)["future"] +
+            return (card_stock + economy.statuses.report(country, card["id"], held=True)["future"] +
                     self.program_value(rules, state, country, card["effects"], economy))
         deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
         copies = sum(rules.abilities[a].get("copies", 1) for a in card.get("abilities", [])) if deployable else 0
-        value = copies * weights["ability_ready"] + self.program_value(rules, state, country, card["effects"], economy)
-        return max(0.0, value) * (1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
+        value = self.units.action_score(copies * weights["ability_ready"] / 2) + self.program_value(
+            rules, state, country, card["effects"], economy)
+        return card_stock + max(0.0, value) * (
+            1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
 
     def program_value(self, rules, state, country, steps, economy=None):
         w, value = self.weights, 0.0
+        card_weights = w["card_value_weights"]
         for instruction in steps:
             operation = instruction.get("operation", instruction)
-            multiplier = operation.get("amount", 1) if operation["type"] == "GAIN_VP" else operation.get("count", 1)
-            if operation["type"] == "GAIN_VP" and economy:
+            kind = operation["type"]
+            multiplier = operation.get("amount", 1) if kind == "GAIN_VP" else operation.get("count", 1)
+            if kind == "GAIN_VP" and (economy or self.units.enabled):
                 recipient = operation.get("score_country") or country
                 delta = multiplier if rules.team(recipient) == rules.team(country) else -multiplier
-                value += economy.points(country, delta, w["card_value_weights"]["GAIN_VP"])
-            elif operation["type"] == "CARD_EFFECT" and "effect_value_weights" in w:
-                value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"], economy)
+                value += (economy.points(country, delta, card_weights["GAIN_VP"]) if economy else self.units.vp_score(delta))
+            elif kind == "CARD_EFFECT" and "effect_value_weights" in w:
+                value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"], economy,
+                                          units=self.units, native_weights=card_weights)
+            elif kind == "DRAW" and self.units.enabled:
+                value += self.units.card_score(multiplier)
             else:
-                weights = w["card_value_weights"]
-                value += weights.get(operation["type"], weights.get(instruction["type"], 0)) * multiplier
+                estimate = card_weights.get(kind, card_weights.get(instruction["type"], 0)) * multiplier
+                value += self.units.action_score(estimate / 2) if kind in VALUED_ACTIONS else estimate
         return value
 
     @property
     def hand_slot_cost(self):
-        return self.weights.get("hand_retention", {}).get("slot_cost", 0.0)
+        return self.units.card_score(self.weights.get("hand_retention", {}).get("slot_cost", 0.0))
+
+    @property
+    def card_play_cost(self):
+        return self.units.card if self.units.enabled else self.hand_slot_cost
 
     def basic_discard_cost(self, view, seat, card):
         kind = card.get("legacy_kind")
         use = view.get("basic_card_use", {}).get(seat, {}).get(kind)
-        weight = self.weights.get("basic_usage_cost", 0)
+        weight = self.units.card_score(self.weights.get("basic_usage_cost", 0))
         return weight * use["played"] / use["total"] if use else 0.0
 
     def retention(self, view, country):
@@ -200,8 +217,8 @@ class ScoreEvaluator:
                 actions = ("deploy", "marshal", "superiority")
                 useful = any(air_options(rules, state, country, {"force": force, "actions": actions})
                              for force in rules.controlled_forces(country))
-                return 0.65 if useful else 0.20
-            raw = self.hand_value(rules, state, country, card, legal, economy)
+                return self.units.action_score(0.325 if useful else 0.10)
+            raw = self.hand_value(rules, state, country, card, legal, economy, include_card=False)
             if self.status_weights and is_status(card):
                 return raw
             if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
@@ -214,7 +231,8 @@ class ScoreEvaluator:
                         raw += 0.20
             return raw
 
-        return score_retention(rules, state, country, self.weights["hand_retention"], short_term,
+        retention = {key: self.units.card_score(v) for key, v in self.weights["hand_retention"].items()}
+        return score_retention(rules, state, country, retention, short_term,
                                lambda card: self.basic_discard_cost(view, country, card))
 
     def target_proximity(self, view, country, regions):
@@ -242,7 +260,7 @@ class ScoreEvaluator:
             distances_by_unit = {t.token_id: MapGraph(rules).distances(t.position_id, s, t.owner_country) for t in pieces}
         opportunities = ()
         seat_rates = {}
-        if w.get("seat_forecast"):
+        if self.seat_forecast:
             opportunities = scoring_opportunities(rules, s.turn)
             supply_cache = {seat: set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
                             for seat in TURN_ORDER}
@@ -264,7 +282,7 @@ class ScoreEvaluator:
                 and rules.force_controllers[t.owner_country] in site["countries"] and
                 rules.units[t.definition_id]["kind"] != "AIR" and
                 (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
-        held_sites = ({site for rates in seat_rates.values() for site in rates} if w.get("seat_forecast") else
+        held_sites = ({site for rates in seat_rates.values() for site in rates} if self.seat_forecast else
                       {site for site, units in controlling_units.items() if units})
         crowding = {t.token_id: routes.construction_factors(
             t.owner_country, t.position_id, already_present=True, ignored_sites=held_sites) for t in pieces} if routes else {}
@@ -316,13 +334,14 @@ class ScoreEvaluator:
             baseline = site["vp"] * sum(w["time_discount"] ** i for i in range(remaining))
             expansion = advantage if not control else 0
             threat = max(0.0, -advantage) if control > 0 else -max(0.0, advantage) if control < 0 else 0.0
-            value = baseline * (control + w["expansion_weight"] * expansion - w["threat_weight"] * threat)
+            value = self.units.vp_score(baseline) * (
+                control + w["expansion_weight"] * expansion - w["threat_weight"] * threat)
             if control:
                 value *= w.get("frontier_scoring", {}).get("held_forecast", 1)
             diagnostic = {"site": site_id, "baseline_vp": baseline, "control": control,
                           "friendly": friendly, "hostile": hostile, "advantage": advantage, "value": value}
-            if w.get("seat_forecast"):
-                diagnostic.update(forecast_site(site, site_id, seat_rates, opportunities, sign, advantage, w))
+            if self.seat_forecast:
+                diagnostic.update(forecast_site(site, site_id, seat_rates, opportunities, sign, advantage, w, self.units))
                 value = diagnostic["value"]
             point_values.append(diagnostic)
             map_value += value
@@ -341,7 +360,7 @@ class ScoreEvaluator:
                     source = s.tokens.get(t.source_token_id)
                     if self.status_weights and source and is_status(rules.cards.get(source.definition_id, {})):
                         continue
-                    cards += sign(c) * card_weights["ability_ready"]
+                    cards += sign(c) * self.units.action_score(card_weights["ability_ready"] / 2)
             if self.status_weights and (s.positions[zone(c, "STATUS")] or s.positions.get(zone(c, "DISABLED_STATUS"))):
                 cards += sign(c) * sum(economy.statuses.portfolio(c, True).values())
             if economy:
@@ -349,7 +368,8 @@ class ScoreEvaluator:
             elif not s.positions[zone(c, "DECK")]:
                 resources -= sign(c) * w["resource_penalties"]["empty_deck"]
         terminal = 2 if s.winner == team else -2 if s.winner == enemy else 0
-        return PositionValue(float(actual), map_value, cards, resources, actual + map_value + cards + resources,
+        return PositionValue(float(actual), map_value, cards, resources,
+                             self.units.vp_score(actual) + map_value + cards + resources,
                              terminal, tuple(point_values), tuple(influences))
 
     def supply_marginal(self, client, country, token_id):
@@ -369,14 +389,20 @@ def scoring_opportunities(rules, turn):
     return tuple((index - current, TURN_ORDER[index % len(TURN_ORDER)]) for index in range(first, end))
 
 
-def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights):
-    """Discount when each scoring opportunity occurs, including gaps between seats."""
+def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights, units=ScoreUnits()):
+    """Separate the initial scoring window from discounted later opportunities."""
     horizon = weights["horizon"]
     discount = weights["time_discount"]
     held = any(site_id in values for values in rates.values())
+    fixed_schedule = []
+    fixed = 0.0
     if held:
-        schedule = [(delay, seat, rates[seat][site_id]) for delay, seat in opportunities if site_id in rates[seat]][:horizon]
-        baseline = sum(vp * discount ** delay for delay, _, vp in schedule)
+        candidates = [(delay, seat, rates[seat][site_id]) for delay, seat in opportunities if site_id in rates[seat]]
+        fixed_end = units.capture_rounds * len(TURN_ORDER)
+        fixed_schedule = [entry for entry in candidates if entry[0] < fixed_end]
+        schedule = [entry for entry in candidates if entry[0] >= fixed_end][:horizon]
+        baseline = sum(vp for _, _, vp in fixed_schedule) + sum(vp * discount ** delay for delay, _, vp in schedule)
+        fixed = units.vp_score(sum(vp * sign(seat) for _, seat, vp in fixed_schedule))
         value = sum(vp * discount ** delay * sign(seat) *
                     (1 - weights["threat_weight"] * max(0, -sign(seat) * advantage)) for delay, seat, vp in schedule)
         value *= weights.get("frontier_scoring", {}).get("held_forecast", 1)
@@ -387,13 +413,18 @@ def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights)
         schedule = [(delay, seat, site["vp"]) for delay, seat in opportunities if seat == eligible][:horizon]
         baseline = sum(vp * discount ** delay for delay, _, vp in schedule)
         value = baseline * weights["expansion_weight"] * advantage
-    return {"baseline_vp": baseline, "value": value, "opportunities": [
-        {"seat": seat, "delay": delay, "vp": vp, "projected_capture": not held} for delay, seat, vp in schedule
+    long_term = units.vp_score(value)
+    return {"baseline_vp": baseline, "value": fixed + long_term, "fixed_score": fixed, "long_term_score": long_term,
+            "opportunities": [
+        {"seat": seat, "delay": delay, "vp": vp, "projected_capture": not held,
+         "fixed": delay < units.capture_rounds * len(TURN_ORDER) and held}
+        for delay, seat, vp in (*fixed_schedule, *schedule)
     ]}
 
 
-def effect_potential(rules, state, seat, effect, weights, economy=None):
-    from .content_effects import condition_met
+def effect_potential(rules, state, seat, effect, weights, economy=None, *, units=ScoreUnits(), native_weights=None):
+    from .content_effects import condition_met, point_award
+    from .economic_scoring import POINT_EFFECTS
     if economy:
         dynamic = economy.effect(seat, effect, weights["points"])
         if dynamic is not None:
@@ -402,13 +433,26 @@ def effect_potential(rules, state, seat, effect, weights, economy=None):
         return 0.0
     kind = effect["type"]
     if kind == "choose-one":
-        return max((sum(effect_potential(rules, state, seat, child, weights, economy) for child in option["effects"])
+        return max((sum(effect_potential(rules, state, seat, child, weights, economy,
+                                        units=units, native_weights=native_weights) for child in option["effects"])
                     for option in effect["options"]), default=0.0)
+    if units.enabled and kind in POINT_EFFECTS:
+        recipient, amount = point_award(rules, state, seat, effect)
+        return units.vp_score(amount if rules.team(recipient) == rules.team(seat) else -amount)
     if kind == "points":
         award = effect["side"]
         friendly = award in ("self", rules.team(seat))
         return weights["points"] * effect["amount"] * (1 if friendly else -1)
-    return weights.get(kind, weights["default"])
+    estimate = weights.get(kind, weights["default"])
+    if units.enabled:
+        action = equivalent_action(effect, seat)
+        if action and native_weights and action in native_weights:
+            return units.action_score(native_weights[action] / 2)
+        if kind in ("battle-series", "battle", "air-action", "play-from-zone"):
+            return units.action_score(estimate / 2)
+        if kind in ("search-deck", "recover-discard"):
+            return units.card_score(estimate)
+    return estimate
 
 
 class SimulationIncomplete(CoreError):
@@ -421,7 +465,8 @@ def candidate_key(row):
 
 
 def acceptable_play(row, *, mandatory=False):
-    return row["complete"] and (not row.get("initial_card_score") or row["q"] > 0 or row["terminal_rank"] == 2
+    paid_card = row.get("initial_card_score") or row.get("consumes_card")
+    return row["complete"] and (not paid_card or row["q"] > 0 or row["terminal_rank"] == 2
                                 or (mandatory and row["command"]["type"] == "PLAY_CARD"))
 
 
@@ -452,15 +497,18 @@ class OneStepPlanner:
                     raise SimulationIncomplete("Action cannot be represented from this observation")
                 simulated_seat.apply(command)
                 value, choices = self._finish(candidate, country, nodes, deadline)
-                initial = -self.evaluator.hand_slot_cost if command["type"] in ("PLAY_CARD", "USE_AIR") else 0.0
+                consumes_card = command["type"] in ("PLAY_CARD", "USE_AIR")
+                initial = -self.evaluator.hand_slot_cost if consumes_card and not self.evaluator.units.enabled else 0.0
+                vp_delta = value.actual_vp - before.actual_vp
                 yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                        "weights_digest": digest(self.evaluator.weights),
-                       "actual_vp_delta": value.actual_vp - before.actual_vp,
+                       "actual_vp_delta": vp_delta, "vp_score_delta": self.evaluator.units.vp_score(vp_delta),
                        "map_delta": value.map_value - before.map_value,
                        "card_delta": value.card_value - before.card_value + initial,
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
                        "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
                        **({"initial_card_score": initial} if initial else {}),
+                       **({"consumes_card": True} if consumes_card and self.evaluator.units.enabled else {}),
                        "continuations": [choice for choice, _ in choices],
                        "choice_signatures": [signature for _, signature in choices]}
             except (SimulationIncomplete, ResolutionBudgetExceeded) as e:
@@ -513,11 +561,12 @@ class OneStepPlanner:
                 value, _ = self._finish(branch, country, nodes, deadline)
                 outcomes.append(value)
         after = max(outcomes, key=lambda value: (value.terminal_rank, value.total), default=before)
-        initial = -self.evaluator.hand_slot_cost if outcomes else 0.0
+        initial = -self.evaluator.hand_slot_cost if outcomes and not self.evaluator.units.enabled else 0.0
         plan = price(plan, after.total - before.total + initial)
         return {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                 "weights_digest": digest(self.evaluator.weights),
                 "actual_vp_delta": after.actual_vp - before.actual_vp,
+                "vp_score_delta": self.evaluator.units.vp_score(after.actual_vp - before.actual_vp),
                 "map_delta": after.map_value - before.map_value,
                 "card_delta": after.card_value - before.card_value + plan["discard_score"] + initial,
                 "resource_delta": after.resource_adjustment - before.resource_adjustment,

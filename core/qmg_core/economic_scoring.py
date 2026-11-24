@@ -4,6 +4,7 @@ from math import ceil, copysign
 
 from .content_effects import available_options, condition_met, filtered_units, force_id, point_award
 from .model import TURN_ORDER, zone
+from .score_units import ScoreUnits
 
 
 POINT_EFFECTS = {"points", "points-per-unit", "points-per-occupied-space"}
@@ -11,7 +12,8 @@ MILL_EFFECTS = {"discard-top", "discard-top-per-unit", "choose-country"}
 
 
 class EconomicForecast:
-    def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None, map_weights=None):
+    def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None, map_weights=None,
+                 units=ScoreUnits()):
         self.rules, self.settings = rules, settings
         self.scores, self.count, self.visible_state = scores, count, visible_state
         self.margin = rules.settings["victory_margin"]
@@ -28,6 +30,7 @@ class EconomicForecast:
         self.penalty = max(0, -rules.settings.get("deck_exhaustion_vp", 0))
         self.status_weights = status_weights
         self.map_weights = map_weights
+        self.units = units
 
     @cached_property
     def routes(self):
@@ -46,10 +49,24 @@ class EconomicForecast:
         return max(0, self.margin - lead), max(0, self.margin + lead)
 
     def points(self, seat, delta, base, *, closeout=False):
-        value = delta * base * (1 + self.settings["vp_pressure_bonus"] * self.pressure)
-        if closeout and self.closes_game(seat, delta):
-            value += copysign(self.settings["closeout_bonus"], delta)
+        value = (self.units.vp_score(delta) if self.units.enabled else
+                 delta * base * (1 + self.settings["vp_pressure_bonus"] * self.pressure))
+        if not self.units.enabled and closeout and self.closes_game(seat, delta):
+            value += copysign(self.units.vp_score(self.settings["closeout_bonus"]), delta)
         return value
+
+    def direct_points(self, seat, operation):
+        if operation["type"] == "GAIN_VP":
+            recipient, amount = operation.get("score_country") or seat, operation["amount"]
+        elif operation["type"] == "CARD_EFFECT" and operation["effect"]["type"] in POINT_EFFECTS:
+            effect = operation["effect"]
+            state = self.visible_state() if effect["type"] != "points" or effect.get("when") else None
+            if not condition_met(self.rules, state, seat, effect.get("when")):
+                return 0
+            recipient, amount = point_award(self.rules, state, seat, effect)
+        else:
+            return 0
+        return amount if self.rules.team(seat) == self.rules.team(recipient) else -amount
 
     def closes_game(self, seat, delta):
         own, enemy = self.gaps(self.rules.team(seat))
@@ -76,7 +93,7 @@ class EconomicForecast:
         return max(0, self.draws(seat) - (self.count(seat, "DECK") if deck is None else deck))
 
     def future_loss(self, seat):
-        return self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat)
+        return self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat))
 
     def mill(self, seat, target, count, base, *, closeout=False):
         deck = self.count(target, "DECK")
@@ -85,19 +102,17 @@ class EconomicForecast:
         future = 0 if self.closes_game(seat, immediate) else (
             self.shortfall(target, max(0, deck - count)) - self.shortfall(target))
         return (self.points(seat, immediate, base, closeout=closeout)
-                + sign * self.settings["future_shortfall_value"] * self.penalty * future)
+                + sign * self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * future))
 
     def effect(self, seat, effect, base, *, closeout=False):
         kind = effect["type"]
         if kind not in POINT_EFFECTS and kind not in MILL_EFFECTS:
             return None
+        if kind in POINT_EFFECTS:
+            delta = self.direct_points(seat, {"type": "CARD_EFFECT", "effect": effect})
+            return self.points(seat, delta, base, closeout=closeout)
         if effect.get("when") and not condition_met(self.rules, self.visible_state(), seat, effect["when"]):
             return 0
-        if kind in POINT_EFFECTS:
-            state = None if kind == "points" else self.visible_state()
-            recipient, amount = point_award(self.rules, state, seat, effect)
-            delta = amount if self.rules.team(seat) == self.rules.team(recipient) else -amount
-            return self.points(seat, delta, base, closeout=closeout)
         if kind == "choose-country":
             return max((self.mill(seat, target, effect["count"], base, closeout=closeout)
                         for target in available_options(self.rules, self.visible_state(), seat, effect)), default=0)

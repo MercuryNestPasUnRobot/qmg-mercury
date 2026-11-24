@@ -45,5 +45,5 @@ def test_land_battle_matches_army_base_only_when_it_can_remove_enemy(data, victi
     economy = evaluator.economic_from_view(view)
     bonus = economy.routes.paper_bonus("germany", "B", battle=True)
     value = policy.play_card_value(p.rules.cards["g-battle"], "germany", economy)
-    assert value == pytest.approx((1.6 if victim else 1.3) + bonus - evaluator.hand_slot_cost)
+    assert value == pytest.approx((1.6 if victim else 1.3) + bonus - evaluator.card_play_cost)
     assert bonus > 0 if victim else bonus == 0

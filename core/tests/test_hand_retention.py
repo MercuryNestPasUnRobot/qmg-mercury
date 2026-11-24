@@ -149,10 +149,10 @@ def test_initial_charge_applies_to_play_scores_but_preserves_immediate_victory(d
     client = CoreAPI(p, ("germany",))
     rule = RulePolicy(p.rules, ScoreEvaluator(p.rules, profile))
     a = next(r for r in rule.rank(client.observe(), client.legal_commands()) if r["command"].get("card") == "g-deck-2")
-    assert a["rule_score"] < 0 and a["initial_card_score"] == -0.55
+    assert a["rule_score"] < 0 and a["initial_card_score"] == -1
     rows = OneStepPlanner(p.rules, profile).rank(client, "germany")
     rows = {row["command"].get("card"): row for row in rows}
-    assert rows["g-deck-2"]["q"] == pytest.approx(-0.55) and not acceptable_play(rows["g-deck-2"])
+    assert rows["g-deck-2"]["q"] == pytest.approx(-1) and not acceptable_play(rows["g-deck-2"])
     assert rows["g-vp"]["terminal_rank"] == 2 and acceptable_play(rows["g-vp"])
 
 
