@@ -35,7 +35,7 @@ class ScoringRoutes:
         self.cache = {}
         self.target_scores = {}
         self.action_scores = {}
-        self.friendly_neighbors = {}
+        self.near_site_distances = {}
 
     def _site_route(self, paths, force, start, end):
         distance, factor = paths[end]
@@ -95,16 +95,40 @@ class ScoringRoutes:
             self.safe_sites[force, site] = all(enemy not in self.surface[p] for p in approach)
         return self.safe_sites[force, site]
 
-    def construction_factor(self, force, region, *, already_present=False):
+    def _site_distances_within_two(self, force, site):
+        key = force, site
+        if key not in self.near_site_distances:
+            adjacency = self.adjacency[force]
+            reached = dict.fromkeys(self.locations[site], 0)
+            edge = set(reached)
+            for distance in (1, 2):
+                edge = {n for p in edge for n in adjacency[p] if n not in reached}
+                reached.update(dict.fromkeys(edge, distance))
+            self.near_site_distances[key] = reached
+        return self.near_site_distances[key]
+
+    def construction_factors(self, force, region, *, already_present=False, ignored_sites=()):
         decay = (self.frontier or {}).get("build_friendly_neighbor", 1)
         if decay == 1:
-            return 1.0
-        key = force, region
-        if key not in self.friendly_neighbors:
-            team = self.rules.team(force)
-            nearby = self.adjacency[force][region] | {region}
-            self.friendly_neighbors[key] = sum(self.occupancy[p][team] for p in nearby)
-        return decay ** (self.friendly_neighbors[key] - int(already_present))
+            return {}
+        sites = self.nearest(force, region)
+        team = self.rules.team(force)
+        nearby = {p: self.occupancy[p][team] for p in self.adjacency[force][region] | {region}}
+        nearby[region] -= int(already_present)
+        nearby = {p: count for p, count in nearby.items() if count > 0}
+        factors = {}
+        # Nearest sites are ordered by distance, then ID. Charge each friendly unit
+        # once, to the first site where it is at least as close as the target.
+        for site, (distance, _) in sites.items():
+            if distance > 2 or not nearby:
+                break
+            if site in ignored_sites:
+                continue
+            distances = self._site_distances_within_two(force, site)
+            qualifying = [p for p in nearby if distances.get(p, 3) <= distance]
+            if qualifying:
+                factors[site] = decay ** sum(nearby.pop(p) for p in qualifying)
+        return factors
 
     def target_value(self, force, region, *, battle=False, construction=False, local_only=False):
         cache_key = (force, region, battle, construction, local_only)
@@ -114,14 +138,14 @@ class ScoringRoutes:
         enemy = "allies" if team == "axis" else "axis"
         victim = enemy in self.surface[region]
         total = self.frontier["battle_target"] if self.frontier and battle and victim else 0.0
+        construction_factors = self.construction_factors(force, region) if construction else {}
         for key, (distance, factor) in self.nearest(force, region).items():
             if distance > 2 and local_only:
                 continue
             if self.frontier and distance <= 2:
                 if self.safely_held(force, key):
                     factor *= self.frontier["friendly_target"]
-                if construction:
-                    factor *= self.construction_factor(force, region)
+                factor *= construction_factors.get(key, 1)
                 if battle and not victim:
                     if local_only:
                         continue
