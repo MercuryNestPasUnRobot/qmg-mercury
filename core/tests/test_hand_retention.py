@@ -32,6 +32,7 @@ def reach_discard(client):
 
 
 def test_voluntary_discard_settles_a_listener_and_draw_replaces_the_card(data, profile):
+    profile["action_distance_scoring"] = False
     hand_only(data, "g-build", "g-deck-2")
     data["settings"]["hand_limit"] = 2
     card(data, "g-build")["legacy_kind"] = "build-army"
@@ -143,6 +144,7 @@ def test_opening_forced_discard_can_keep_a_better_card_over_a_basic_for_a_later_
 
 
 def test_initial_charge_applies_to_play_scores_but_preserves_immediate_victory(data, profile):
+    profile["action_distance_scoring"] = False
     hand_only(data, "g-deck-2", "g-vp")
     data["settings"]["victory_margin"] = 1
     p = make(data)

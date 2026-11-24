@@ -7,7 +7,7 @@ from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import CandidateView, RulePolicy
 from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner, ScoreEvaluator
-from test_ai_match import profile
+from test_ai_match import fixed_capture_profile as profile
 
 
 def previous_weights():

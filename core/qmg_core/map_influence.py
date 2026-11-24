@@ -5,12 +5,13 @@ from .content_effects import action_for, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
 from .model import Token, canonical
 from .operations import ScoreResolver
+from .positional_scoring import ActionDistanceScoring
 from .rules import LegalActionGenerator, MapGraph, unit_rule_matches
 from .score_units import ScoreUnits
 
 
 class ScoringRoutes:
-    def __init__(self, rules, state, pieces, weights):
+    def __init__(self, rules, state, pieces, weights, *, include_connections=True):
         self.rules = rules
         self.state = state
         self.weights = weights
@@ -43,6 +44,9 @@ class ScoringRoutes:
         self.near_site_distances = {}
         self.attack_victims = {}
         self.removal_routes = {}
+        self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
+                                              self.config["nearest_sites"], include_connections=include_connections)
+                         if self.weights.get("action_distance_scoring") else None)
 
     def _site_route(self, paths, force, start, end):
         distance, factor = paths[end]
@@ -180,6 +184,10 @@ class ScoringRoutes:
         victim = self.state.tokens[token_id]
         if unit_rule_matches(self.rules, self.state, victim, "protection"):
             return 0.0
+        if self.position:
+            # Price the denied position from its owner's side, plus one lost action.
+            return self.units.action + self.position.value(
+                victim.owner_country, victim.position_id, excluded=token_id)
         return self._without_unit(token_id).target_value(
             victim.owner_country, victim.position_id, construction=True, local_only=local_only)
 
@@ -190,6 +198,9 @@ class ScoringRoutes:
         return self.removal_routes[token_id]
 
     def capture_value(self, force, region):
+        if self.position:
+            return sum(self.position.capture(force, region, self.rules.sites[site]["vp"])
+                       for site, locations in self.locations.items() if region in locations)
         remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
         return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
 
@@ -197,6 +208,11 @@ class ScoringRoutes:
         cache_key = (force, region, battle, construction, local_only, include_capture)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
+        if self.position:
+            value = (max((self.removal_value(t.token_id) for t in self._removable_targets(force, region)), default=0)
+                     if battle else self.position.value(force, region))
+            self.target_scores[cache_key] = value
+            return value
         if battle and self.weights.get("mirrored_attacks"):
             victims = self._removable_targets(force, region)
             value = max((self.removal_value(t.token_id, local_only=local_only) for t in victims), default=0.0)
@@ -232,6 +248,8 @@ class ScoringRoutes:
         return total
 
     def paper_bonus(self, force, region, *, battle=False):
+        if self.position:
+            return self.target_value(force, region, battle=battle)
         if self.units.enabled and battle and self.weights.get("mirrored_attacks"):
             return max((self._without_unit(t.token_id).paper_bonus(t.owner_country, region)
                         for t in self._removable_targets(force, region)), default=0.0)

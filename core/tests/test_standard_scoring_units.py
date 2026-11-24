@@ -5,7 +5,7 @@ from qmg_core import CoreAPI, ScoreEvaluator
 from qmg_core.ai_match_policy import RulePolicy
 from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
-from test_ai_match import profile
+from test_ai_match import fixed_capture_profile, profile
 from test_hand_retention import hand_only
 
 
@@ -39,7 +39,7 @@ def test_paid_card_stock_and_settled_vp_are_counted_once_in_b(data):
     planner = OneStepPlanner(engine.rules, weights)
     ranked = {r["command"].get("card"): r for r in planner.rank(client, "germany") if r["complete"]}
     blank = ranked["g-deck-2"]
-    assert blank["card_delta"] == pytest.approx(-3)
+    assert blank["card_delta"] == pytest.approx(0)
     assert "initial_card_score" not in blank
     points = ranked["g-vp"]
     assert points["actual_vp_delta"] > 0
@@ -60,8 +60,8 @@ def test_two_scoring_rounds_use_the_vp_unit_and_leave_later_vp_separate(data):
     move_initial(data, "germany-army-0", "C")
     occupied = make(data)
     client = CoreAPI(occupied, ("germany",))
-    normal = profile()
-    double = profile()
+    normal = fixed_capture_profile()
+    double = fixed_capture_profile()
     double["scoring_units"]["vp"] = 2
     scores = []
     for weights, fixed in ((normal, 4), (double, 8)):

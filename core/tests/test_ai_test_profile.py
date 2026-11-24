@@ -1,6 +1,4 @@
 from copy import deepcopy
-import json
-from pathlib import Path
 
 import pytest
 
@@ -9,11 +7,12 @@ from qmg_core import CoreAPI
 from qmg_core.api import simulation_from_observation
 from qmg_core.content_effects import instruction
 from qmg_core.evaluation import ScoreEvaluator
+from test_ai_match import fixed_capture_profile
 
 
 @pytest.fixture
 def profile():
-    return json.loads(Path("data/ai_test_weights.json").read_text(encoding="utf8"))
+    return fixed_capture_profile()
 
 
 def test_forecast_uses_seat_opportunities_and_never_rescores_this_victory(data, profile):

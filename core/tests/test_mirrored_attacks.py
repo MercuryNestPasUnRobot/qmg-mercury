@@ -6,7 +6,7 @@ from conftest import card, make, move_initial
 from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import RulePolicy
 from qmg_core.evaluation import ScoreEvaluator
-from test_ai_match import profile
+from test_ai_match import fixed_capture_profile as profile
 
 
 def routes(engine, weights):

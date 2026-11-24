@@ -66,7 +66,7 @@ class MapGraph:
     def __init__(self, rules):
         self.rules = rules
 
-    def adjacency(self, state=None, country=None, purpose=None):
+    def adjacency(self, state=None, country=None, purpose=None, *, include_connection_modifiers=True):
         if purpose is not None and purpose not in CONNECTION_USES:
             raise CoreError("Unknown connection use")
         edges = {}
@@ -79,8 +79,10 @@ class MapGraph:
                            and self.rules.team(t.owner_country) == "axis" for t in board_units(self.rules, state))
                 if (self.rules.team(country) == "axis") == axis:
                     edges.setdefault(tuple(sorted(strait["seas"])), set()).update(CONNECTION_USES)
-            for m in RuleModifierResolver(self.rules).resolve(state, country):
-                if m["kind"] == "connection":
+            if include_connection_modifiers:
+                for m in RuleModifierResolver(self.rules).resolve(state, country):
+                    if m["kind"] != "connection":
+                        continue
                     edge = tuple(sorted((m["a"], m["b"])))
                     uses = edges.setdefault(edge, set())
                     tags = m.get("movement_or_supply_tags", CONNECTION_USES)

@@ -18,6 +18,12 @@ def profile():
     return json.loads(Path("data/ai_test_weights.json").read_text(encoding="utf8"))
 
 
+def fixed_capture_profile():
+    weights = profile()
+    weights["action_distance_scoring"] = False
+    return weights
+
+
 def test_worker_uses_same_request_for_different_hidden_cards_and_deck_order(data):
     other = deepcopy(data)
     next(t for t in other["initial_tokens"] if t["token_id"] == "uk-hidden")["definition_id"] = "uk-other"
