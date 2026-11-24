@@ -77,9 +77,8 @@ def test_local_friendly_crowding_discounts_building_and_leaves_battle_scores(dat
     old = deepcopy(weights)
     old["frontier_scoring"].pop("build_friendly_neighbor")
     base, new = [ScoreEvaluator(engine.rules, w).economic_from_view(view).routes for w in (old, weights)]
-    region = "B"  # Own army in A and allied army in B. The opponent in E does not count.
-    assert new.paper_bonus("germany", region) == pytest.approx(
-        base.paper_bonus("germany", region) * 0.75 ** 2)
+    region = "B"  # The ally in B is charged to the factory. The army in A counts only for g-home.
+    assert new.construction_factors("germany", region) == {"factory": 0.75, "g-home": 0.75}
     assert new.target_value("germany", region, battle=True) == base.target_value("germany", region, battle=True)
     client = CoreAPI(engine, ("germany",))
     map_values = [ScoreEvaluator(engine.rules, w).evaluate(client, "germany").score_points for w in (old, weights)]

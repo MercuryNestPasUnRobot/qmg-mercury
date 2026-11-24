@@ -241,21 +241,29 @@ class ScoreEvaluator:
             for seat in TURN_ORDER:
                 supplied_for_seat = set().union(*(supplied[force] for force in rules.controlled_forces(seat)))
                 seat_rates[seat] = ScoreResolver(rules).sites(s, seat, pieces=pieces, supplied=supplied_for_seat)
-        held_sites = {site for rates in seat_rates.values() for site in rates}
-        point_values, influences, map_value = [], [], 0.0
+        locations = {}
+        controlling_units = {}
         for site_id, site in rules.sites.items():
             if site.get("dynamic"):
-                sources = [t for t in s.tokens.values() if t.token_type == "SCORE_SOURCE" and t.definition_id == site_id and t.position_id in rules.regions]
-                regions = sorted({t.position_id for t in sources})
+                regions = {t.position_id for t in s.tokens.values() if t.token_type == "SCORE_SOURCE"
+                           and t.definition_id == site_id and t.position_id in rules.regions}
             else:
-                regions = [site["region"]]
+                regions = {site["region"]}
             if not regions:
                 continue
-            controllers = [t for t in pieces if t.position_id in regions
-                           and rules.force_controllers[t.owner_country] in site["countries"] and
-                           rules.units[t.definition_id]["kind"] != "AIR" and
-                           (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
-            held = site_id in held_sites if w.get("seat_forecast") else bool(controllers)
+            locations[site_id] = regions
+            controlling_units[site_id] = [t for t in pieces if t.position_id in regions
+                and rules.force_controllers[t.owner_country] in site["countries"] and
+                rules.units[t.definition_id]["kind"] != "AIR" and
+                (not site["requires_supply"] or t.token_id in supplied[t.owner_country])]
+        held_sites = ({site for rates in seat_rates.values() for site in rates} if w.get("seat_forecast") else
+                      {site for site, units in controlling_units.items() if units})
+        crowding = {t.token_id: routes.construction_factors(
+            t.owner_country, t.position_id, already_present=True, ignored_sites=held_sites) for t in pieces} if routes else {}
+        point_values, influences, map_value = [], [], 0.0
+        for site_id, regions in locations.items():
+            site = rules.sites[site_id]
+            controllers = controlling_units[site_id]
             friendly, hostile = 0.0, 0.0
             for t in pieces:
                 route_factor = 1.0
@@ -277,8 +285,8 @@ class ScoreEvaluator:
                     reserve += 1
                 resource = 1.0 if distance == 0 else (1.0 if reserve else w["supply_weights"]["no_reserve_expansion"])
                 strength = w["military_weights"][kind] * distance_weight * route_factor * supply_weight * resource
-                if routes and not held and distance <= 2:
-                    strength *= routes.construction_factor(t.owner_country, t.position_id, already_present=True)
+                if routes:
+                    strength *= crowding[t.token_id].get(site_id, 1)
                 influences.append({"token": t.token_id, "site": site_id, "distance": distance,
                                    "score_influence": strength, "military_influence": strength,
                                    "supply_weight": supply_weight, "route_factor": route_factor})
