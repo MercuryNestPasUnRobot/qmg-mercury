@@ -144,8 +144,8 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--replay-library", type=Path, default=LIBRARY)
     parser.add_argument("--name", help="Readable batch name in the replay library")
-    parser.add_argument("--ai-version", default="AI 试验版 v1.8")
-    parser.add_argument("--ai-note", default="建设只扣比目标更靠近分点或等距的邻近友军。同一支友军只计一次。")
+    parser.add_argument("--ai-version", default="AI 试验版 v1.9")
+    parser.add_argument("--ai-note", default="攻击按移除敌军所损失的扩张价值估分。有实际目标的战斗与同类建设使用对称基础分。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:
         parser.error("Budget, shortlist width and command limit must be positive")

@@ -13,6 +13,7 @@ from test_ai_match import profile
 def previous_weights():
     weights = profile()
     weights.pop("frontier_scoring")
+    weights.pop("mirrored_attacks", None)
     weights["distance_weights"] = [1, 0.65, 0.30, 0.10]
     return weights
 
@@ -74,7 +75,8 @@ def test_rule_policy_selects_attack_on_enemy_site_over_rear_build(data, split_ba
     assert rank(previous)[0]["command"]["card"] == "g-build"
     picked = rank(current)[0]
     assert picked["command"]["card"] == "g-battle"
-    assert picked["rule_score"] == pytest.approx(1.3 - 0.55 + 2)
+    base = 1.55 if split_battle else 1.6
+    assert picked["rule_score"] == pytest.approx(base - 0.55 + 2)
     client.submit(picked["command"])
     view = client.observe()
     assert view["decision"]["map_force"] == "germany" and view["decision"]["map_battle"]
