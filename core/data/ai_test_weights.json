@@ -1,6 +1,7 @@
 {
-  "profile": "ai-test-v1.9-mirrored-attacks-uncalibrated",
+  "profile": "ai-test-v1.10-shared-sites-uncalibrated",
   "mirrored_attacks": true,
+  "construction_search_width": 3,
   "basic_usage_cost": 1.2,
   "status_held_factor": 0.55,
   "economic_forecast": {
@@ -18,7 +19,8 @@
     "battle_target": 0.7,
     "paper_fraction": 0.45,
     "paper_cap": 2,
-    "build_friendly_neighbor": 0.75
+    "build_friendly_neighbor": 0.75,
+    "direct_site_income": 1.5
   },
   "route_forecast": {
     "nearest_sites": 4,

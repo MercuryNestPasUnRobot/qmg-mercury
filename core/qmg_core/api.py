@@ -212,16 +212,19 @@ class CoreAPI:
                                         if site["region"] == region and not site.get("dynamic"))}
                 for region, definition in rules.regions.items()}
 
-    def submit(self, command, *, include_history=True):
+    def apply(self, command):
         self._processor.submit(deepcopy(command), self.controlled_countries)
+
+    def submit(self, command, *, include_history=True):
+        self.apply(command)
         return self.observe(include_history=include_history)
 
 
-def simulation_from_observation(rules, view):
+def simulation_from_observation(rules, view, *, search_projection=False):
     """Never clone the authoritative hidden state, RNG, journal or deck order."""
     if (view["resolution_depth"] or view["decision"]) and not view["winner"]:
         raise CoreError("Start a candidate simulation at a quiescent action boundary")
-    return CommandProcessor(*observed_position(rules, view))
+    return CommandProcessor(*observed_position(rules, view), search_projection=search_projection)
 
 
 def observed_position(rules, view):

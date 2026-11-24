@@ -27,12 +27,12 @@ def test_forecast_uses_seat_opportunities_and_never_rescores_this_victory(data, 
     scorer = ScoreEvaluator(p.rules, profile)
     held = scorer.evaluate(client, "germany").score_points[0]
     assert [(r["seat"], r["delay"], r["vp"]) for r in held["opportunities"]] == [
-        ("germany", 0, 2), ("italy", 4, 2)]
-    assert held["baseline_vp"] == pytest.approx(2 + 2 * profile["time_discount"] ** 4)
+        ("germany", 0, 1), ("italy", 4, 1)]
+    assert held["baseline_vp"] == pytest.approx(1 + profile["time_discount"] ** 4)
     for _ in range(2):
         client.submit(next(c for c in client.legal_commands() if c["type"] == "END_PHASE"))
     value = scorer.evaluate(client, "germany")
-    assert value.actual_vp == 2
+    assert value.actual_vp == 1
     assert [r["seat"] for r in value.score_points[0]["opportunities"]] == ["italy"]
 
 

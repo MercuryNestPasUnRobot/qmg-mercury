@@ -16,6 +16,7 @@ class RuleSet:
     """Data-only instruction vocabulary. Unknown instructions fail on loading."""
     def __init__(self, data, *, projected=False):
         self.data = deepcopy(data)
+        self.projected = projected
         self.version = data["ruleset_version"]
         if not isinstance(self.version, str) or not self.version:
             raise CoreError("Ruleset version required")
@@ -184,8 +185,9 @@ class RuleSet:
                 raise CoreError(f"Invalid setting: {k}")
         if self.settings["setup_discard"] > self.settings["initial_hand"] or self.settings["max_atomic_steps"] == 0 or self.settings["max_rounds"] == 0:
             raise CoreError("Invalid setup or execution budget")
-        if type(self.settings.get("mandatory_turn_play", False)) is not bool:
-            raise CoreError("Invalid mandatory play setting")
+        for setting in ("mandatory_turn_play", "shared_site_scoring"):
+            if type(self.settings.get(setting, False)) is not bool:
+                raise CoreError(f"Invalid {setting} setting")
         supply_revision = self.settings.get("supply_revision", 1)
         if type(supply_revision) is not int or supply_revision not in (1, 2):
             raise CoreError("Invalid supply revision")

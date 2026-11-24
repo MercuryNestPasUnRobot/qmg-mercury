@@ -303,7 +303,7 @@ def main():
     weights = json.loads((DATA / "evaluation_weights.json").read_text(encoding="utf-8"))
     ai_weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
     for key in ("hand_retention", "basic_usage_cost", "distance_weights", "route_forecast", "frontier_scoring",
-                "mirrored_attacks", "seat_forecast",
+                "mirrored_attacks", "seat_forecast", "construction_search_width",
                 "economic_forecast", "effect_value_weights", "status_held_factor"):
         weights[key] = ai_weights[key]
     with make_server(Workbench(args.save_dir, rules, weights), args.port) as server:

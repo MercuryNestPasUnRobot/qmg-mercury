@@ -17,6 +17,7 @@ EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle
                    "battle-series": 1.3, "choose-unit": 1.2, "air-action": 1.0,
                    "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
 BATTLE_BUILD = {"LAND_BATTLE": "BUILD_ARMY", "SEA_BATTLE": "BUILD_NAVY"}
+DEFAULT_BUDGET_MS = 3000
 
 
 def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, frontier=False):
@@ -270,12 +271,14 @@ def _search_worker(connection, data, weights):
         connection.send(("ready", None))
         while True:
             try:
-                view, commands, country = connection.recv()
+                view, commands, country, deadline = connection.recv()
             except EOFError:
                 return
             try:
-                for row in planner.iter_rank(CandidateView(view, commands), country):
+                for row in planner.iter_rank(CandidateView(view, commands), country, deadline=deadline):
                     connection.send(("candidate", row))
+            except TimeoutError:
+                connection.send(("deadline", None))
             except CoreError as exc:
                 connection.send(("error", type(exc).__name__))
             else:
@@ -338,13 +341,17 @@ class DeadlineSearch:
                     raise RuntimeError("Unexpected search startup message")
                 self.ready = True
             # Run labels can encode the experiment's seed. The projection needs neither them nor a journal.
-            self.connection.send(({**view, "game_id": "ai-projection", "history": []}, commands, country))
+            remaining = max(0, deadline - perf_counter())
+            soft_deadline = deadline - min(0.075, remaining * 0.1)
+            self.connection.send(({**view, "game_id": "ai-projection", "history": []}, commands, country, soft_deadline))
             while True:
                 status, payload = self._receive(deadline)
                 if status == "candidate":
                     rows.append(payload)
                 elif status == "done":
                     return rows, "finished"
+                elif status == "deadline":
+                    return rows, "deadline"
                 else:
                     return rows, "simulation-" + payload
         except TimeoutError:
@@ -356,7 +363,7 @@ class DeadlineSearch:
 
 
 class SeatPolicy:
-    def __init__(self, rules, *, search=None, evaluator=None, width=3, budget_ms=1500):
+    def __init__(self, rules, *, search=None, evaluator=None, width=3, budget_ms=DEFAULT_BUDGET_MS):
         self.rule = RulePolicy(rules, evaluator)
         self.search = search
         self.width = width
@@ -426,7 +433,7 @@ class SeatPolicy:
                     if end is not None and end not in tried:
                         tried.append(end)
                     # Reserve a small part of the total budget for choosing and recording the result.
-                    reserve_ms = min(10, self.budget_ms * 0.05)
+                    reserve_ms = min(75, self.budget_ms * 0.05)
                     rows, status = self.search.run(view, tried, country, started + (self.budget_ms - reserve_ms) / 1000)
                     completed = [row for row in rows if row["complete"]]
                     rejected = [row["command"] for row in completed if not acceptable_play(row, mandatory=mandatory)]

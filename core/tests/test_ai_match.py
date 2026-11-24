@@ -6,6 +6,7 @@ from time import perf_counter
 
 from conftest import card, make
 from qmg_core import CoreAPI, RuleSet
+from qmg_core.api import simulation_from_observation
 from qmg_core import ai_match_policy
 from qmg_core.ai_match import run_matches
 from qmg_core.ai_match_policy import CandidateView, DeadlineSearch, SeatPolicy
@@ -48,7 +49,7 @@ def test_worker_uses_same_request_for_different_hidden_cards_and_deck_order(data
 def _stalled_worker(connection, data, weights):
     with connection:
         connection.send(("ready", None))
-        view, commands, _ = connection.recv()
+        view, commands, _, _ = connection.recv()
         assert view["game_id"] == "ai-projection" and not view["history"]
         connection.send(("candidate", {"command": commands[0], "complete": True, "q": 1}))
         Event().wait()
@@ -69,6 +70,47 @@ def test_deadline_retains_complete_result_and_retires_stalled_worker(data, monke
         assert search.process is None and search.connection is None
     finally:
         search.close()
+
+
+def _cooperative_worker(connection, data, weights):
+    with connection:
+        connection.send(("ready", None))
+        while True:
+            _, commands, _, _ = connection.recv()
+            connection.send(("candidate", {"command": commands[0], "complete": True, "q": 1}))
+            connection.send(("deadline", None))
+
+
+def test_cooperative_cutoff_retains_results_and_reuses_worker(data, monkeypatch):
+    monkeypatch.setattr(ai_match_policy, "_search_worker", _cooperative_worker)
+    engine = make(data)
+    client = CoreAPI(engine, ("germany",))
+    search = DeadlineSearch(engine.rules, profile())
+    try:
+        command = client.legal_commands()[0]
+        rows, status = search.run(client.observe(), [command], "germany", perf_counter() + 3)
+        process = search.process
+        assert status == "deadline" and rows[0]["complete"]
+        assert process is not None and process.is_alive()
+        assert search.run(client.observe(), [command], "germany", perf_counter() + 3) == (rows, status)
+        assert search.process is process
+    finally:
+        search.close()
+
+
+def test_search_projection_settles_through_core_without_journal_work(data):
+    engine = make(data)
+    client = CoreAPI(engine, ("germany",))
+    view = client.observe()
+    full = simulation_from_observation(engine.rules, view)
+    short = simulation_from_observation(engine.rules, view, search_projection=True)
+    command = next(c for c in client.legal_commands() if c.get("card") == "g-draw")
+    for p in (full, short):
+        CoreAPI(p, ("germany",)).apply(command)
+    assert short.state == full.state
+    assert [r["operation_type"] for r in short.records] == [r["operation_type"] for r in full.records]
+    assert all("record_digest" not in r for r in short.records)
+    assert all("record_digest" in r for r in full.records)
 
 
 def test_search_rebinds_same_choice_window_and_uses_a_when_it_changes(data):
