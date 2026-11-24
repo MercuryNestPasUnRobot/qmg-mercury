@@ -60,6 +60,15 @@ class ScoreEvaluator:
                     or not weights["distance_weights"]):
                 raise CoreError("Invalid route forecast settings")
             numbers.extend(route.values())
+        self.map_weights = None
+        if "frontier_scoring" in weights:
+            frontier = weights["frontier_scoring"]
+            if (not isinstance(frontier, dict) or set(frontier) != {"near_enemy", "held_forecast", "friendly_target",
+                    "battle_target", "paper_fraction", "paper_cap"} or "route_forecast" not in weights
+                    or "economic_forecast" not in weights):
+                raise CoreError("Invalid frontier scoring settings")
+            numbers.extend(frontier.values())
+            self.map_weights = self.weights
         if "economic_forecast" in weights:
             economy = weights["economic_forecast"]
             if not isinstance(economy, dict) or set(economy) != {
@@ -70,6 +79,9 @@ class ScoreEvaluator:
             raise CoreError("Evaluation weights must be finite nonnegative values")
         if weights["saturation"] <= 0 or type(weights["horizon"]) is not int or not 1 <= weights["horizon"] <= 20:
             raise CoreError("Invalid planning horizon or saturation")
+        if self.map_weights and (frontier["near_enemy"] < route["enemy_unit"] or
+                                 frontier["friendly_target"] > 1 or frontier["held_forecast"] < 1):
+            raise CoreError("Invalid frontier influence weights")
         if "hand_retention" in weights and not 0 < retention["slot_cost"] < retention["basic_floor"]:
             raise CoreError("Basic reserve must exceed the hand slot cost")
         if "route_forecast" in weights and not (
@@ -112,7 +124,7 @@ class ScoreEvaluator:
 
         return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
                                 lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
-                                visible_state, view["winner"], status_weights=self.status_weights)
+                                visible_state, view["winner"], status_weights=self.status_weights, map_weights=self.map_weights)
 
     def economic_from_state(self, rules, state):
         settings = self.weights.get("economic_forecast")
@@ -120,7 +132,7 @@ class ScoreEvaluator:
             return None
         return EconomicForecast(rules, settings, vars(state.turn), state.scores,
                                 lambda seat, kind: len(state.positions[zone(seat, kind)]),
-                                lambda: state, state.winner, status_weights=self.status_weights)
+                                lambda: state, state.winner, status_weights=self.status_weights, map_weights=self.map_weights)
 
     def hand_value(self, rules, state, country, card, legal, economy=None):
         w = self.weights
@@ -275,6 +287,8 @@ class ScoreEvaluator:
             expansion = advantage if not control else 0
             threat = max(0.0, -advantage) if control > 0 else -max(0.0, advantage) if control < 0 else 0.0
             value = baseline * (control + w["expansion_weight"] * expansion - w["threat_weight"] * threat)
+            if control:
+                value *= w.get("frontier_scoring", {}).get("held_forecast", 1)
             diagnostic = {"site": site_id, "baseline_vp": baseline, "control": control,
                           "friendly": friendly, "hostile": hostile, "advantage": advantage, "value": value}
             if w.get("seat_forecast"):
@@ -335,6 +349,7 @@ def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights)
         baseline = sum(vp * discount ** delay for delay, _, vp in schedule)
         value = sum(vp * discount ** delay * sign(seat) *
                     (1 - weights["threat_weight"] * max(0, -sign(seat) * advantage)) for delay, seat, vp in schedule)
+        value *= weights.get("frontier_scoring", {}).get("held_forecast", 1)
     else:
         # A neutral site is a hypothetical opportunity for one seat. Multiplying
         # it by every eligible seat would value the same future capture repeatedly.

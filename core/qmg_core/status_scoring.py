@@ -145,8 +145,11 @@ class StatusForecast:
     def supplied(self, force):
         return SupplyResolver(self.rules).supplied(self.state, force, units=self.units)
 
-    def location_value(self, region, battle=False):
-        return (0.85 if battle else 1.1) + 0.65 * self.sites[region]
+    def location_value(self, region, battle=False, *, force=None):
+        value = (0.85 if battle else 1.1) + 0.65 * self.sites[region]
+        if force and self.economy.map_weights:
+            value += self.economy.routes.paper_bonus(force, region, battle=battle)
+        return value
 
     def possibility(self, owner, force, kind, spaces, later):
         """Chance that one additional unit can enter a named scoring area by a later window."""
@@ -198,9 +201,9 @@ class StatusForecast:
             kind = card.get("legacy_kind")
             for unit, (build, battle) in BASIC.items():
                 if kind == build:
-                    best = max([best] + [self.location_value(p) for p in self.targets(owner, owner, unit, "build")])
+                    best = max([best] + [self.location_value(p, force=owner) for p in self.targets(owner, owner, unit, "build")])
                 if kind == battle:
-                    best = max([best] + [self.location_value(p, True) for p in self.targets(owner, owner, unit, "battle")
+                    best = max([best] + [self.location_value(p, True, force=owner) for p in self.targets(owner, owner, unit, "battle")
                                           if self.enemies(owner, p, unit)])
             if kind and kind not in ("status", "response", "bolster", "air-power") and kind not in BASIC_KINDS:
                 best = max(best, 0.75)
@@ -241,7 +244,7 @@ class StatusForecast:
         if not build:
             targets = [p for p in targets if self.enemies(actor, p, unit)]
         chance = self.chance(actor, (BASIC[unit][0 if build else 1],), later)
-        weights = {p: self.location_value(p, not build) for p in targets}
+        weights = {p: self.location_value(p, not build, force=actor) for p in targets}
         total = sum(weights.values())
         signals = []
         for p, weight in weights.items():
@@ -272,7 +275,7 @@ class StatusForecast:
         else:
             targets = set(self.targets(owner, force, unit, action))
         if kind == "build-at-battle-space":
-            return self.location_value(region) if region in targets else 0
+            return self.location_value(region, force=force) if region in targets else 0
         if "space" in effect:
             targets &= {effect["space"]}
         if "spaces" in effect:
@@ -285,7 +288,7 @@ class StatusForecast:
         if action == "battle":
             targets = {p for p in targets if len(self.enemies(owner, p, unit)) >
                        int(bool(projected) and p == region and trigger["type"] == "battle-space")}
-        return max((self.location_value(p, action == "battle") for p in targets), default=0)
+        return max((self.location_value(p, action == "battle", force=force) for p in targets), default=0)
 
     def program(self, owner, actor, key, region, committed=False, later=0):
         ability = self.rules.abilities[key]
@@ -339,7 +342,7 @@ class StatusForecast:
                            for k in self.state.positions[zone(owner, effect["zone"].upper())]) and not any(
                                c.get("legacy_kind") in effect["kinds"] for c in self.hand(owner)):
                     return 0
-                net += max((self.location_value(p) for p in self.targets(owner, owner, "army", "build")), default=0)
+                net += max((self.location_value(p, force=owner) for p in self.targets(owner, owner, "army", "build")), default=0)
             elif kind == "return-declared-army-card":
                 net += 0.8 if self.targets(owner, owner, "army", "build") else 0.3
             elif kind == "put-hand-on-deck-bottom":
