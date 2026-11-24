@@ -186,6 +186,9 @@ class RuleSet:
             raise CoreError("Invalid setup or execution budget")
         if type(self.settings.get("mandatory_turn_play", False)) is not bool:
             raise CoreError("Invalid mandatory play setting")
+        supply_revision = self.settings.get("supply_revision", 1)
+        if type(supply_revision) is not int or supply_revision not in (1, 2):
+            raise CoreError("Invalid supply revision")
         self.fingerprint = digest(self.data)
         self.bound_abilities = {}
         for card in self.cards.values():

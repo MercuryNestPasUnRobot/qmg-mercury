@@ -171,7 +171,8 @@ class SupplyResolver:
                       and unit_rule_matches(self.rules, state, t, "supply"))
         share = self.rules.settings["allied_supply"]
         groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
-        if self.rules.settings.get("surface_supply"):
+        revised = self.rules.settings.get("supply_revision", 1) == 2
+        if revised or self.rules.settings.get("surface_supply"):
             network = {country}
             while True:
                 expanded = network | {force for group in groups if network.intersection(group) for force in group}
@@ -183,28 +184,49 @@ class SupplyResolver:
             pieces = [t for t in units if t.owner_country in network and self.rules.units[t.definition_id]["kind"] != "AIR"]
             seeded, occupied = set(), set()
             adjacency = self.graph.adjacency(state, country, "supply")
+            team = self.rules.team(country)
+            ports = {t.position_id for t in units if self.rules.team(t.owner_country) == team and
+                     (revised or self.rules.units[t.definition_id]["kind"] == "ARMY")}
+            unported = {t.token_id for t in pieces if self.rules.units[t.definition_id]["kind"] == "NAVY" and
+                        adjacency[t.position_id].isdisjoint(ports)}
+            scoring_regions = set()
+            if revised:
+                scoring_regions.update(site["region"] for site in self.rules.sites.values() if not site.get("dynamic"))
+                scoring_regions.update(t.position_id for t in state.tokens.values() if t.token_type == "SCORE_SOURCE"
+                                       and t.position_id in self.rules.regions and self.rules.sites[t.definition_id].get("dynamic"))
+            army_sources = {}
             for token in pieces:
-                token_modifiers = RuleModifierResolver(self.rules).resolve(state, token.owner_country)
+                has_port = token.token_id not in unported
+                if revised and not has_port:
+                    continue
+                force = token.owner_country
+                token_modifiers = modifiers if force == country else RuleModifierResolver(self.rules).resolve(state, force)
                 automatic = unit_rule_matches(self.rules, state, token, "supply") or any(
                     m["kind"] == "always_supplied" and self.rules.units[token.definition_id]["kind"].lower()
                     in m.get("kinds", ("army", "navy", "air")) for m in token_modifiers)
-                army = self.rules.units[token.definition_id]["kind"] == "ARMY"
-                if automatic or army or any(t.position_id in adjacency[token.position_id] and
-                    self.rules.units[t.definition_id]["kind"] == "ARMY" and
-                    self.rules.team(t.owner_country) == self.rules.team(country) for t in units):
+                if automatic or has_port:
                     occupied.add(token.position_id)
-                sources = home_regions(self.rules, state, token.owner_country)
-                sources.update(m["region"] for m in token_modifiers if m["kind"] == "supply_source")
-                sources.difference_update(m["region"] for m in token_modifiers if m["kind"] == "deny_supply_source")
-                if automatic or army and token.position_id in sources:
+                if automatic:
                     seeded.add(token.position_id)
+                elif self.rules.units[token.definition_id]["kind"] == "ARMY":
+                    if force not in army_sources:
+                        sources = home_regions(self.rules, state, force) | scoring_regions
+                        if revised:
+                            sources.update(r["id"] for r in self.rules.regions.values()
+                                           if r.get("supply_source_for") == force and r.get("home_country") != force)
+                        sources.update(m["region"] for m in token_modifiers if m["kind"] == "supply_source")
+                        sources.difference_update(m["region"] for m in token_modifiers if m["kind"] == "deny_supply_source")
+                        army_sources[force] = sources
+                    if token.position_id in army_sources[force]:
+                        seeded.add(token.position_id)
             reached, queue = seeded.copy(), deque(sorted(seeded))
             while queue:
                 for region in adjacency[queue.popleft()]:
                     if region in occupied and region not in reached:
                         reached.add(region)
                         queue.append(region)
-            return always | {t.token_id for t in units if t.owner_country == country and t.position_id in reached}
+            supplied = always | {t.token_id for t in units if t.owner_country == country and t.position_id in reached}
+            return supplied - unported if revised else supplied
         pieces = [t for t in units if t.owner_country == country or
                   ((share or any(t.owner_country in group for group in groups))
                    and self.rules.team(t.owner_country) == self.rules.team(country))]

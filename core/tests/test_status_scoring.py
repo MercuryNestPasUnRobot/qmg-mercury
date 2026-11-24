@@ -131,7 +131,7 @@ def test_supply_modifier_prices_only_new_supply_and_b_leaves_it_on_the_map(data)
     ability.update(effects=[], activation_mode="AUTO")
     card(data, "g-status")["modifiers"] = [{"kind": "always_supplied", "force": "germany", "scope": "all"}]
     move_initial(data, "g-status", "germany:STATUS")
-    move_initial(data, "germany-army-1", "C")
+    move_initial(data, "germany-army-1", "D")
     forecast = view_forecast(make(data))
     supply, options = forecast.board_changes("germany", "g-status", "g-status")
     assert supply > 0
