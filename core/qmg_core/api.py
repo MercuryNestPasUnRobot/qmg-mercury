@@ -149,6 +149,8 @@ def observation(processor, controlled_countries, *, include_history=True):
                 token = visible.get(action.get("token"))
                 if token and token["token_type"] == "SCORE_SOURCE":
                     decision["score_source"] = token["token_id"]
+            if action["type"] == "RETURN_CARD_SELECTED":
+                decision["return_discard_cost"] = action["effect"]["discardHandCount"]
             if s.decision.continuation["type"] == "RESPONSE_SELECTED":
                 candidates = s.decision.continuation["candidates"]
                 decision["response_sources"] = {

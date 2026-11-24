@@ -2,8 +2,11 @@
 from collections import defaultdict, deque
 from math import inf
 
-from .model import TURN_ORDER
-from .rules import MapGraph
+from .model import TURN_ORDER, zone
+from .rules import MapGraph, RuleModifierResolver
+
+
+STANDARD_SITE_VP = 2
 
 
 class ActionDistanceScoring:
@@ -17,6 +20,11 @@ class ActionDistanceScoring:
         self.remaining = 0 if state.winner else max(0, rules.settings["max_rounds"] - state.turn.round_id + 1)
         self.include_connections = include_connections
         self.graphs, self.paths, self.bases, self.sites_by_position = {}, {}, {}, {}
+        self.income_changes = {}
+        self.has_income_changes = include_connections and any(
+            m["kind"] == "score_bonus"
+            for seat in TURN_ORDER for token in state.positions.get(zone(seat, "STATUS"), ())
+            for m in rules.cards[state.tokens[token].definition_id].get("modifiers", ()))
 
     def distances(self, force, start):
         key = force, start
@@ -59,6 +67,26 @@ class ActionDistanceScoring:
     def distance_value(self, base, distance):
         return max(0, base - self.units.action_score(distance))
 
+    def proportional_base(self, force, region, vp):
+        return self.capture(force, region, STANDARD_SITE_VP) * vp / STANDARD_SITE_VP
+
+    def site_base(self, force, region, site):
+        printed = self.rules.sites[site]["vp"]
+        if self.has_income_changes:
+            seat = self.rules.force_controllers[force]
+            if seat not in self.income_changes:
+                changes = defaultdict(int)
+                for modifier in RuleModifierResolver(self.rules).resolve(self.state, seat):
+                    if modifier["kind"] == "score_bonus":
+                        changes[modifier["site"]] += modifier["amount"]
+                self.income_changes[seat] = changes
+            change = self.income_changes[seat].get(site, 0)
+            if change:
+                return self.proportional_base(force, region, max(0, printed + change))
+        if self.rules.sites[site].get("dynamic"):
+            return self.proportional_base(force, region, printed)
+        return self.capture(force, region, printed)
+
     def site_values(self, force, region, *, excluded=None):
         """Deduct or add each other unit at most once across the chosen routes."""
         key = force, region, excluded
@@ -75,7 +103,9 @@ class ActionDistanceScoring:
                 distance = from_start.get(end)
                 if distance is None:
                     continue
-                base = self.capture(force, end, definition["vp"])
+                base = self.site_base(force, end, site)
+                if base <= 0:
+                    continue
                 value = base - self.units.action_score(distance)
                 if value >= 0:
                     routes.append((distance, site, end, base, value))
@@ -113,7 +143,7 @@ class ActionDistanceScoring:
     def best_adjacent_site(self, force, regions):
         regions = set(regions)
         team = self.rules.team(force)
-        return max((self.distance_value(self.capture(force, end, self.rules.sites[site]["vp"]), 1)
+        return max((self.distance_value(self.site_base(force, end, site), 1)
                     for site, locations in self.locations.items() for end in locations
                     if any(self.rules.team(seat) == team for seat in self.rules.sites[site]["countries"])
                     if any(self.distances(force, end).get(region) == 1 for region in regions)), default=0)
@@ -130,7 +160,7 @@ class ActionDistanceScoring:
                 if distance == 0:
                     if site not in rates[seat]:
                         continue
-                    score = self.capture(force, region, self.rules.sites[site]["vp"])
+                    score = self.site_base(force, region, site)
                     held[key] = max(held[key], score)
                 best[key] = max(best[key], score)
                 influences.append({"token": token.token_id, "site": site, "distance": distance,
@@ -159,7 +189,7 @@ class ActionDistanceScoring:
             if countries is not None and self.rules.force_controllers[force] not in countries:
                 continue
             distance = self.distances(force, token.position_id).get(region, inf)
-            score = self.distance_value(self.capture(force, region, vp), distance)
+            score = self.distance_value(self.proportional_base(force, region, vp), distance)
             team = self.rules.team(force)
             teams[team] = min(teams.get(team, (inf, 0)), (distance, -score))
         team = self.rules.team(owner)

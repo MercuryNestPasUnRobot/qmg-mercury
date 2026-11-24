@@ -18,7 +18,7 @@ from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
 from .status_scoring import is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
-from .score_units import ScoreUnits, VALUED_ACTIONS, equivalent_action
+from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class PositionValue:
     score_points: tuple
     token_influence: tuple
     unit_removal_score: float
+    card_event_value: float
 
 
 class ScoreEvaluator:
@@ -87,8 +88,9 @@ class ScoreEvaluator:
             self.map_weights = self.weights
         if "economic_forecast" in weights:
             economy = weights["economic_forecast"]
-            if not isinstance(economy, dict) or set(economy) != {
-                    "vp_pressure_bonus", "closeout_bonus", "lead_vp_per_round", "future_shortfall_value"}:
+            required_economy = {"vp_pressure_bonus", "closeout_bonus", "lead_vp_per_round", "future_shortfall_value"}
+            if (not isinstance(economy, dict) or not required_economy <= economy.keys()
+                    or economy.keys() - required_economy - {"deck_top_look"}):
                 raise CoreError("Invalid economic forecast settings")
             numbers.extend(economy.values())
         if any(type(n) not in (int, float) or not isfinite(n) or n < 0 for n in numbers) or not 0 <= weights["time_discount"] <= 1:
@@ -252,7 +254,7 @@ class ScoreEvaluator:
         routes = ScoringRoutes(rules, state, board_units(rules, state), self.weights)
         return {region: routes.target_value(country, region) for region in regions}
 
-    def _value(self, processor, country, *, excluded_unit=None, initial_units=None, played_card=None):
+    def _value(self, processor, country, *, excluded_unit=None, initial_units=None, played_card=None, card_event_value=0):
         s, rules, w = processor.state, processor.rules, self.weights
         team = rules.team(country)
         sign = lambda c: 1 if rules.team(c) == team else -1
@@ -299,10 +301,11 @@ class ScoreEvaluator:
                 resources -= sign(c) * w["resource_penalties"]["empty_deck"]
         if played_card and s.tokens[played_card].position_id != zone(country, "HAND"):
             cards += self.units.card
+        cards += card_event_value
         terminal = 2 if s.winner == team else -2 if s.winner == enemy else 0
         return PositionValue(float(actual), map_value, cards, resources,
                              self.units.vp_score(actual) + map_value + cards + resources,
-                             terminal, tuple(point_values), tuple(influences), removal)
+                             terminal, tuple(point_values), tuple(influences), removal, card_event_value)
 
     def _legacy_map(self, rules, s, pieces, sign, excluded_unit):
         w = self.weights
@@ -478,7 +481,7 @@ def effect_potential(rules, state, seat, effect, weights, economy=None, *, units
         action = equivalent_action(effect, seat)
         if action and native_weights and action in native_weights:
             return units.action_score(native_weights[action] / 2)
-        if kind in ("battle-series", "battle", "air-action", "play-from-zone"):
+        if kind in ACTION_SUPPORT_EFFECTS or kind in ("battle-series", "battle", "air-action", "play-from-zone"):
             return units.action_score(estimate / 2)
         if kind in ("search-deck", "recover-discard"):
             return units.card_score(estimate)
@@ -542,6 +545,7 @@ class OneStepPlanner:
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
                        "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
                        **({"unit_removal_score": value.unit_removal_score} if value.unit_removal_score else {}),
+                       **({"card_event_score": value.card_event_value} if value.card_event_value else {}),
                        **({"initial_card_score": initial} if initial else {}),
                        **({"consumes_card": True} if consumes_card and self.evaluator.units.enabled
                           and not self.evaluator.action_distance else {}),
@@ -611,6 +615,7 @@ class OneStepPlanner:
                 "resource_delta": after.resource_adjustment - before.resource_adjustment,
                 "q": plan["total"], "terminal_rank": 0,
                 **({"unit_removal_score": after.unit_removal_score} if after.unit_removal_score else {}),
+                **({"card_event_score": after.card_event_value} if after.card_event_value else {}),
                 "continuations": [], "choice_signatures": [], "reallocation": plan}
 
     @staticmethod
@@ -618,19 +623,53 @@ class OneStepPlanner:
         if deadline is not None and perf_counter() >= deadline:
             raise TimeoutError("Projected search exceeded its deadline")
 
-    def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None):
+    def _card_events(self, processor, state, country, played_card):
+        if not self.evaluator.action_distance:
+            return 0
+        rules = processor.rules
+        economy = None
+        team = rules.team(country)
+        result = 0
+        for record in processor.records:
+            outcome = record["outcome"]
+            if not outcome["success"]:
+                continue
+            if outcome["event"] == "ORDER_DECK":
+                if economy is None:
+                    economy = self.evaluator.economic_from_state(rules, state)
+                actor = record["actor"]
+                result += (1 if rules.team(actor) == team else -1) * economy.top_value(
+                    len(outcome["changes"]), economy.routes.position.scoring_rounds(actor))
+            for move in outcome["changes"]:
+                origin, destination = move["from"], move["to"]
+                token = state.tokens[move["token_id"]]
+                if token.token_type != "CARD" or not origin or origin == destination:
+                    continue
+                owner = token.owner_country
+                returns_to_deck = destination == zone(owner, "DECK")
+                rearms = origin == zone(owner, "DISCARD") and destination == zone(owner, "RESPONSE")
+                goes_back_to_hand = (token.token_id == played_card and origin == "RESOLUTION" and
+                                     destination == zone(owner, "HAND"))
+                if returns_to_deck or rearms or goes_back_to_hand:
+                    result += self.evaluator.units.card_score(1 if rules.team(owner) == team else -1)
+        return result
+
+    def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None, card_events=0):
         self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
             raise SimulationIncomplete("Within-card choice budget exceeded; no partial score assigned")
         state = processor.state
+        card_events += self._card_events(processor, state, country, played_card)
         if state.winner:
             # Terminal positions may retain irrelevant pending frame cleanup.
-            return self.evaluator._value(processor, country, initial_units=initial_units, played_card=played_card), []
+            return self.evaluator._value(
+                processor, country, initial_units=initial_units, played_card=played_card, card_event_value=card_events), []
         if not state.decision:
             if state.stack:
                 raise SimulationIncomplete("Resolution not complete")
-            return self.evaluator._value(processor, country, initial_units=initial_units, played_card=played_card), []
+            return self.evaluator._value(
+                processor, country, initial_units=initial_units, played_card=played_card, card_event_value=card_events), []
         decision = state.decision
         actor = decision.required_country
         signature = (decision.decision_type, decision.continuation["type"], sorted(decision.legal_options))
@@ -649,7 +688,7 @@ class OneStepPlanner:
             branch = CommandProcessor(processor.rules, state, search_projection=True)
             CoreAPI(branch, (actor,)).apply(command)
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
-                                        played_card=played_card)
+                                        played_card=played_card, card_events=card_events)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

@@ -114,12 +114,12 @@ def test_status_replacing_the_normal_play_can_win_paper_comparison():
     assert paper_play_choices(choices, True) == choices[:1]
 
 
-def test_condition_can_be_built_next_turn_but_not_after_the_final_play(data):
+def test_regional_condition_only_contributes_if_its_base_covers_the_approach(data):
     scoring_status(data)
     card(data, "g-build")["legacy_kind"] = "build-army"
     card(data, "g-status")["content_condition"] = {
         "type": "unit-count", "min": 1, "filter": {"force": "self", "kind": "army", "spaces": ["B"]}}
-    assert 0 < view_forecast(make(data)).report("germany", "g-status")["future"] < 1
+    assert view_forecast(make(data)).report("germany", "g-status")["future"] == 0
     data["settings"]["max_rounds"] = 1
     assert view_forecast(make(data)).report("germany", "g-status")["future"] == 0
     move_initial(data, "germany-army-1", "B")

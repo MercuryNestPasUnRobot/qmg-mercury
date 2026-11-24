@@ -6,6 +6,11 @@ from .model import CoreError
 
 
 VALUED_ACTIONS = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "REDEPLOY", "USE_AIR"}
+ACTION_SUPPORT_EFFECTS = {
+    "prevent-removal", "protect-unit-this-turn", "protect-units-this-turn",
+    "supply-this-turn", "supply-units-this-turn", "forbid-air-defense-this-turn",
+    "disable-triggered-status", "cancel-card-effect", "cancel-economic", "prevent-economic-discard",
+}
 
 
 def equivalent_action(effect, seat):
