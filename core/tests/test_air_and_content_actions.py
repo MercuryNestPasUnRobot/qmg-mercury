@@ -235,9 +235,10 @@ def test_air_bonus_counts_only_air_in_range_of_target_home(data, weights):
     assert p.state.scores["allies"] == -1
 
 
-def test_surface_supply_requires_naval_army_base_and_strait_control(data):
+def test_historical_surface_supply_requires_naval_army_base_and_strait_control(data):
     from qmg_core.rules import MapGraph, SupplyResolver
     data["settings"]["surface_supply"] = True
+    data["settings"].pop("supply_revision")
     move_initial(data, "germany-navy-1", "T")
     p = make(data)
     assert "germany-navy-1" not in SupplyResolver(p.rules).supplied(p.state, "germany")

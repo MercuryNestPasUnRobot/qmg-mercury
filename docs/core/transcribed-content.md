@@ -69,3 +69,11 @@ npm run core:audit-content -- ../local-content/legacy-2026-11-19/content.json $c
 按本机 50 区棋盘的实际边界与版图两侧印刷的跨图标注复核了基础连接。不列颠只接北海，日耳曼的海岸接波罗的海。北海直接接北非，北海与地中海之间的通行取决于北非控制。地形边界只在一点相接时没有基础连接。[二版规则书（第 6–7 页）](https://c.tabletopia.com/games/quartermaster-general-ww2/rules/artg006-quartermastergeneralww2-rulebook-en-web/en#page=6)
 
 正常迁移命令会生成独立的 `board-reviewed` 规则版本，50 区共有 122 条基础连接。本机校对版的数据库路径记录在 `local-content/baselines/board-reviewed/coverage.json`。既有录像依靠原规则指纹继续重放。录像台可切换校对后的棋盘和当局规则。
+
+### 补给规则更新
+
+新迁移的规则目录启用补给第 2 版。本机校对版可从仓库根目录启动新对局。
+
+```powershell
+npm run core:play -- --catalog ../local-content/baselines/board-reviewed-supply-v2/content.sqlite3 --save-dir ../.cache/supply-v2-matches
+```

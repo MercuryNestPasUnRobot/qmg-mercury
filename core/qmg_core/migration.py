@@ -205,7 +205,7 @@ def compile_transcriptions(export):
                               {"type": "TRANSFER", "token": "$object", "destination": "$owner_ready"}]})
     rules = RuleSet({
         "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
-                            + ("-board-reviewed" if printed_board else "") + "-mandatory-play"),
+                            + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2"),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],
@@ -219,7 +219,7 @@ def compile_transcriptions(export):
                      "unit_responses": ["unit-protection", "unit-supply"], "area_responses": area_responses,
                      "record_turn_start": True, "air_phase": True, "temporary_status_disable": True,
                      "reallocation": True, "turn_opportunities": opportunities, "free_recruit": True, "naval_army_base": True,
-                     "surface_supply": True, "straits": straits, "declare_passives": True},
+                     "surface_supply": True, "supply_revision": 2, "straits": straits, "declare_passives": True},
         "source_pack": {"id": pack["id"], "version": pack["version"], "verified": pack["verified"],
                         "straits": straits, "limits": pack["limits"],
                         "reviewed": export.get("reviewed", [])},
