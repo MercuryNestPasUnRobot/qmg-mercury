@@ -103,3 +103,25 @@ def test_wait_only_for_a_better_net_gain_from_a_card_already_in_own_hand(data, v
                                      "time_cost": 2, "net": 4} if option == "decline" else None)
         answers.append(estimate)
     assert answers[0] == answers[1]
+
+
+def test_next_build_response_waits_one_turn_not_two(data):
+    map_with_sites(data, [("A", "B"), ("B", "C")], ())
+    hand_only(data, "g-build")
+    data["initial_tokens"].append({"token_id": "g-build-later", "definition_id": "g-build", "token_type": "CARD",
+                                  "owner_country": "germany", "position_id": zone("germany", "HAND")})
+    response(data, "after-build", {"type": "points-per-unit", "side": "self", "amountPer": 3,
+              "filter": {"force": "self", "kind": "army", "spaces": ["B", "C"]}})
+    next(a for a in data["abilities"] if a["id"] == "g-extra")["trigger"]["card_trigger"].update(
+        kind="army", builder="self")
+    game = make(data)
+    client = CoreAPI(game, ("germany",))
+    play = next(c for c in client.legal_commands() if c.get("card") == "g-build")
+    client.apply(play)
+    choice(client, "CHOOSE")
+    command, row = SeatPolicy(game.rules, evaluator=evaluator(game)).decide(client, "germany")
+    assert command["option"] == "decline"
+    estimate = next(r["response_forecast"] for r in row["rule_scores"] if r["command"]["option"] == "use")
+    assert estimate["immediate"] == 3
+    assert estimate["wait"] == {"card": "g-build-later", "target": "C", "base": 6, "wait_turns": 1,
+                                 "time_cost": 2, "net": 4}

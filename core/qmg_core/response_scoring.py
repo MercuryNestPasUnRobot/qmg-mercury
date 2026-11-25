@@ -12,10 +12,13 @@ from .model import CoreError, ResolutionFrame, TURN_ORDER, Token, ZoneRegistry, 
 from .operations import OperationExecutor, outcome
 from .positional_scoring import STANDARD_SITE_VP
 from .rules import LegalActionGenerator, SupplyResolver, board_units, unit_rule_matches
-from .status_scoring import TRIGGER_PHASE, trigger_of
+from .status_scoring import trigger_of
 
 
-PHASE_WINDOWS = {**TRIGGER_PHASE, "victory-start": "Victory"}
+PHASE_WINDOWS = {
+    "turn-start": "Play", "play-phase-start": "Play", "air-phase-start": "Air",
+    "victory-start": "Victory", "during-victory": "Victory", "discard-start": "Discard",
+}
 ACTION_WINDOWS = {"after-build", "battle-space", "unit-activity", "after-unit-removal"}
 AIR_WINDOWS = {"after-air-action", "after-air-superiority", "after-air-superiority-removal"}
 MILITARY_EFFECTS = {"build", "recruit", "choose-space", "battle"}
