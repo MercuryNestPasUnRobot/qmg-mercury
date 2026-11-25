@@ -84,7 +84,9 @@ class Tape:
                     moves.append([key, origin, destination])
             if moves or result["score_changes"] or not result["success"]:
                 changes.append({"type": record["operation_type"], "actor": record["actor"],
-                                "moves": moves, "scores": result["score_changes"], "ok": result["success"]})
+                                "moves": moves, "scores": result["score_changes"], "ok": result["success"],
+                                **({"site": record["operation"]["score_site"]}
+                                   if (record["operation"].get("score_site") or "").startswith("hidden:") else {})})
         self.cursor = len(self.processor.records)
         seat_zones = {}
         for seat in TURN_ORDER:

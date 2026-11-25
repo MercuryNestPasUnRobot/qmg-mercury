@@ -1,10 +1,11 @@
 {
-  "profile": "ai-test-v1.17-expansion-ports",
+  "profile": "ai-test-v1.18-stacked-score-sites",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "action_distance_scoring": true,
   "settlement_scoring": true,
   "response_timing_scoring": true,
   "expansion_preference": 0.25,
+  "stacked_site_scoring": true,
   "mirrored_attacks": true,
   "construction_search_width": 3,
   "basic_usage_cost": 1.2,

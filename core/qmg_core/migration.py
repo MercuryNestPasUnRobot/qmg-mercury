@@ -59,7 +59,7 @@ def compile_transcriptions(export):
     straits = pack.get("straits", [])
     printed_board = pack["id"] == "starter-unverified" and {r["id"] for r in regions} == PRINTED_REGIONS
     if printed_board:
-        edges, straits = corrected_edges(edges), corrected_straits(straits)
+        edges, straits = corrected_edges(edges, regional_review=True), corrected_straits(straits)
     cards, abilities, coverage, area_responses = [], [], [], {}
     for index, original in enumerate(pack["cards"]):
         original = deepcopy(original)
@@ -208,7 +208,7 @@ def compile_transcriptions(export):
     rules = RuleSet({
         "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
                             + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2-shared-sites"
-                            + ("-half-sites-linked-build" if printed_board else "")),
+                            + ("-half-sites-linked-build-regional-sites" if printed_board else "")),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],
@@ -223,6 +223,7 @@ def compile_transcriptions(export):
                      "record_turn_start": True, "air_phase": True, "temporary_status_disable": True,
                      "reallocation": True, "turn_opportunities": opportunities, "free_recruit": True, "naval_army_base": True,
                      "surface_supply": True, "supply_revision": 2, "shared_site_scoring": True,
+                     **({"regional_status_sites": True} if printed_board else {}),
                      "straits": straits, "declare_passives": True},
         "source_pack": {"id": pack["id"], "version": pack["version"], "verified": pack["verified"],
                         "straits": straits, "limits": pack["limits"],

@@ -53,7 +53,8 @@ class ScoringRoutes:
         self.status_forecast = status_forecast
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections,
-                                              construction_rules="expansion_preference" in weights)
+                                              construction_rules="expansion_preference" in weights,
+                                              stacked_sites=weights.get("stacked_site_scoring", False))
                          if self.weights.get("action_distance_scoring") else None)
 
     def _site_route(self, paths, force, start, end):
@@ -209,7 +210,7 @@ class ScoringRoutes:
     def capture_value(self, force, region):
         if self.position:
             return sum(self.position.site_base(force, region, site)
-                       for site, locations in self.locations.items() if region in locations)
+                       for site, locations in self.position.locations.items() if region in locations)
         remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
         return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
 

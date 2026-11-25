@@ -4,6 +4,7 @@ from dataclasses import replace
 from heapq import heappop, heappush
 
 from .model import ZoneRegistry, zone
+from .regional_sites import active_hidden_sites
 from .rules import LegalActionGenerator, MapGraph, RuleModifierResolver, SupplyResolver, board_units
 
 
@@ -152,6 +153,14 @@ class ConstructionNetwork:
                 modifiers[modifier["site"]] += modifier["amount"]
         dynamic = {t.definition_id for t in self.state.tokens.values() if t.token_type == "SCORE_SOURCE"
                    and t.position_id in reachable and t.owner_country in (None, self.seat)}
-        return tuple(sorted(key for key, definition in self.rules.sites.items() if
-                            self.seat in definition["countries"] and definition["vp"] + modifiers[key] > 0
-                            and (key in dynamic if definition.get("dynamic") else definition["region"] in reachable)))
+        sites = {key for key, definition in self.rules.sites.items() if
+                 self.seat in definition["countries"] and definition["vp"] + modifiers[key] > 0
+                 and (key in dynamic if definition.get("dynamic") else definition["region"] in reachable)}
+        if self.rules.hidden_score_rules:
+            definitions = {unit["kind"]: key for key, unit in self.rules.units.items()}
+            for layer in active_hidden_sites(self.rules, self.state):
+                if (layer.active(self.rules, self.state) and
+                        any(layer.build_eligible(self.rules, self.state, self.force, region, definitions)
+                            for region in reachable.intersection(layer.spaces))):
+                    sites.add(layer.key)
+        return tuple(sorted(sites))

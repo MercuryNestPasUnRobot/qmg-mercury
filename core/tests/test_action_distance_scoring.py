@@ -37,7 +37,7 @@ def test_capture_income_distance_and_remaining_round_cap(data):
     data["connections"][-1].update(a="D")
     position = forecast(data).routes.position
     assert position.capture("germany", "C", 2) == 6
-    assert position.value("germany", "A") == 2
+    assert position.value("germany", "A", excluded="germany-army-0") == 2
     data["settings"]["max_rounds"] = 2
     assert forecast(data).routes.position.capture("germany", "C", 2) == 4
 
@@ -55,18 +55,19 @@ def test_allied_unit_on_site_or_closer_along_path_is_charged_once(data):
     map_with_sites(data, [("A", "B"), ("B", "C"), ("B", "D"), ("C", "E"), ("C", "F"), ("F", "D")],
                    ("C", "D"))
     move_initial(data, "japan-army-0", zone("japan", "RESERVE_ARMY"))
-    original = forecast(data).routes.position
+    weights = {**profile(), "stacked_site_scoring": False}
+    original = forecast(data, weights=weights).routes.position
     assert original.site_values("germany", "A") == {"C": (2, 0), "D": (2, 4)}
     move_initial(data, "italy-army-0", "B")
-    with_ally = forecast(data).routes.position
+    with_ally = forecast(data, weights=weights).routes.position
     assert with_ally.site_values("germany", "A") == {"C": (2, 0), "D": (2, 1)}
     move_initial(data, "italy-army-0", "C")
-    with_ally = forecast(data).routes.position
+    with_ally = forecast(data, weights=weights).routes.position
     assert with_ally.site_values("germany", "C")["C"] == (0, 2)
     assert with_ally.site_values("germany", "B")["C"] == (1, 0)
     move_initial(data, "italy-army-0", "H")
     move_initial(data, "united-kingdom-army-1", "C")
-    foe = forecast(data).routes.position
+    foe = forecast(data, weights=weights).routes.position
     # The UK army's own capture value is 6, giving it 3 influence on this route.
     assert foe.site_values("germany", "C")["C"] == (0, 7)
     assert foe.site_values("germany", "B")["C"] == (1, 5)

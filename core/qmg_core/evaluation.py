@@ -30,6 +30,8 @@ class ScoreEvaluator:
         self.action_distance = weights.get("action_distance_scoring", False)
         if type(weights.get("response_timing_scoring", False)) is not bool:
             raise CoreError("Invalid response timing scoring setting")
+        if type(weights.get("stacked_site_scoring", False)) is not bool:
+            raise CoreError("Invalid stacked site scoring setting")
         if type(self.action_distance) is not bool or (self.action_distance and
                 (not self.units.enabled or "route_forecast" not in weights or "economic_forecast" not in weights)):
             raise CoreError("Action distance scoring requires standard units, routes and economic forecasting")
