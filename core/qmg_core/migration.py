@@ -208,7 +208,7 @@ def compile_transcriptions(export):
     rules = RuleSet({
         "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
                             + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2-shared-sites"
-                            + ("-half-sites" if printed_board else "")),
+                            + ("-half-sites-linked-build" if printed_board else "")),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],

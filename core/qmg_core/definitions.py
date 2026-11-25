@@ -92,9 +92,9 @@ class RuleSet:
                 for field in ("home_country", "supply_source_for")
             ):
                 raise CoreError("Invalid region")
-            blocked = r.get("no_construction_for", [])
-            if not isinstance(blocked, list) or any(
-                    not isinstance(force, str) or force not in self.force_controllers for force in blocked):
+            restricted = r.get("construction_requires_adjacent_for", [])
+            if not isinstance(restricted, list) or any(
+                    not isinstance(force, str) or force not in self.force_controllers for force in restricted):
                 raise CoreError("Invalid construction restriction")
         for u in self.units.values():
             if u["kind"] not in ("ARMY", "NAVY", "AIR"):

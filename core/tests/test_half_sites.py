@@ -24,7 +24,7 @@ def test_reviewed_map_defines_three_half_sites_and_preserves_the_us_inventory():
     assert {site["region"] for site in sites} == {p["id"] for p in regions}
     assert all(site["vp"] == 1 and site["scoring"] == PER_UNIT_SITE and site["requires_supply"] for site in sites)
     assert [t["position_id"] for t in initial] == ["united-states", "hawaii", "united-states:RESERVE_ARMY"]
-    assert regions[-1]["no_construction_for"] == ["united-states"]
+    assert regions[-1]["construction_requires_adjacent_for"] == ["united-states"]
 
 
 def test_half_sites_supply_and_pay_each_surface_unit_including_same_seat_auxiliaries(data):
@@ -54,10 +54,14 @@ def test_half_sites_supply_and_pay_each_surface_unit_including_same_seat_auxilia
     assert gains == [("germany", 2), ("italy", 1)]
 
 
-def test_construction_exclusion_applies_to_fixed_card_targets_and_free_recruit(data):
+def test_construction_requires_a_supplied_adjacent_unit_even_for_fixed_card_targets_or_free_recruit(data):
+    map_with_sites(data, [("E", "B"), ("C", "B")], ())
     data["settings"]["free_recruit"] = True
-    next(r for r in data["regions"] if r["id"] == "B")["no_construction_for"] = ["germany"]
-    data["connections"].append({"id": "another-approach", "a": "E", "b": "B"})
+    target = next(r for r in data["regions"] if r["id"] == "B")
+    target.update(home_country="germany", construction_requires_adjacent_for=["germany"])
+    card(data, "g-status").setdefault("modifiers", []).append(
+        {"kind": "build_region", "unit_kind": "ARMY", "region": "B"})
+    move_initial(data, "g-status", zone("germany", "STATUS"))
     game = make(data)
     targets = LegalActionGenerator(game.rules)
     for operation, effect_type in (("BUILD_ARMY", "build"), ("RECRUIT", "recruit")):
@@ -65,6 +69,15 @@ def test_construction_exclusion_applies_to_fixed_card_targets_and_free_recruit(d
         assert target_regions(game.rules, game.state, "germany", {"type": effect_type, "space": "B"}) == []
     assert "B" in targets.targets(game.state, "united-kingdom", {"type": "BUILD_ARMY"})
     assert "B" in targets.targets(game.state, "united-kingdom", {"type": "RECRUIT"})
+    move_initial(data, "germany-army-0", "C")
+    unsupplied = make(data)
+    assert "B" not in LegalActionGenerator(unsupplied.rules).targets(unsupplied.state, "germany", {"type": "BUILD_ARMY"})
+    del target["home_country"]
+    next(r for r in data["regions"] if r["id"] == "C")["supply_source_for"] = "germany"
+    data["settings"]["free_recruit"] = False
+    supplied = make(data)
+    for effect_type in ("build", "recruit"):
+        assert target_regions(supplied.rules, supplied.state, "germany", {"type": effect_type, "space": "B"}) == ["B"]
 
 
 @pytest.mark.parametrize("owner", ["germany", "united-kingdom"])

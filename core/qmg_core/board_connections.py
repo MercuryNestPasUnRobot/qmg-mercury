@@ -24,7 +24,7 @@ def apply_half_sites(regions, sites, initial):
         site.update(vp=1, scoring=PER_UNIT_SITE)
 
     hawaii = next(row for row in regions if row["id"] == "hawaii")
-    hawaii["no_construction_for"] = ["united-states"]
+    hawaii["construction_requires_adjacent_for"] = ["united-states"]
     pacific_army = next(token for token in initial if token["token_id"] == "united-states-army-2")
     pacific_army["position_id"] = "hawaii"
 

@@ -331,18 +331,23 @@ class LegalActionGenerator:
             adjacency = self.graph.adjacency(state, country, "build")
             result = []
             for region, definition in self.rules.regions.items():
-                if definition["type"] != expected_terrain or force in definition.get("no_construction_for", ()):
+                if definition["type"] != expected_terrain:
                     continue
                 present = [t for t in units if t.position_id == region]
                 if any(self.rules.team(t.owner_country) != self.rules.team(country) or
                        (t.owner_country == force and self.rules.units[t.definition_id]["kind"] == unit_kind) for t in present):
                     continue
                 neighbors = adjacency[region]
-                reachable = region in homes or bool(neighbors & origins) or region in extra
+                has_adjacent_origin = bool(neighbors & origins)
+                needs_adjacent_origin = force in definition.get("construction_requires_adjacent_for", ())
+                if needs_adjacent_origin and not has_adjacent_origin:
+                    continue
+                reachable = region in homes or has_adjacent_origin or region in extra
                 if unit_kind == "ARMY" and any(m["kind"] == "recruit_region" and m["region"] == region for m in modifiers):
                     reachable = True
                 if kind == "RECRUIT":
-                    reachable = self.rules.settings.get("free_recruit", False) or region in homes or bool(neighbors & homes)
+                    reachable = (needs_adjacent_origin or self.rules.settings.get("free_recruit", False) or
+                                 region in homes or bool(neighbors & homes))
                 elif self.rules.settings.get("naval_army_base") and unit_kind == "NAVY":
                     reachable = reachable and any(t.position_id in neighbors and
                         self.rules.units[t.definition_id]["kind"] == "ARMY" and
