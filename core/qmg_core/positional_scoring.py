@@ -3,6 +3,7 @@ from collections import defaultdict, deque
 from math import inf
 
 from .definitions import PER_UNIT_SITE
+from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, zone
 from .rules import MapGraph, RuleModifierResolver
 
@@ -11,7 +12,8 @@ STANDARD_SITE_VP = 2
 
 
 class ActionDistanceScoring:
-    def __init__(self, rules, state, pieces, locations, units, nearest_sites, *, include_connections=True):
+    def __init__(self, rules, state, pieces, locations, units, nearest_sites, *,
+                 include_connections=True, construction_rules=False):
         self.rules = rules
         self.state = state
         self.units = units
@@ -20,6 +22,8 @@ class ActionDistanceScoring:
         self.pieces = tuple(t for t in pieces if rules.units[t.definition_id]["kind"] != "AIR")
         self.remaining = 0 if state.winner else max(0, rules.settings["max_rounds"] - state.turn.round_id + 1)
         self.include_connections = include_connections
+        self.construction_rules = construction_rules
+        self.construction_networks, self.construction_paths = {}, {}
         self.graphs, self.paths, self.bases, self.sites_by_position = {}, {}, {}, {}
         self.income_changes = {}
         self.source_owners = defaultdict(set)
@@ -96,23 +100,34 @@ class ActionDistanceScoring:
             return self.proportional_base(force, region, printed)
         return self.capture(force, region, printed)
 
-    def site_values(self, force, region, *, excluded=None):
+    def construction_distances(self, force, region):
+        key = force, region
+        if key not in self.construction_paths:
+            if force not in self.construction_networks:
+                self.construction_networks[force] = ConstructionNetwork(self.rules, self.state, force)
+            self.construction_paths[key] = self.construction_networks[force].distance(region)
+        return self.construction_paths[key]
+
+    def site_values(self, force, region, *, excluded=None, construction=False):
         """Deduct or add each other unit at most once across the chosen routes."""
-        key = force, region, excluded
+        construction = construction and self.construction_rules
+        key = force, region, excluded, construction
         if key in self.sites_by_position:
             return self.sites_by_position[key]
         from_start = self.distances(force, region)
+        practical = self.construction_distances(force, region) if construction else from_start
+        penalty = 2 if construction and force in self.rules.auxiliary_forces else 1
         team = self.rules.team(force)
         routes = []
         for site, locations in self.locations.items():
             for end in sorted(locations):
-                distance = from_start.get(end)
+                distance = practical.get(end)
                 if distance is None:
                     continue
                 base = self.site_base(force, end, site)
                 if base <= 0:
                     continue
-                value = base - self.units.action_score(distance)
+                value = base - self.units.action_score(penalty * distance)
                 if value >= 0:
                     routes.append((distance, site, end, value))
         # Multiple physical copies of the same score source still represent one site.
@@ -130,9 +145,10 @@ class ActionDistanceScoring:
             best, best_site = 0, None
             for distance, site, end, _ in routes:
                 to_end = self.distances(force, end).get(position, inf)
-                if not (to_end < distance or to_end == distance == 0):
+                geographic_distance = from_start.get(end, inf)
+                if not (to_end < geographic_distance or to_end == geographic_distance == 0):
                     continue
-                if from_start.get(position, inf) + to_end != distance:
+                if from_start.get(position, inf) + to_end != geographic_distance:
                     continue
                 if friendly and distance == 0 and self.rules.sites[site].get("scoring") == PER_UNIT_SITE:
                     continue  # An allied unit here does not share the new unit's VP.
@@ -146,8 +162,9 @@ class ActionDistanceScoring:
         self.sites_by_position[key] = scores
         return scores
 
-    def value(self, force, region, *, excluded=None):
-        return sum(value for _, value in self.site_values(force, region, excluded=excluded).values())
+    def value(self, force, region, *, excluded=None, construction=False):
+        return sum(value for _, value in self.site_values(force, region, excluded=excluded,
+                                                         construction=construction).values())
 
     def best_adjacent_site(self, force, regions):
         regions = set(regions)

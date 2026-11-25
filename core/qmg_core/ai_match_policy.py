@@ -33,7 +33,8 @@ def operation_priority(kind, units):
     return units.action_score(value / 2) if kind in VALUED_ACTIONS else value
 
 
-def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, frontier=False, units=ScoreUnits()):
+def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, frontier=False, units=ScoreUnits(),
+                    spent_card=None):
     kind = effect["type"]
     if economy:
         dynamic = economy.effect(seat, effect, ACTION_PRIORITY["GAIN_VP"], closeout=closeout)
@@ -65,12 +66,12 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
         friendly_choice = frontier and economy.rules.team(chooser) == team
         acting_seat = chooser if friendly_choice else seat
         return max((sum(effect_priority(e, team, economy, acting_seat, closeout=closeout,
-                                        frontier=friendly_choice and i == 0, units=units)
+                                        frontier=friendly_choice and i == 0, units=units, spent_card=spent_card)
                         for i, e in enumerate(option["effects"]))
                     for option in effect["options"]), default=0)
     if units.enabled and kind == "battle" and effect.get("kind") == "either":
         return max(effect_priority({**effect, "kind": unit}, team, economy, seat, closeout=closeout,
-                                   frontier=frontier, units=units) for unit in ("army", "navy"))
+                                   frontier=frontier, units=units, spent_card=spent_card) for unit in ("army", "navy"))
     action = equivalent_action(effect, seat) if units.enabled else None
     value = EFFECT_PRIORITY.get(kind, 0.2)
     if action:
@@ -82,13 +83,13 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
     if frontier and kind in ("choose-space", "recruit", "build", "battle"):
         if action in CONSTRUCTION and economy.routes.conservative_placement:
             return economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect},
-                                                     placement_base=value)
+                                                     placement_base=value, spent_card=spent_card)
         attack_premium = 0
         if kind == "battle" and economy.map_weights.get("mirrored_attacks"):
             matched = operation_priority(BATTLE_BUILD[action], units) if action in BATTLES else EFFECT_PRIORITY["choose-space"]
             attack_premium = matched - value
         value += economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect},
-                                                  attack_premium=attack_premium)
+                                                  attack_premium=attack_premium, spent_card=spent_card)
     return value
 
 
@@ -115,7 +116,7 @@ class RulePolicy:
             region = site["region"]
             self.sites[region] = self.sites.get(region, 0) + site["vp"]
 
-    def instructions(self, steps, seat, economy, *, closeout=False):
+    def instructions(self, steps, seat, economy, *, closeout=False, spent_card=None):
         team = self.rules.team(seat)
         value = 0
         frontier = bool(closeout and economy and economy.map_weights)
@@ -123,7 +124,7 @@ class RulePolicy:
             op = step.get("operation", step)
             if op["type"] == "CARD_EFFECT":
                 value += effect_priority(op["effect"], team, economy, seat, closeout=closeout, frontier=frontier,
-                                         units=self.units)
+                                         units=self.units, spent_card=spent_card)
             elif op["type"] == "GAIN_VP" and (economy or self.units.enabled):
                 recipient = op.get("score_country") or seat
                 delta = op["amount"] if self.rules.team(recipient) == team else -op["amount"]
@@ -157,32 +158,34 @@ class RulePolicy:
                     frontier = False
                     continue
                 if frontier and self.evaluator.settlement and op["type"] in CONSTRUCTION:
-                    value += economy.routes.best_action_bonus(seat, op, placement_base=priority * count)
+                    value += economy.routes.best_action_bonus(seat, op, placement_base=priority * count,
+                                                              spent_card=spent_card)
                     frontier = False
                     continue
                 value += priority * count
                 if frontier and op["type"] in CONSTRUCTION | BATTLES:
                     attack_premium = (operation_priority(BATTLE_BUILD[op["type"]], self.units) - priority
                                       if op["type"] in BATTLES and economy.map_weights.get("mirrored_attacks") else 0)
-                    value += economy.routes.best_action_bonus(seat, op, attack_premium=attack_premium)
+                    value += economy.routes.best_action_bonus(seat, op, attack_premium=attack_premium,
+                                                              spent_card=spent_card)
             frontier = False  # Later military targets may depend on the outcome of this instruction.
         return value
 
-    def card_value(self, card, seat, economy, *, active=False, closeout=False):
+    def card_value(self, card, seat, economy, *, active=False, closeout=False, spent_card=None):
         if economy and is_delayed(card) and economy.responses:
             value = economy.responses.staging(seat, card["id"])
             return value["net"] if value["window_remaining"] else min(0, value["net"])
         if economy and economy.status_weights and is_status(card):
             if active:
                 return economy.statuses.program(seat, seat, card["active_ability"], None, committed=True)
-            return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
+            return (self.instructions(card["effects"], seat, economy, closeout=closeout, spent_card=spent_card) +
                     economy.statuses.report(seat, card["id"], held=not closeout)["future"])
         if active:
             return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], seat, economy, closeout=closeout)
         abilities = [self.rules.abilities[a] for a in card.get("abilities", ())]
         airdrop = [ability for ability in abilities if economy and economy.status_weights and
                    self.evaluator.action_distance and is_airdrop(ability)]
-        return (self.instructions(card["effects"], seat, economy, closeout=closeout) +
+        return (self.instructions(card["effects"], seat, economy, closeout=closeout, spent_card=spent_card) +
                 sum(max(0, economy.statuses.airdrop_value(seat, ability["id"])) for ability in airdrop) +
                 0.35 * sum(self.instructions(a["effects"], seat, economy) for a in abilities if a not in airdrop))
 
@@ -192,9 +195,9 @@ class RulePolicy:
             cost += self.units.card
         return -max(0, self.card_value(card, seat, economy)) - cost
 
-    def play_card_value(self, card, seat, economy):
+    def play_card_value(self, card, seat, economy, *, spent_card=None):
         card_cost = self.evaluator.card_play_cost if self.evaluator else 0
-        return self.card_value(card, seat, economy, closeout=True) - card_cost
+        return self.card_value(card, seat, economy, closeout=True, spent_card=spent_card) - card_cost
 
     def terminal_priority(self, view, command, seat, economy):
         if not self.units.enabled or not economy or command["type"] not in ("PLAY_CARD", "USE_STATUS") or command.get("play_as"):
@@ -394,8 +397,8 @@ class RulePolicy:
             token = view["tokens"][command["card"]]
             card = self.rules.cards[token["definition_id"]]
             if mode := command.get("play_as"):
-                return self.instructions([{"type": mode}], seat, economy, closeout=True) - card_cost
-            return (self.play_card_value(card, seat, economy) if kind == "PLAY_CARD" else
+                return self.instructions([{"type": mode}], seat, economy, closeout=True, spent_card=command["card"]) - card_cost
+            return (self.play_card_value(card, seat, economy, spent_card=command["card"]) if kind == "PLAY_CARD" else
                     self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
         for row in rows:
@@ -420,6 +423,10 @@ class RulePolicy:
                 row["response_forecast"] = forecasts[key]
                 if command["type"] == "ACTIVATE_CARD" and row["rule_score"] > 0:
                     row["immediate_response"] = True
+            if (command["type"] == "CHOOSE" and key in region_scores and decision.get("map_force") and
+                    not decision["map_battle"] and economy and economy.routes.expansion_vp):
+                region = key.split("|", 1)[-1]
+                row["expansion"] = economy.routes.expansion(decision["map_force"], region)
         # Canonical tie-breaks also apply to own permitted choices out of the deck.
         def order(row):
             command = row["command"]

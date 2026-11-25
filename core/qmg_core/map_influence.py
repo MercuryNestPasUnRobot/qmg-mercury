@@ -1,10 +1,10 @@
 """Value the nearest scoring sites using current, visible board routes."""
 from collections import Counter, defaultdict, deque
-from dataclasses import replace
 
 from .content_effects import action_for, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
-from .model import Token, ZoneRegistry, canonical, zone
+from .expansion_scoring import BUILD_CARDS, ConstructionNetwork, project_placement
+from .model import Token, canonical, zone
 from .operations import ScoreResolver
 from .positional_scoring import ActionDistanceScoring
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, unit_rule_matches
@@ -21,6 +21,9 @@ class ScoringRoutes:
         self.units = ScoreUnits.from_weights(weights)
         self.conservative_placement = weights.get("settlement_scoring", False)
         self.placement_supply = {}
+        self.placement_projections = {}
+        self.expansions = {}
+        self.expansion_vp = weights.get("expansion_preference", 0)
         self.pieces = pieces
         self.seat_rates = None
         self.direct_income = {}
@@ -49,7 +52,8 @@ class ScoringRoutes:
         self.removal_routes = {}
         self.status_forecast = status_forecast
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
-                                              self.config["nearest_sites"], include_connections=include_connections)
+                                              self.config["nearest_sites"], include_connections=include_connections,
+                                              construction_rules="expansion_preference" in weights)
                          if self.weights.get("action_distance_scoring") else None)
 
     def _site_route(self, paths, force, start, end):
@@ -212,22 +216,34 @@ class ScoringRoutes:
     def placement_supplied(self, force, region):
         key = force, region
         if key not in self.placement_supply:
-            kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
-            reserve = zone(force, "RESERVE_" + kind)
-            stored = self.state.positions[reserve]
-            if not stored:
-                result = False
-            else:
-                projected = replace(self.state, tokens=dict(self.state.tokens),
-                                    positions={**self.state.positions, reserve: list(stored),
-                                               region: list(self.state.positions[region])})
-                ZoneRegistry.transfer(projected, stored[0], region)
-                result = stored[0] in SupplyResolver(self.rules).supplied(projected, force)
-            self.placement_supply[key] = result
+            projection = self.placement(force, region)
+            self.placement_supply[key] = bool(projection and projection[1] in
+                                              SupplyResolver(self.rules).supplied(projection[0], force))
         return self.placement_supply[key]
 
-    def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True):
-        cache_key = (force, region, battle, construction, local_only, include_capture)
+    def placement(self, force, region):
+        key = force, region
+        if key not in self.placement_projections:
+            self.placement_projections[key] = project_placement(self.rules, self.state, force, region)
+        return self.placement_projections[key]
+
+    def expansion(self, force, region, *, spent_card=None):
+        token = self.state.tokens.get(spent_card)
+        seat = self.rules.force_controllers[force]
+        spent_kind = (self.rules.cards.get(token.definition_id, {}).get("legacy_kind")
+                      if token and token.position_id == zone(seat, "HAND") else None)
+        key = force, region, spent_kind if spent_kind in BUILD_CARDS else None
+        if key not in self.expansions:
+            sites = ()
+            if self.expansion_vp and force not in self.rules.auxiliary_forces and self.placement_supplied(force, region):
+                state, _ = self.placement(force, region)
+                sites = ConstructionNetwork(self.rules, state, force).score_sites((region,), spent=spent_card)
+            self.expansions[key] = {"sites": sites, "score": self.units.vp_score(len(sites) * self.expansion_vp)}
+        return self.expansions[key]
+
+    def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True,
+                     spent_card=None):
+        cache_key = (force, region, battle, construction, local_only, include_capture, spent_card)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
         if construction and self.conservative_placement and not self.placement_supplied(force, region):
@@ -235,9 +251,11 @@ class ScoringRoutes:
             return 0.0
         if self.position:
             value = (max((self.removal_value(t.token_id) for t in self._removable_targets(force, region)), default=0)
-                     if battle else self.position.value(force, region))
+                     if battle else self.position.value(force, region, construction=construction))
             if construction and self.status_forecast:
                 value += self.status_forecast().regional_placement(force, region)
+            if construction and self.expansion_vp:
+                value += self.expansion(force, region, spent_card=spent_card)["score"]
             self.target_scores[cache_key] = value
             return value
         if battle and self.weights.get("mirrored_attacks"):
@@ -274,9 +292,9 @@ class ScoringRoutes:
         self.target_scores[cache_key] = total
         return total
 
-    def paper_bonus(self, force, region, *, battle=False):
+    def paper_bonus(self, force, region, *, battle=False, spent_card=None):
         if self.position:
-            return self.target_value(force, region, battle=battle, construction=not battle)
+            return self.target_value(force, region, battle=battle, construction=not battle, spent_card=spent_card)
         if self.units.enabled and battle and self.weights.get("mirrored_attacks"):
             return max((self._without_unit(t.token_id).paper_bonus(t.owner_country, region)
                         for t in self._removable_targets(force, region)), default=0.0)
@@ -286,16 +304,16 @@ class ScoringRoutes:
         fixed = self.capture_value(force, region) if not battle and self.units.enabled else 0
         return fixed + future
 
-    def best_action_bonus(self, seat, op, *, attack_premium=0, placement_base=0):
+    def best_action_bonus(self, seat, op, *, attack_premium=0, placement_base=0, spent_card=None):
         """Price a concrete, immediately available placement or battle from the observed board."""
-        cache_key = seat, canonical(op), attack_premium, placement_base
+        cache_key = seat, canonical(op), attack_premium, placement_base, spent_card
         if cache_key in self.action_scores:
             return self.action_scores[cache_key]
         if op["type"] == "CARD_EFFECT":
             effect = op["effect"]
             if effect["type"] == "battle" and effect["kind"] == "either":
                 return max(self.best_action_bonus(seat, {**op, "effect": {**effect, "kind": kind}},
-                                                  attack_premium=attack_premium)
+                                                  attack_premium=attack_premium, spent_card=spent_card)
                            for kind in ("army", "navy"))
             if (effect["type"] not in ("choose-space", "build", "recruit", "battle") or
                     effect.get("kind", "army") not in ("army", "navy") or
@@ -320,7 +338,7 @@ class ScoringRoutes:
             targets = [p for p in targets if self._removable_targets(force, p)]
         if not battle and self.conservative_placement:
             targets = [p for p in targets if self.placement_supplied(force, p)]
-        bonus = max((self.paper_bonus(force, p, battle=battle) + attack_premium + placement_base for p in targets),
+        bonus = max((self.paper_bonus(force, p, battle=battle, spent_card=spent_card) + attack_premium + placement_base for p in targets),
                     default=0.0)
         self.action_scores[cache_key] = bonus
         return bonus
