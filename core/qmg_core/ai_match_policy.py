@@ -79,6 +79,9 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
     elif kind == "search-deck":
         value = units.card_score(value)
     if frontier and kind in ("choose-space", "recruit", "build", "battle"):
+        if action in CONSTRUCTION and economy.routes.conservative_placement:
+            return economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect},
+                                                     placement_base=value)
         attack_premium = 0
         if kind == "battle" and economy.map_weights.get("mirrored_attacks"):
             matched = operation_priority(BATTLE_BUILD[action], units) if action in BATTLES else EFFECT_PRIORITY["choose-space"]
@@ -150,6 +153,10 @@ class RulePolicy:
                             continue
                 if self.evaluator and self.evaluator.action_distance and op["type"] in BATTLES:
                     value += economy.routes.best_action_bonus(seat, op) if frontier else self.units.action
+                    frontier = False
+                    continue
+                if frontier and self.evaluator.settlement and op["type"] in CONSTRUCTION:
+                    value += economy.routes.best_action_bonus(seat, op, placement_base=priority * count)
                     frontier = False
                     continue
                 value += priority * count

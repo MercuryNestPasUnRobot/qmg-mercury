@@ -468,6 +468,9 @@ class StatusForecast:
             targets = set(self.after_event_targets(owner, force, unit, action, trigger["type"], trigger["kind"], region))
         else:
             targets = set(self.targets(owner, force, unit, action))
+        if (action in ("build", "recruit") and self.action_distance
+                and self.economy.routes.conservative_placement):
+            targets = {p for p in targets if self.economy.routes.placement_supplied(force, p)}
         if self.action_distance and effect.get("nearAirAction"):
             if not region:
                 return 0

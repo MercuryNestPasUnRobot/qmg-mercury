@@ -7,7 +7,7 @@ from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import zone
 from test_action_distance_scoring import forecast, map_with_sites
-from test_ai_match import profile
+from test_ai_match import forecast_search_profile, profile
 from test_hand_retention import hand_only
 from test_status_scoring import scoring_status
 
@@ -33,7 +33,7 @@ def test_one_vp_occupation_is_half_a_regular_site_even_on_an_unmarked_region(dat
     assert economy.routes.target_value("germany", "C", construction=True) == 2
     assert economy.routes.target_value("italy", "C", construction=True) == 0
     build = next(c for c in client.legal_commands() if c.get("card") == "g-build")
-    result, = OneStepPlanner(game.rules, profile()).rank(CandidateView(client.observe(), [build]), "germany")
+    result, = OneStepPlanner(game.rules, forecast_search_profile()).rank(CandidateView(client.observe(), [build]), "germany")
     assert result["complete"] and result["continuations"][0]["option"] == "C"
     assert result["actual_vp_delta"] == 0
     assert result["card_delta"] > 0

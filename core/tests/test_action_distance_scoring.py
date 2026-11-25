@@ -6,7 +6,7 @@ from qmg_core.ai_match_policy import CandidateView, RulePolicy
 from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER, zone
-from test_ai_match import profile
+from test_ai_match import forecast_search_profile, profile
 from test_hand_retention import hand_only, reach_discard
 from test_status_scoring import scoring_status
 
@@ -158,7 +158,7 @@ def test_publicly_known_score_source_activation_and_cancellation_match_in_a_and_
     engine = make(data)
     client = CoreAPI(engine, ("germany",))
     view = client.observe()
-    weights = profile()
+    weights = forecast_search_profile()
     scorer = ScoreEvaluator(engine.rules, weights)
     command = next(c for c in client.legal_commands() if c.get("card") == "g-deck-2")
     paper, = RulePolicy(engine.rules, scorer).rank(view, [command])

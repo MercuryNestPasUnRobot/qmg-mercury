@@ -83,7 +83,7 @@ def test_normal_play_switches_from_development_to_a_closing_point(economy):
     assert near_win.state.winner == "axis"
 
 
-def test_simulation_accounts_for_immediate_and_future_missing_cards_separately(economy):
+def test_simulation_scores_only_the_deck_exhaustion_penalty_that_resolves(economy):
     economy["settings"]["victory_margin"] = 0  # Keep the remaining turns fixed across the VP change.
     card(economy, "g-noop")["effects"] = [
         instruction({"type": "discard-top", "target": "united-kingdom", "count": 2})]
@@ -94,7 +94,7 @@ def test_simulation_accounts_for_immediate_and_future_missing_cards_separately(e
     row = next(row for row in planner.rank(client, "germany") if row["command"]["type"] == "PLAY_CARD")
     assert row["complete"]
     assert row["actual_vp_delta"] == 1
-    assert row["resource_delta"] == pytest.approx(0.60)
+    assert row["resource_delta"] == 0
     client.submit(row["command"])
     assert engine.state.scores["allies"] == -1
 
