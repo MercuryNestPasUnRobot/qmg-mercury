@@ -1,12 +1,13 @@
 """Value the nearest scoring sites using current, visible board routes."""
 from collections import Counter, defaultdict, deque
+from dataclasses import replace
 
 from .content_effects import action_for, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
-from .model import Token, canonical
+from .model import Token, ZoneRegistry, canonical, zone
 from .operations import ScoreResolver
 from .positional_scoring import ActionDistanceScoring
-from .rules import LegalActionGenerator, MapGraph, unit_rule_matches
+from .rules import LegalActionGenerator, MapGraph, SupplyResolver, unit_rule_matches
 from .score_units import ScoreUnits
 
 
@@ -18,6 +19,8 @@ class ScoringRoutes:
         self.config = weights["route_forecast"]
         self.frontier = weights.get("frontier_scoring")
         self.units = ScoreUnits.from_weights(weights)
+        self.conservative_placement = weights.get("settlement_scoring", False)
+        self.placement_supply = {}
         self.pieces = pieces
         self.seat_rates = None
         self.direct_income = {}
@@ -205,10 +208,30 @@ class ScoringRoutes:
         remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
         return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
 
+    def placement_supplied(self, force, region):
+        key = force, region
+        if key not in self.placement_supply:
+            kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
+            reserve = zone(force, "RESERVE_" + kind)
+            stored = self.state.positions[reserve]
+            if not stored:
+                result = False
+            else:
+                projected = replace(self.state, tokens=dict(self.state.tokens),
+                                    positions={**self.state.positions, reserve: list(stored),
+                                               region: list(self.state.positions[region])})
+                ZoneRegistry.transfer(projected, stored[0], region)
+                result = stored[0] in SupplyResolver(self.rules).supplied(projected, force)
+            self.placement_supply[key] = result
+        return self.placement_supply[key]
+
     def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True):
         cache_key = (force, region, battle, construction, local_only, include_capture)
         if cache_key in self.target_scores:
             return self.target_scores[cache_key]
+        if construction and self.conservative_placement and not self.placement_supplied(force, region):
+            self.target_scores[cache_key] = 0.0
+            return 0.0
         if self.position:
             value = (max((self.removal_value(t.token_id) for t in self._removable_targets(force, region)), default=0)
                      if battle else self.position.value(force, region))
@@ -262,9 +285,9 @@ class ScoringRoutes:
         fixed = self.capture_value(force, region) if not battle and self.units.enabled else 0
         return fixed + future
 
-    def best_action_bonus(self, seat, op, *, attack_premium=0):
+    def best_action_bonus(self, seat, op, *, attack_premium=0, placement_base=0):
         """Price a concrete, immediately available placement or battle from the observed board."""
-        cache_key = seat, canonical(op), attack_premium
+        cache_key = seat, canonical(op), attack_premium, placement_base
         if cache_key in self.action_scores:
             return self.action_scores[cache_key]
         if op["type"] == "CARD_EFFECT":
@@ -294,7 +317,10 @@ class ScoringRoutes:
         force, battle = action.get("force", seat), action["type"] in BATTLES
         if battle and self.weights.get("mirrored_attacks"):
             targets = [p for p in targets if self._removable_targets(force, p)]
-        bonus = max((self.paper_bonus(force, p, battle=battle) + attack_premium for p in targets), default=0.0)
+        if not battle and self.conservative_placement:
+            targets = [p for p in targets if self.placement_supplied(force, p)]
+        bonus = max((self.paper_bonus(force, p, battle=battle) + attack_premium + placement_base for p in targets),
+                    default=0.0)
         self.action_scores[cache_key] = bonus
         return bonus
 
