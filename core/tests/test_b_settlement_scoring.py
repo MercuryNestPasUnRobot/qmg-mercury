@@ -130,7 +130,15 @@ def test_a_keeps_the_checked_recruitment_location_for_a_later_build(data):
         {"type": "build", "kind": "navy", "space": "T"},
     ])
     assert paper_rank(game, client, play) == 2
-    policy = SeatPolicy(game.rules, evaluator=ScoreEvaluator(game.rules, profile()))
+    evaluator = ScoreEvaluator(game.rules, profile())
+
+    class NoDuplicateSearch:
+        def run(self, *_args):
+            pytest.fail("B should reuse the completed recruitment branch")
+
+    command, comparison = SeatPolicy(game.rules, evaluator=evaluator, search=NoDuplicateSearch()).decide(client, "germany")
+    assert command == play and comparison["selected_q"] == 2
+    policy = SeatPolicy(game.rules, evaluator=evaluator)
     assert policy.decide(client, "germany")[0] == play
     client.apply(play)
     selected, log = policy.decide(client, "germany")

@@ -343,13 +343,17 @@ class RulePolicy:
         if self.recruitment_planner is None:
             self.recruitment_planner = OneStepPlanner(self.rules, self.evaluator.weights)
         if deadline is None:
-            deadline = perf_counter() + 1
+            deadline = perf_counter() + 2.1
         results = {tuple(sorted(c.items())): {"complete": False, "reason": "deadline"} for c in candidates}
         try:
             for row in self.recruitment_planner.iter_rank(CandidateView(view, candidates), seat, deadline=deadline):
                 results[tuple(sorted(row["command"].items()))] = row
         except TimeoutError:
             pass
+        except CoreError as error:
+            for key, row in results.items():
+                if not row["complete"] and row["reason"] == "deadline":
+                    results[key] = {"complete": False, "reason": str(error)}
         return results
 
     def rank(self, view, commands, *, recruitment_deadline=None):
@@ -445,7 +449,8 @@ class RulePolicy:
             return (self.play_card_value(card, seat, economy, spent_card=command["card"]) if kind == "PLAY_CARD" else
                     self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
-        recruitment = self.recruitment_forecasts(view, commands, seat, recruitment_deadline)
+        recruitment = self.recruitment_forecasts(
+            view, [row["command"] for row in sorted(rows, key=lambda row: -row["rule_score"])], seat, recruitment_deadline)
         for row in rows:
             command = row["command"]
             if terminal := self.terminal_priority(view, command, seat, economy):
@@ -455,6 +460,7 @@ class RulePolicy:
                                       ("complete", "reason", "map_delta", "actual_vp_delta", "temporary_vp") if key in forecast}
                 row["rule_score"] = forecast["q"] if forecast["complete"] else 0
                 if forecast["complete"]:
+                    row["recruitment_result"] = forecast
                     rank = forecast["terminal_rank"]
                     if abs(rank) == 2:
                         row["terminal_priority"] = rank // 2
@@ -631,7 +637,7 @@ class SeatPolicy:
         commands = client.legal_commands()
         if not commands or any(c["actor"] != country for c in commands):
             raise CoreError("No legal action for the AI seat")
-        ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(0.9, self.budget_ms / 3000))
+        ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(2.1, self.budget_ms * 0.00075))
         phase = view["turn"]["phase"]
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
         preferred = paper_play_choices(ranked, mandatory)
@@ -688,7 +694,20 @@ class SeatPolicy:
                         tried.append(end)
                     # Reserve a small part of the total budget for choosing and recording the result.
                     reserve_ms = min(75, self.budget_ms * 0.05)
-                    rows, status = self.search.run(view, tried, country, started + (self.budget_ms - reserve_ms) / 1000)
+                    verified = {tuple(sorted(row["command"].items())): row["recruitment_result"]
+                                for row in preferred if "recruitment_result" in row}
+                    pending = []
+                    for command in tried:
+                        existing = verified.get(tuple(sorted(command.items())))
+                        if existing:
+                            rows.append(existing)
+                        else:
+                            pending.append(command)
+                    status = "finished"
+                    if pending:
+                        extra, status = self.search.run(
+                            view, pending, country, started + (self.budget_ms - reserve_ms) / 1000)
+                        rows.extend(extra)
                     completed = [row for row in rows if row["complete"]]
                     rejected = [row["command"] for row in completed if not acceptable_play(row, mandatory=mandatory)]
                     selected = max((row for row in completed if acceptable_play(row, mandatory=mandatory)),
@@ -717,6 +736,7 @@ class SeatPolicy:
                         "phase": view["turn"]["phase"], "country": country,
                         "budget_ms": self.budget_ms, "elapsed_ms": (perf_counter() - started) * 1000,
                         "mode": mode, "search_status": status, "command": chosen,
-                        "rule_scores": [{k: v for k, v in row.items() if k != "recruitment_plan"} for row in ranked],
+                        "rule_scores": [{k: v for k, v in row.items() if k not in ("recruitment_plan", "recruitment_result")}
+                                        for row in ranked],
                         "candidate_scores": logged_rows,
                         "selected_q": selected["q"] if selected else None}
