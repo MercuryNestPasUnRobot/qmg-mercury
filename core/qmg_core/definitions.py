@@ -58,7 +58,7 @@ class RuleSet:
                 ability.setdefault("on_settle", []).append(
                     {"type": "CREATE", "token_type": "ABILITY", "definition": listener, "zone": "RESPONSE", "same_copy": True})
         self.settings = deepcopy(data["settings"])
-        self.phases = ("Play", "Air", *PHASES[1:]) if self.settings.get("air_phase") else PHASES
+        self.phases = PHASES if self.settings.get("air_phase") else tuple(p for p in PHASES if p != "Air")
         if any(key not in self.abilities for key in self.settings.get("unit_responses", [])):
             raise CoreError("Unknown temporary unit response")
         opportunities = self.settings.get("turn_opportunities", {})
@@ -197,6 +197,9 @@ class RuleSet:
         for setting in ("mandatory_turn_play", "shared_site_scoring", "regional_status_sites"):
             if type(self.settings.get(setting, False)) is not bool:
                 raise CoreError(f"Invalid {setting} setting")
+        penalty = self.settings.get("discard_phase_penalty", 0)
+        if type(penalty) is not int or penalty < 0:
+            raise CoreError("Invalid discard phase penalty")
         supply_revision = self.settings.get("supply_revision", 1)
         if type(supply_revision) is not int or supply_revision not in (1, 2):
             raise CoreError("Invalid supply revision")

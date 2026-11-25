@@ -8,11 +8,11 @@ from math import inf
 from .air import air_options
 from .content_effects import condition_met, filtered_units, point_award, point_recipient, unit_matches
 from .economic_scoring import CARD_RETURN_EFFECTS, POINT_EFFECTS
-from .model import CoreError, TURN_ORDER, Token, zone
+from .model import CoreError, PHASES, TURN_ORDER, Token, zone
 from .regional_sites import regional_award, site_layers
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units, status_enabled
 
-STAGES = ("Setup", "Play", "Air", "Supply", "Victory", "Discard", "Draw")
+STAGES = ("Setup", *PHASES)
 TRIGGER_PHASE = {
     "during-victory": "Victory", "turn-start": "Play", "play-phase-start": "Play",
     "discard-start": "Discard", "discard-stage-card": "Discard", "USE_STATUS": "Play",

@@ -85,6 +85,7 @@ class Tape:
             if moves or result["score_changes"] or not result["success"]:
                 changes.append({"type": record["operation_type"], "actor": record["actor"],
                                 "moves": moves, "scores": result["score_changes"], "ok": result["success"],
+                                **({"reason": "no-discard"} if record["operation"].get("reason") == "no-discard" else {}),
                                 **({"site": record["operation"]["score_site"]}
                                    if (record["operation"].get("score_site") or "").startswith("hidden:") else {})})
         self.cursor = len(self.processor.records)

@@ -93,6 +93,10 @@ class OperationExecutor:
         source = state.tokens[token_id]
         if source.token_type == "CARD":
             if change["from"] == zone(source.owner_country, "HAND"):
+                if (self.rules.settings.get("discard_phase_penalty") and state.turn.phase == "Discard" and
+                        source.owner_country == TURN_ORDER[state.turn.country_index] and
+                        destination == zone(source.owner_country, "DISCARD")):
+                    state.turn.discarded_in_phase = True
                 for frame in state.stack:
                     acquired = frame.context.get("search_tokens", [])
                     if token_id in acquired:
@@ -252,6 +256,8 @@ class OperationExecutor:
                 if state.turn.country_index == 0:
                     state.turn.round_id += 1
                     scoring.terminal(state, round_end=True)
+            if state.turn.phase == "Discard":
+                state.turn.discarded_in_phase = False
             state.turn.phase = op["phase"]
             if op.get("advance_country"):
                 capture_turn_start(self.rules, state)
@@ -294,5 +300,7 @@ class TurnController:
             elif next_phase == "Discard":
                 ops.append({"type": "CHECK_DISCARD"})
             elif next_phase == "Draw":
+                if self.rules.settings.get("discard_phase_penalty"):
+                    ops.insert(0, {"type": "CHECK_DISCARD_PENALTY"})
                 ops.append({"type": "DRAW_TO_LIMIT"})
         return country, ops, result

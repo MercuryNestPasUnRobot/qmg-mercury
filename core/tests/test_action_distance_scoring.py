@@ -172,12 +172,14 @@ def test_publicly_known_score_source_activation_and_cancellation_match_in_a_and_
     assert economy.routes.position.source_move("germany", active, zone("germany", "SCORE_DORMANT")) == -4
 
 
-def test_voluntary_discard_needs_an_identifiable_gain(data):
+def test_discard_trigger_adds_to_ordinary_cycle_value(data):
     ability = scoring_status(data, phase="discard-stage-card", points=3)
     ability["trigger"]["card_trigger"].update(country="germany", kind="event")
     card(data, "g-noop")["legacy_kind"] = "event"
+    data["settings"]["discard_phase_penalty"] = 1
     hand_only(data, "g-deck-2")
     move_initial(data, "g-status", zone("germany", "STATUS"))
+    scores = []
     for enabled in (True, False):
         if not enabled:
             move_initial(data, "g-status", zone("germany", "SET_ASIDE"))
@@ -185,5 +187,8 @@ def test_voluntary_discard_needs_an_identifiable_gain(data):
         client = CoreAPI(engine, ("germany",))
         reach_discard(client)
         policy = RulePolicy(engine.rules, ScoreEvaluator(engine.rules, profile()))
-        best = policy.rank(client.observe(), client.legal_commands())[0]["command"]
-        assert best["type"] == ("DISCARD_CARD" if enabled else "END_PHASE")
+        best = policy.rank(client.observe(), client.legal_commands())[0]
+        assert best["command"]["type"] == "DISCARD_CARD"
+        assert (best["retention"]["discard_trigger"] > 0) == enabled
+        scores.append(best["rule_score"])
+    assert scores[0] > scores[1] > 0
