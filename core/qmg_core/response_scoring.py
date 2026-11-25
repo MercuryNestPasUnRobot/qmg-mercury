@@ -259,6 +259,9 @@ class ResponseForecast:
             seats = (attacker,) if attacker else (s for s in TURN_ORDER if rules.team(s) != rules.team(owner))
             return max((economy.mill(owner, seat, effect["count"], 1) for seat in seats), default=0)
         if kind in ("discard-status", "play-from-zone", "stage-bolster"):
+            if (kind == "play-from-zone" and effect["zone"] == "hand"
+                    and force_id(effect.get("target"), owner) != owner):
+                return 0
             options = available_options(rules, state, owner, effect, context)
             return self.units.card_score(1) if options else 0
         if kind == "request-hand-discard" and effect.get("target") == "battle-attacker":
@@ -269,17 +272,19 @@ class ResponseForecast:
         """Only concrete first actions of present, individually playable cards."""
         actions = []
         for key, card in self.hand(owner):
+            modes = card.get("play_as", ())
+            step = card["effects"][0] if card["effects"] else {}
+            op = step.get("operation", step)
+            effect = op.get("effect", {})
+            military = op.get("type") in BATTLES | CONSTRUCTION or effect.get("type") in MILITARY_EFFECTS
+            if not (modes or military):
+                continue
             if not self.legal.can_start_card(self.state, owner, card):
                 continue
-            actions.extend((key, {"type": mode}, None) for mode in card.get("play_as", ()))
-            if not card["effects"]:
-                continue
-            step = card["effects"][0]
-            op = step.get("operation", step)
-            if op["type"] in BATTLES | CONSTRUCTION:
+            actions.extend((key, {"type": mode}, None) for mode in modes)
+            if op.get("type") in BATTLES | CONSTRUCTION:
                 actions.append((key, op, None))
-            elif op["type"] == "CARD_EFFECT" and op["effect"]["type"] in MILITARY_EFFECTS:
-                effect = op["effect"]
+            elif effect.get("type") in MILITARY_EFFECTS:
                 if not condition_met(self.rules, self.state, owner, effect.get("when")):
                     continue
                 variants = ("army", "navy") if effect.get("kind") == "either" else (effect.get("kind", "army"),)

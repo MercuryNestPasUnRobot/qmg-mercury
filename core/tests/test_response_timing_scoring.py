@@ -125,3 +125,21 @@ def test_next_build_response_waits_one_turn_not_two(data):
     assert estimate["immediate"] == 3
     assert estimate["wait"] == {"card": "g-build-later", "target": "C", "base": 6, "wait_turns": 1,
                                  "time_cost": 2, "net": 4}
+
+
+def test_forecast_skips_unrelated_card_that_requires_an_opponents_hidden_hand(data):
+    map_with_sites(data, [("A", "B")], ())
+    hand_only(data, "g-build", "g-deck-2")
+    move_initial(data, "uk-hidden", zone("united-kingdom", "HAND"))
+    card(data, "g-noop")["effects"] = [instruction({
+        "type": "choose-one", "options": [{"label": "uncertain",
+            "effects": [{"type": "play-from-zone", "zone": "hand", "target": "united-kingdom"}]}]})]
+    response(data, "during-victory", {"type": "points-per-unit", "side": "self", "amountPer": 3,
+              "filter": {"force": "self", "kind": "army", "spaces": ["A", "B"]}})
+    game = make(data)
+    client = CoreAPI(game, ("germany",))
+    while not client.observe()["decision"]:
+        choice(client, "END_PHASE")
+    command, row = SeatPolicy(game.rules, evaluator=evaluator(game)).decide(client, "germany")
+    assert command["option"] == "decline"
+    assert any(r.get("response_forecast", {}).get("wait", {}).get("card") == "g-build" for r in row["rule_scores"])
