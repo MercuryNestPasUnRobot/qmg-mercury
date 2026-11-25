@@ -10,6 +10,7 @@ FORCE_OPERATIONS = CONSTRUCTION | BATTLES
 TARGETED_OPERATIONS = FORCE_OPERATIONS | {"ELIMINATE", "DISCARD", "TRANSFER"}
 OPERATIONS = TARGETED_OPERATIONS | {"CREATE", "DRAW", "GAIN_VP", "CANCEL", "CHOOSE", "REDEPLOY", "CARD_EFFECT"}
 CONNECTION_USES = frozenset({"supply", "build", "battle"})
+PER_UNIT_SITE = "per-unit"
 
 
 class RuleSet:
@@ -91,6 +92,10 @@ class RuleSet:
                 for field in ("home_country", "supply_source_for")
             ):
                 raise CoreError("Invalid region")
+            restricted = r.get("construction_requires_adjacent_for", [])
+            if not isinstance(restricted, list) or any(
+                    not isinstance(force, str) or force not in self.force_controllers for force in restricted):
+                raise CoreError("Invalid construction restriction")
         for u in self.units.values():
             if u["kind"] not in ("ARMY", "NAVY", "AIR"):
                 raise CoreError("Invalid unit kind")
@@ -178,6 +183,9 @@ class RuleSet:
         for site in self.sites.values():
             if site["region"] not in self.regions or type(site["vp"]) is not int or site["vp"] < 0:
                 raise CoreError("Invalid score site")
+            mode = site.get("scoring", "regular")
+            if mode not in ("regular", PER_UNIT_SITE) or (mode == PER_UNIT_SITE and site["vp"] != 1):
+                raise CoreError("Invalid score site mode")
             if not set(site["countries"]) <= set(self.countries):
                 raise CoreError("Invalid score eligibility")
         for k in ("hand_limit", "initial_hand", "setup_discard", "plays_per_turn", "max_rounds", "victory_margin", "max_atomic_steps"):

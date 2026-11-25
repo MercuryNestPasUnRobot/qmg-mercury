@@ -4,7 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 
-from .board_connections import PRINTED_REGIONS, corrected_edges, corrected_straits, edge_pairs
+from .board_connections import PRINTED_REGIONS, apply_half_sites, corrected_edges, corrected_straits, edge_pairs
 from .catalog import ContentCatalog
 from .content_effects import instruction, supported_effect
 from .content_triggers import supported_trigger
@@ -197,6 +197,8 @@ def compile_transcriptions(export):
                                                f"{country}:RESERVE_{unit_kind.upper()}"})
     sites = [{"id": "score-" + p["id"], "region": p["id"], "vp": 2, "countries": list(TURN_ORDER),
               "requires_supply": True} for p in pack["spaces"] if p.get("supply")]
+    if printed_board:
+        apply_half_sites(regions, sites, initial)
     opportunities = {"air-opportunity-" + force: force for force in pack["limits"]}
     opportunities.update({"reallocation-opportunity-" + country: country for country in TURN_ORDER})
     for index, key in enumerate(opportunities):
@@ -205,7 +207,8 @@ def compile_transcriptions(export):
                               {"type": "TRANSFER", "token": "$object", "destination": "$owner_ready"}]})
     rules = RuleSet({
         "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
-                            + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2-shared-sites"),
+                            + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2-shared-sites"
+                            + ("-half-sites-linked-build" if printed_board else "")),
         "countries": countries, "turn_order": list(TURN_ORDER),
         "auxiliary_forces": [{"id": "france", "name": export["country_names"]["france"], "controller": "united-kingdom"},
                              {"id": "china", "name": export["country_names"]["china"], "controller": "united-states"}],

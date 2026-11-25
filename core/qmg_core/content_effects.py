@@ -91,12 +91,15 @@ def filtered_units(rules, state, country, definition):
     return [token for token in board_units(rules, state) if unit_matches(rules, state, country, token, definition)]
 
 
-def condition_met(rules, state, country, condition):
+def condition_met(rules, state, country, condition, *, pieces=None):
     if condition is None:
         return True
     if condition["type"] == "all":
-        return all(condition_met(rules, state, country, item) for item in condition["conditions"])
-    count = len(filtered_units(rules, state, country, condition["filter"]))
+        return all(condition_met(rules, state, country, item, pieces=pieces) for item in condition["conditions"])
+    if pieces is None:
+        count = len(filtered_units(rules, state, country, condition["filter"]))
+    else:
+        count = sum(unit_matches(rules, state, country, token, condition["filter"]) for token in pieces)
     return condition["min"] <= count <= condition.get("max", count)
 
 

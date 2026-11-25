@@ -1,5 +1,5 @@
 {
-  "profile": "ai-test-v1.14-settled-search",
+  "profile": "ai-test-v1.15-half-site-scoring",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "action_distance_scoring": true,
   "settlement_scoring": true,
