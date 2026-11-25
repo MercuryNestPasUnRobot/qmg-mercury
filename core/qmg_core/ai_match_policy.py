@@ -9,6 +9,7 @@ from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .definitions import BATTLES, CONSTRUCTION
 from .hand_retention import is_hand_choice
 from .model import CoreError, zone
+from .response_scoring import is_delayed
 from .status_scoring import is_airdrop, is_status
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
 from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
@@ -168,6 +169,9 @@ class RulePolicy:
         return value
 
     def card_value(self, card, seat, economy, *, active=False, closeout=False):
+        if economy and is_delayed(card) and economy.responses:
+            value = economy.responses.staging(seat, card["id"])
+            return value["net"] if value["window_remaining"] else min(0, value["net"])
         if economy and economy.status_weights and is_status(card):
             if active:
                 return economy.statuses.program(seat, seat, card["active_ability"], None, committed=True)
@@ -208,6 +212,19 @@ class RulePolicy:
         return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
                     for plan in plans),
                    key=lambda plan: plan["total"], default=None)
+
+    def response_options(self, view, seat, economy):
+        decision = view.get("decision") or {}
+        sources = decision.get("response_sources", {})
+        if not sources or not economy or not economy.responses:
+            return {}
+        rows = {}
+        for option, source in sources.items():
+            token = view["tokens"].get(source)
+            if token and is_delayed(self.rules.cards[token["definition_id"]]):
+                rows[option] = economy.responses.activation(seat, source, decision["response_abilities"][option],
+                    decision.get("response_event"), decision.get("response_unit_moves", ()))
+        return rows
 
     def choice_value(self, view, command, region_scores, economy):
         option = command["option"]
@@ -297,6 +314,8 @@ class RulePolicy:
         retention = (self.evaluator.retention(view, seat)
                      if slot_cost and is_hand_choice(view, seat, forced_play_discard=forced_play_discard) else {})
         decision = view.get("decision") or {}
+        responses = self.response_options(view, seat, economy)
+        forecasts = {}
         options = [c["option"] for c in commands if c["type"] == "CHOOSE"]
         if economy and economy.map_weights and decision.get("map_force"):
             regions = {option: option.split("|", 1)[-1] for option in options}
@@ -322,6 +341,14 @@ class RulePolicy:
             kind = command["type"]
             if kind == "CHOOSE":
                 option = command["option"]
+                if option in responses:
+                    estimate = responses[option]
+                    forecasts[option] = estimate
+                    if estimate["immediate"] <= 0:
+                        return min(-0.001, estimate["immediate"])
+                    return estimate["immediate"] - (estimate["wait"]["net"] if estimate["wait"] else 0)
+                if responses and option in ("decline", "pass"):
+                    return 0
                 if option in retention:
                     return -retention[option]["net"]
                 if option in info.get("targets", {}):
@@ -351,7 +378,17 @@ class RulePolicy:
             if kind == "REALLOCATE":
                 return plan["total"] if plan else -2
             if kind == "ACTIVATE_CARD":
-                return -101  # Choose within the open window, or advance the phase.
+                source = command["card"]
+                card = self.rules.cards[view["tokens"][source]["definition_id"]]
+                if economy and economy.responses and is_delayed(card):
+                    keys = [key for key in card["abilities"] if
+                            self.rules.abilities[key]["trigger"].get("card_trigger", {}).get("type") == "any-time"]
+                    if keys:
+                        estimate = economy.responses.activation(seat, source, keys[0])
+                        forecasts[source] = estimate
+                        net = estimate["immediate"] - (estimate["wait"]["net"] if estimate["wait"] else 0)
+                        return net if net > 0 else -101
+                return -101
             if kind == "USE_AIR":
                 return self.units.action_score(0.5) - card_cost
             token = view["tokens"][command["card"]]
@@ -377,6 +414,12 @@ class RulePolicy:
                 card = self.rules.cards[view["tokens"][command["card"]]["definition_id"]]
                 if is_status(card) and not command.get("play_as"):
                     row["status_forecast"] = economy.statuses.report(seat, card["id"])
+                elif is_delayed(card) and economy.responses and not command.get("play_as"):
+                    row["response_forecast"] = economy.responses.staging(seat, card["id"])
+            if key in forecasts:
+                row["response_forecast"] = forecasts[key]
+                if command["type"] == "ACTIVATE_CARD" and row["rule_score"] > 0:
+                    row["immediate_response"] = True
         # Canonical tie-breaks also apply to own permitted choices out of the deck.
         def order(row):
             command = row["command"]
@@ -527,15 +570,25 @@ class SeatPolicy:
         phase = view["turn"]["phase"]
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
         preferred = paper_play_choices(ranked, mandatory)
+        manual = next((row["command"] for row in ranked if row.get("immediate_response")), None)
+        response_choice = any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in ranked)
         chosen = preferred[0]["command"]
         mode, status, tried, rows, selected = "rules", "rules-only", [], [], None
+        if manual and not view["decision"]:
+            chosen = manual
+            self.plan.clear()
+            self.exchange = None
+            status = "response-timing"
         if len(commands) == 1:
             mode, status = "forced", "only-legal-command"
         forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in commands)
         if (self.rule.evaluator and self.rule.evaluator.hand_slot_cost and
                 is_hand_choice(view, country, forced_play_discard=forced_play_discard)):
             status = "hand-retention"
-        elif self.search:
+        elif response_choice:
+            self.plan.clear()
+            status = "response-timing"
+        elif self.search and status != "response-timing":
             if self.exchange and (not view["decision"] or self.exchange[0] != view["turn"]["turn_id"]):
                 self.exchange = None
             info = view.get("reallocation", {})
