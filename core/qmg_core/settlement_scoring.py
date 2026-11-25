@@ -28,6 +28,7 @@ class PositionValue:
     surviving_units: tuple = ()
     expansion_sites: tuple = ()
     expansion_score: float = 0
+    temporary_vp: float = 0
 
 
 class SettlementScorer:
@@ -37,7 +38,7 @@ class SettlementScorer:
 
     @staticmethod
     def closing_positions(rules, settled, deadline):
-        """Verify survival through the active turn using only forced cleanup."""
+        """Verify survival and site income using only the active turn's forced cleanup."""
         probe = CommandProcessor(rules, settled, search_projection=True)
         current = settled.turn.turn_id
         client = CoreAPI(probe, (TURN_ORDER[settled.turn.country_index],))
@@ -45,7 +46,11 @@ class SettlementScorer:
         try:
             for _ in range(len(rules.phases) + 4):
                 if state.winner or state.turn.turn_id != current:
-                    return {t.token_id: t.position_id for t in board_units(rules, state)}
+                    points = defaultdict(int)
+                    for record in probe.records:
+                        if site := record["operation"].get("score_site"):
+                            points[site] += sum(change["amount"] for change in record["outcome"]["score_changes"])
+                    return {t.token_id: t.position_id for t in board_units(rules, state)}, points
                 if deadline is not None and perf_counter() >= deadline:
                     return None
                 if state.decision:
@@ -59,27 +64,34 @@ class SettlementScorer:
                     command = next((c for c in client.legal_commands() if c["type"] == "END_PHASE"), None)
                 if command is None:
                     return None
-                responder.apply(command)
-                state = probe.state
+                probe.submit(command, responder.controlled_countries, auto_resolve=False)
+                state = probe.advance(stop_on_turn_change=True)
         except ResolutionBudgetExceeded:
             return None
         return None
 
-    def surviving_board(self, rules, state, deadline):
+    def surviving_board(self, rules, state, deadline, recruited=()):
         resolver = SupplyResolver(rules)
         active = TURN_ORDER[state.turn.country_index]
         pieces = board_units(rules, state)
         checked = False
         proven = None
+        income = {}
+        uncertain = set()
         while pieces:
             supplies = {seat: resolver.supplied_for_seat(state, seat, pieces) for seat in TURN_ORDER}
             unsupplied = [t for t in pieces if t.token_id not in supplies[rules.force_controllers[t.owner_country]]]
-            if not unsupplied and proven is None:
-                return pieces, supplies
             if not checked:
-                can_verify = any(rules.force_controllers[t.owner_country] == active for t in unsupplied)
-                proven = self.closing_positions(rules, state, deadline) if can_verify and not state.winner else None
                 checked = True
+                live_recruits = {t.token_id for t in pieces if t.token_id in recruited}
+                needs_check = live_recruits or any(rules.force_controllers[t.owner_country] == active for t in unsupplied)
+                if needs_check and not state.winner:
+                    closure = self.closing_positions(rules, state, deadline)
+                    if closure is not None:
+                        proven, income = closure
+                    else:
+                        uncertain = {t.token_id for t in pieces if t.token_id in live_recruits and
+                                     rules.force_controllers[t.owner_country] == active}
             pending = {t.token_id for t in unsupplied}
             unproven = []
             for token in pieces:
@@ -87,15 +99,17 @@ class SettlementScorer:
                 if seat == active and proven is not None:
                     if proven.get(token.token_id) != token.position_id:
                         unproven.append(token)
-                elif token.token_id in pending:
+                elif (token.token_id in pending or token.token_id in uncertain or
+                      (token.token_id in recruited and proven is not None and
+                       proven.get(token.token_id) != token.position_id)):
                     unproven.append(token)
             if not unproven:
-                return pieces, supplies
+                return pieces, supplies, income
             for token in unproven:
                 kind = rules.units[token.definition_id]["kind"]
                 ZoneRegistry.transfer(state, token.token_id, zone(token.owner_country, "RESERVE_" + kind))
             pieces = board_units(rules, state)
-        return (), {}
+        return (), {}, income
 
     @staticmethod
     def scoring_listeners(rules, state):
@@ -143,7 +157,7 @@ class SettlementScorer:
             fixed[best[1]] += best[0]
         return fixed
 
-    def value(self, processor, country, *, initial_units=None, direct_removals=(), constructed=(), played_card=None,
+    def value(self, processor, country, *, initial_units=None, direct_removals=(), constructed=(), recruited=(), played_card=None,
               card_event_value=0, deadline=None):
         state, rules = processor.state, processor.rules
         own = rules.team(country)
@@ -161,7 +175,7 @@ class SettlementScorer:
         terminal = 2 if state.winner == own else -2 if state.winner == enemy else 0
 
         still_on_board = {t.token_id for t in board_units(rules, state)}
-        pieces, supplies = self.surviving_board(rules, state, deadline)
+        pieces, supplies, closing_income = self.surviving_board(rules, state, deadline, recruited)
         survivors = tuple((t.token_id, t.owner_country) for t in pieces)
         stock = self.units.action_score(sum(sign(owner) for _, owner in survivors))
         removal = 0.0
@@ -175,6 +189,7 @@ class SettlementScorer:
             removal += tactical
             stock += tactical
         site_values = {}
+        temporary_vp = 0
         scorer = ScoreResolver(rules)
         listeners = self.scoring_listeners(rules, state)
         for index, seat in enumerate(TURN_ORDER):
@@ -185,6 +200,9 @@ class SettlementScorer:
             # A seat's next scoring window uses its own public rule modifiers.
             snapshot = replace(state, turn=replace(state.turn, country_index=index, phase="Victory"))
             rates = scorer.sites(snapshot, seat, pieces=pieces, supply_cache=supplies)
+            if recruited and index == state.turn.country_index and not scored:
+                temporary_vp = sum(max(0, amount - rates.get(site, 0)) for site, amount in closing_income.items())
+                temporary_vp *= sign(seat)
             rates.update(self.status_points(rules, snapshot, seat, listeners.get(seat)))
             for site, amount in rates.items():
                 site_values[site] = site_values.get(site, 0) + sign(seat) * self.units.vp_score(amount)
@@ -195,6 +213,7 @@ class SettlementScorer:
             if origins:
                 expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
         expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
-        map_value = stock + sum(site_values.values()) + expansion_score
+        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp)
         return PositionValue(float(actual), map_value, cards, 0.0, self.units.vp_score(actual) + map_value + cards,
-                             terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score)
+                             terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score,
+                             temporary_vp)

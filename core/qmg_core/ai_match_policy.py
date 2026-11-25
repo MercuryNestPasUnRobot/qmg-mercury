@@ -9,6 +9,7 @@ from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .definitions import BATTLES, CONSTRUCTION
 from .hand_retention import is_hand_choice
 from .model import CoreError, zone
+from .recruitment import recruitment_play
 from .response_scoring import is_delayed
 from .status_scoring import is_airdrop, is_status
 from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
@@ -111,6 +112,7 @@ class RulePolicy:
         self.rules = rules
         self.evaluator = evaluator
         self.units = evaluator.units if evaluator else ScoreUnits()
+        self.recruitment_planner = None
         self.sites = {}
         for site in rules.sites.values():
             region = site["region"]
@@ -327,7 +329,30 @@ class RulePolicy:
             return site_value + 0.25 * bool(occupants)
         return operation_priority(option, self.units) if option in ACTION_PRIORITY else 0
 
-    def rank(self, view, commands):
+    def recruitment_forecasts(self, view, commands, seat, deadline):
+        if not self.evaluator or not self.evaluator.settlement or view["resolution_depth"] or view["decision"]:
+            return {}
+        candidates = []
+        for command in commands:
+            if command["type"] in ("PLAY_CARD", "USE_STATUS"):
+                card = self.rules.cards[view["tokens"][command["card"]]["definition_id"]]
+                if recruitment_play(self.rules, card, command):
+                    candidates.append(command)
+        if not candidates:
+            return {}
+        if self.recruitment_planner is None:
+            self.recruitment_planner = OneStepPlanner(self.rules, self.evaluator.weights)
+        if deadline is None:
+            deadline = perf_counter() + 1
+        results = {tuple(sorted(c.items())): {"complete": False, "reason": "deadline"} for c in candidates}
+        try:
+            for row in self.recruitment_planner.iter_rank(CandidateView(view, candidates), seat, deadline=deadline):
+                results[tuple(sorted(row["command"].items()))] = row
+        except TimeoutError:
+            pass
+        return results
+
+    def rank(self, view, commands, *, recruitment_deadline=None):
         if not commands:
             return []
         seat = commands[0]["actor"]
@@ -420,10 +445,22 @@ class RulePolicy:
             return (self.play_card_value(card, seat, economy, spent_card=command["card"]) if kind == "PLAY_CARD" else
                     self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
+        recruitment = self.recruitment_forecasts(view, commands, seat, recruitment_deadline)
         for row in rows:
             command = row["command"]
             if terminal := self.terminal_priority(view, command, seat, economy):
                 row["terminal_priority"] = terminal
+            if forecast := recruitment.get(tuple(sorted(command.items()))):
+                row["recruitment"] = {key: forecast[key] for key in
+                                      ("complete", "reason", "map_delta", "actual_vp_delta", "temporary_vp") if key in forecast}
+                row["rule_score"] = forecast["q"] if forecast["complete"] else 0
+                if forecast["complete"]:
+                    rank = forecast["terminal_rank"]
+                    if abs(rank) == 2:
+                        row["terminal_priority"] = rank // 2
+                    steps = zip(forecast["continuations"], forecast["choice_signatures"])
+                    row["recruitment_plan"] = [(c, signature, forecast) for c, signature in takewhile(
+                        lambda step: step[0]["type"] == "CHOOSE" and step[0]["actor"] == seat, steps)]
             if plan and command["type"] == "REALLOCATE":
                 row["reallocation"] = plan
             key = command.get("option", command.get("card"))
@@ -594,7 +631,7 @@ class SeatPolicy:
         commands = client.legal_commands()
         if not commands or any(c["actor"] != country for c in commands):
             raise CoreError("No legal action for the AI seat")
-        ranked = self.rule.rank(view, commands)
+        ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(0.9, self.budget_ms / 3000))
         phase = view["turn"]["phase"]
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
         preferred = paper_play_choices(ranked, mandatory)
@@ -616,6 +653,9 @@ class SeatPolicy:
         elif response_choice:
             self.plan.clear()
             status = "response-timing"
+        elif not self.search and (planned := self.planned_choice(view, commands)):
+            chosen, selected = planned
+            mode, status = "plan", "matched-continuation"
         elif self.search and status != "response-timing":
             if self.exchange and (not view["decision"] or self.exchange[0] != view["turn"]["turn_id"]):
                 self.exchange = None
@@ -664,6 +704,8 @@ class SeatPolicy:
                             lambda step: step[0]["type"] == "CHOOSE" and step[0]["actor"] == country, steps)]
                 elif len(commands) > 1:
                     status = "no-comparable-commands"
+        if not view["decision"] and not selected:
+            self.plan = next(row.get("recruitment_plan", []) for row in ranked if row["command"] == chosen)
         # Projected opposing choices are internal to the worker result and never become commands.
         logged_rows = [{k: v for k, v in row.items() if k not in ("continuations", "choice_signatures")}
                        for row in rows]
@@ -675,5 +717,6 @@ class SeatPolicy:
                         "phase": view["turn"]["phase"], "country": country,
                         "budget_ms": self.budget_ms, "elapsed_ms": (perf_counter() - started) * 1000,
                         "mode": mode, "search_status": status, "command": chosen,
-                        "rule_scores": ranked, "candidate_scores": logged_rows,
+                        "rule_scores": [{k: v for k, v in row.items() if k != "recruitment_plan"} for row in ranked],
+                        "candidate_scores": logged_rows,
                         "selected_q": selected["q"] if selected else None}
