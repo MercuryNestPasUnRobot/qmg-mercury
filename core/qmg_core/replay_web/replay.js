@@ -484,6 +484,10 @@ async function mount(data) {
     for (const event of frame.events) {
       const li = node("li");
       li.append(node("strong", [country(event.actor), eventNames[event.type] || event.type, event.ok ? "" : "未生效"].filter(Boolean).join(" · ")));
+      if (event.site?.startsWith("hidden:")) {
+        const [, source, , , region] = event.site.split(":");
+        li.append(node("small", ["隐分点", safeName(source), regions[region]?.name].filter(Boolean).join(" · ")));
+      }
       for (const [key, from, to] of event.moves) {
         li.append(node("small", [safeName(key), zoneName(from) + " → " + zoneName(to)].join(" · ")));
       }

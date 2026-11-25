@@ -1,4 +1,5 @@
 from copy import deepcopy
+from functools import cached_property
 import json
 from pathlib import Path
 
@@ -193,7 +194,7 @@ class RuleSet:
                 raise CoreError(f"Invalid setting: {k}")
         if self.settings["setup_discard"] > self.settings["initial_hand"] or self.settings["max_atomic_steps"] == 0 or self.settings["max_rounds"] == 0:
             raise CoreError("Invalid setup or execution budget")
-        for setting in ("mandatory_turn_play", "shared_site_scoring"):
+        for setting in ("mandatory_turn_play", "shared_site_scoring", "regional_status_sites"):
             if type(self.settings.get(setting, False)) is not bool:
                 raise CoreError(f"Invalid {setting} setting")
         supply_revision = self.settings.get("supply_revision", 1)
@@ -253,6 +254,11 @@ class RuleSet:
 
     def controlled_forces(self, country):
         return tuple(force for force, controller in self.force_controllers.items() if controller == country)
+
+    @cached_property
+    def hidden_score_rules(self):
+        from .regional_sites import compile_regional_sites
+        return compile_regional_sites(self)
 
     def _effects(self, effects):
         for op in effects:

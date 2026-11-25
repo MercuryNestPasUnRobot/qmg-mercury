@@ -39,6 +39,8 @@ class AbilityScanner:
             source_definition = self.rules.cards.get(source.definition_id, {})
             if source_definition.get("implementation", {}).get("status") == "blocked":
                 continue
+            if token.definition_id in self.rules.hidden_score_rules.get(source.definition_id, {}):
+                continue
             if (token.token_type == "ABILITY" and not ability.get("system_response")
                     and source_definition.get("type") == "STATUS" and not status_enabled(self.rules, state, source)):
                 continue

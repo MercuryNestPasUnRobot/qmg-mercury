@@ -59,6 +59,11 @@ class ScoreResolver:
         for modifier in RuleModifierResolver(self.rules).resolve(state, country):
             if modifier["kind"] == "score_bonus" and modifier["site"] in result:
                 result[modifier["site"]] += modifier["amount"]
+        if self.rules.hidden_score_rules:
+            from .regional_sites import active_hidden_sites
+            for site in active_hidden_sites(self.rules, state, owner=country):
+                if amount := site.income(self.rules, state, pieces):
+                    result[site.key] = amount
         return result
 
     def terminal(self, state, round_end=False):

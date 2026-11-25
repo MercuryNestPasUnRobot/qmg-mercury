@@ -67,8 +67,9 @@ REMOVED = edge_pairs((
 ))
 
 
-def corrected_edges(edges):
-    return sorted((edge_pairs(edges) - REMOVED) | ADDED)
+def corrected_edges(edges, *, regional_review=False):
+    removed = REMOVED | edge_pairs((("kazakhstan", "russia"),)) if regional_review else REMOVED
+    return sorted((edge_pairs(edges) - removed) | ADDED)
 
 
 def corrected_straits(straits):

@@ -1,6 +1,6 @@
 """Value remaining public status opportunities from a single seat's projected position."""
 from collections import Counter, defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import cached_property, lru_cache
 import json
 from math import inf
@@ -9,6 +9,7 @@ from .air import air_options
 from .content_effects import condition_met, filtered_units, point_award, point_recipient, unit_matches
 from .economic_scoring import CARD_RETURN_EFFECTS, POINT_EFFECTS
 from .model import CoreError, TURN_ORDER, Token, zone
+from .regional_sites import regional_award, site_layers
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units, status_enabled
 
 STAGES = ("Setup", "Play", "Air", "Supply", "Victory", "Discard", "Draw")
@@ -31,45 +32,6 @@ BASIC = {"army": ("build-army", "land-battle"), "navy": ("build-navy", "sea-batt
 BASIC_KINDS = frozenset(kind for pair in BASIC.values() for kind in pair)
 EXTRA_ACTIONS = {"build", "choose-space", "recruit", "battle", "build-at-battle-space"}
 EXTRA_TRIGGERS = {"after-build", "battle-space", "turn-start"}
-REGION_FILTER_FIELDS = {"force", "forces", "kind", "kinds", "spaces", "excludeSpaces"}
-
-
-@dataclass(frozen=True)
-class RegionalAward:
-    spaces: tuple
-    filters: dict
-    amount: int
-    mode: str
-    gates: tuple
-
-
-def regional_award(effect, condition, *, include_global=False):
-    kind = effect["type"]
-    when = effect.get("when")
-    gates = tuple(gate for gate in (condition, when) if gate)
-    if kind == "points-per-occupied-space":
-        return RegionalAward(tuple(dict.fromkeys(effect["spaces"])), {"kind": "army", "occupiedBy": effect["occupiedBy"]},
-                             effect["amountPer"], "each-space", gates)
-    if kind == "points-per-unit":
-        filters = effect["filter"]
-        amount, mode = effect["amountPer"], "each-unit"
-    elif kind == "points":
-        occupation = next((gate for gate in (when, condition) if gate and gate["type"] == "unit-count"
-                           and gate["min"] == 1 and "max" not in gate and gate["filter"].get("spaces")), None)
-        if occupation is None:
-            return None
-        filters, amount, mode = occupation["filter"], effect["amount"], "single"
-        gates = tuple(gate for gate in gates if gate is not occupation)
-    else:
-        return None
-    if filters.keys() - REGION_FILTER_FIELDS or (not filters.get("spaces") and not include_global):
-        return None
-    excluded = set(filters.get("excludeSpaces", ()))
-    spaces = tuple(space for space in dict.fromkeys(filters.get("spaces", ())) if space not in excluded)
-    if not spaces and "spaces" in filters:
-        return None
-    return RegionalAward(spaces, {key: value for key, value in filters.items() if key not in ("spaces", "excludeSpaces")},
-                         amount, mode, gates)
 
 
 def is_status(card):
@@ -277,7 +239,8 @@ class StatusForecast:
         for owner, cards in self.sources.items():
             for source, card in cards:
                 if status_enabled(self.rules, self.state, self.state.tokens[source]):
-                    active[owner].extend(self.regional_awards(card, include_global=True).items())
+                    active[owner].extend((key, rows) for key, rows in self.regional_awards(card, include_global=True).items()
+                                         if key not in self.rules.hidden_score_rules.get(card, {}))
         return {owner: awards for owner, awards in active.items() if awards}
 
     def regional_placement(self, force, region):
@@ -708,6 +671,10 @@ class StatusForecast:
         rows = []
         counted = Counter()
         regional = self.regional_awards(card_id) if self.action_distance else {}
+        hidden = self.rules.hidden_score_rules.get(card_id, {})
+        income = {key: sum(site.income(self.rules, self.state, self.units)
+                          for site in site_layers(owner, source or card_id, key, awards))
+                  for key, awards in hidden.items()}
         repeating_look = set()
         if self.action_distance and self.economy.count(owner, "DECK"):
             for key in card.get("abilities", ()):
@@ -753,6 +720,13 @@ class StatusForecast:
                     # Deployment happens after start-of-play and uses the regular play.
                     if kind in ("turn-start", "play-phase-start") or self.rules.settings["plays_per_turn"] <= 1:
                         continue
+                if key in hidden:
+                    if actor == owner and delay < self.economy.horizon and not (source and board):
+                        if income[key]:
+                            window = (delay, kind, "hidden-site", source or card_id, key)
+                            rows.append((window, self.discount ** (delay / seat_count),
+                                         self.economy.units.vp_score(income[key])))
+                    continue
                 if source and delay == 0 and (source, key) not in self.ready:
                     continue
                 if key in extras:

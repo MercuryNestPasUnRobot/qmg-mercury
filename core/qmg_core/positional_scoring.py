@@ -5,6 +5,7 @@ from math import inf
 from .definitions import PER_UNIT_SITE
 from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, zone
+from .regional_sites import active_hidden_sites
 from .rules import MapGraph, RuleModifierResolver
 
 
@@ -13,11 +14,15 @@ STANDARD_SITE_VP = 2
 
 class ActionDistanceScoring:
     def __init__(self, rules, state, pieces, locations, units, nearest_sites, *,
-                 include_connections=True, construction_rules=False):
+                 include_connections=True, construction_rules=False, stacked_sites=False):
         self.rules = rules
         self.state = state
         self.units = units
-        self.locations = locations
+        self.stacked_sites = stacked_sites
+        self.layers = {layer.key: layer for layer in active_hidden_sites(rules, state)
+                       if layer.award.mode != "absence" and layer.active(rules, state)}
+        self.locations = {**locations, **{key: set(layer.spaces) for key, layer in self.layers.items()}}
+        self.unit_definitions = {unit["kind"]: key for key, unit in rules.units.items()}
         self.nearest_sites = nearest_sites
         self.pieces = tuple(t for t in pieces if rules.units[t.definition_id]["kind"] != "AIR")
         self.remaining = 0 if state.winner else max(0, rules.settings["max_rounds"] - state.turn.round_id + 1)
@@ -80,6 +85,10 @@ class ActionDistanceScoring:
         return self.capture(force, region, STANDARD_SITE_VP) * vp / STANDARD_SITE_VP
 
     def site_base(self, force, region, site):
+        if layer := self.layers.get(site):
+            if not layer.build_eligible(self.rules, self.state, force, region, self.unit_definitions):
+                return 0
+            return self.proportional_base(layer.owner, region, layer.award.amount)
         definition = self.rules.sites[site]
         seat = self.rules.force_controllers[force]
         owners = self.source_owners[site, region] if definition.get("dynamic") else {None}
@@ -109,7 +118,7 @@ class ActionDistanceScoring:
         return self.construction_paths[key]
 
     def site_values(self, force, region, *, excluded=None, construction=False):
-        """Deduct or add each other unit at most once across the chosen routes."""
+        """Value each chosen score layer after distance and unit adjustments."""
         construction = construction and self.construction_rules
         key = force, region, excluded, construction
         if key in self.sites_by_position:
@@ -134,7 +143,12 @@ class ActionDistanceScoring:
         nearest = {}
         for row in sorted(routes):
             nearest.setdefault(row[1], row)
-        routes = list(nearest.values())[:self.nearest_sites]
+        if self.stacked_sites:
+            locations = dict.fromkeys(row[2] for row in nearest.values())
+            places = set(list(locations)[:self.nearest_sites])
+            routes = [row for row in nearest.values() if row[2] in places]
+        else:
+            routes = list(nearest.values())[:self.nearest_sites]
         scores = {site: (distance, raw) for distance, site, _, raw in routes}
         changes = defaultdict(float)
         for token in self.pieces:
@@ -142,19 +156,27 @@ class ActionDistanceScoring:
                 continue
             position = token.position_id
             friendly = self.rules.team(token.owner_country) == team
+            if self.stacked_sites and not friendly:
+                continue
             best, best_site = 0, None
             for distance, site, end, _ in routes:
                 to_end = self.distances(force, end).get(position, inf)
                 geographic_distance = from_start.get(end, inf)
-                if not (to_end < geographic_distance or to_end == geographic_distance == 0):
+                same_distance = to_end == geographic_distance and geographic_distance != inf
+                if not (to_end < geographic_distance or (same_distance and (self.stacked_sites or distance == 0))):
                     continue
-                if from_start.get(position, inf) + to_end != geographic_distance:
+                if not (self.stacked_sites and same_distance) and from_start.get(position, inf) + to_end != geographic_distance:
                     continue
-                if friendly and distance == 0 and self.rules.sites[site].get("scoring") == PER_UNIT_SITE:
+                layer = self.layers.get(site)
+                per_unit = (layer.award.mode == "each-unit" if layer else
+                            self.rules.sites[site].get("scoring") == PER_UNIT_SITE)
+                if friendly and distance == 0 and per_unit:
                     continue  # An allied unit here does not share the new unit's VP.
                 base = self.site_base(token.owner_country, end, site)
                 change = self.distance_value(base, to_end) / 2
-                if change > best:
+                if self.stacked_sites:
+                    changes[site] -= change
+                elif change > best:
                     best, best_site = change, site
             if best_site is not None:
                 changes[best_site] += -best if friendly else best
@@ -182,7 +204,8 @@ class ActionDistanceScoring:
             for site, (distance, score) in self.site_values(force, region, excluded=token.token_id).items():
                 key = site, team
                 if distance == 0:
-                    if site not in rates[seat]:
+                    beneficiary = self.layers[site].owner if site in self.layers else seat
+                    if site not in rates[beneficiary]:
                         continue
                     score = self.site_base(force, region, site)
                     held[key] = max(held[key], score)
@@ -194,14 +217,15 @@ class ActionDistanceScoring:
         enemy = "allies" if own == "axis" else "axis"
         points = []
         for site, regions in self.locations.items():
-            definition = self.rules.sites[site]
+            layer = self.layers.get(site)
+            definition = self.rules.sites.get(site, {})
             value = best[site, own] - best[site, enemy]
             if definition.get("dynamic"):
                 value = self.dynamic_site_value(country, site, regions)
             controlled = held[site, own] - held[site, enemy]
             points.append({"site": site, "value": value, "fixed_score": controlled,
                            "long_term_score": value - controlled, "control": int(bool(held[site, own])) -
-                           int(bool(held[site, enemy])), "baseline_vp": definition["vp"],
+                           int(bool(held[site, enemy])), "baseline_vp": layer.award.amount if layer else definition["vp"],
                            "friendly": best[site, own], "hostile": best[site, enemy], "advantage": value})
         return sum(row["value"] for row in points), points, influences
 

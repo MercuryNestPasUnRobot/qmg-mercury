@@ -104,7 +104,7 @@ def test_a_route_influence_prices_each_army_using_its_own_score_rate(data, owner
         position = forecast(data).routes.position
         assert position.value("italy", "C") == pytest.approx(1)
     else:
-        assert position.value(other, "C") - baseline.value(other, "C") == baseline.site_base(owner, "C", "C") / 2
+        assert position.value(other, "C") == baseline.value(other, "C")
 
 
 def test_a_attack_denies_the_enemy_status_and_b_counts_it_once_per_window(data):

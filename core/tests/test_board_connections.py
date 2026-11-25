@@ -47,3 +47,10 @@ def test_saved_replay_can_show_both_checked_board_and_original_rules(tmp_path):
     }
     assert checked["straits"] == [{"land": "north-africa", "seas": ["north-sea", "mediterranean"]}]
     assert "board_reference" not in recording_topology(path, {**payload, **checked})
+
+
+def test_kazakhstan_and_russia_no_longer_have_a_direct_edge_on_new_board():
+    edges = [("kazakhstan", "russia"), ("kazakhstan", "moscow"), ("moscow", "russia")]
+    checked = set(corrected_edges(edges, regional_review=True))
+    assert ("kazakhstan", "russia") not in checked
+    assert {("kazakhstan", "moscow"), ("moscow", "russia")} <= checked
