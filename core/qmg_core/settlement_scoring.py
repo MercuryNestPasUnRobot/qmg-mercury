@@ -7,6 +7,7 @@ from .api import CoreAPI
 from .content_effects import condition_met, point_award
 from .economic_scoring import POINT_EFFECTS
 from .engine import AbilityScanner, CommandProcessor, ResolutionBudgetExceeded
+from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, ZoneRegistry, zone
 from .operations import OperationExecutor, ScoreResolver, outcome
 from .rules import SupplyResolver, board_units
@@ -25,11 +26,14 @@ class PositionValue:
     unit_removal_score: float
     card_event_value: float
     surviving_units: tuple = ()
+    expansion_sites: tuple = ()
+    expansion_score: float = 0
 
 
 class SettlementScorer:
-    def __init__(self, units):
+    def __init__(self, units, expansion_vp=0):
         self.units = units
+        self.expansion_vp = expansion_vp
 
     @staticmethod
     def closing_positions(rules, settled, deadline):
@@ -139,7 +143,7 @@ class SettlementScorer:
             fixed[best[1]] += best[0]
         return fixed
 
-    def value(self, processor, country, *, initial_units=None, direct_removals=(), played_card=None,
+    def value(self, processor, country, *, initial_units=None, direct_removals=(), constructed=(), played_card=None,
               card_event_value=0, deadline=None):
         state, rules = processor.state, processor.rules
         own = rules.team(country)
@@ -185,6 +189,12 @@ class SettlementScorer:
             for site, amount in rates.items():
                 site_values[site] = site_values.get(site, 0) + sign(seat) * self.units.vp_score(amount)
         points = tuple({"site": site, "value": value} for site, value in site_values.items())
-        map_value = stock + sum(site_values.values())
+        expansion = ()
+        if self.expansion_vp and constructed and not state.winner:
+            origins = {t.position_id for t in pieces if t.token_id in constructed and t.owner_country == country}
+            if origins:
+                expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
+        expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
+        map_value = stock + sum(site_values.values()) + expansion_score
         return PositionValue(float(actual), map_value, cards, 0.0, self.units.vp_score(actual) + map_value + cards,
-                             terminal, points, (), removal, card_event_value, survivors)
+                             terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score)

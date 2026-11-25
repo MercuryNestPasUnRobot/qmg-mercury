@@ -7,7 +7,7 @@ from pathlib import Path
 from time import perf_counter
 
 from .api import CoreAPI, observed_position, simulation_from_observation
-from .definitions import RuleSet
+from .definitions import CONSTRUCTION, RuleSet
 from .economic_scoring import EconomicForecast
 from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .hand_retention import score_retention
@@ -36,7 +36,10 @@ class ScoreEvaluator:
         settlement_scoring = weights.get("settlement_scoring", False)
         if type(settlement_scoring) is not bool or (settlement_scoring and not self.units.enabled):
             raise CoreError("Settlement scoring requires standard units")
-        self.settlement = SettlementScorer(self.units) if settlement_scoring else None
+        expansion = weights.get("expansion_preference", 0)
+        if type(expansion) not in (int, float) or not isfinite(expansion) or expansion < 0:
+            raise CoreError("Invalid expansion preference")
+        self.settlement = SettlementScorer(self.units, expansion) if settlement_scoring else None
         self.seat_forecast = self.units.enabled or weights.get("seat_forecast", False)
         numbers = [*weights["distance_weights"], *weights["supply_weights"].values(),
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
@@ -555,6 +558,8 @@ class OneStepPlanner:
                        "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
                        **({"unit_removal_score": value.unit_removal_score} if value.unit_removal_score else {}),
                        **({"card_event_score": value.card_event_value} if value.card_event_value else {}),
+                       **({"expansion_score": value.expansion_score, "expansion_sites": value.expansion_sites}
+                          if value.expansion_sites else {}),
                        **({"initial_card_score": initial} if initial else {}),
                        **({"consumes_card": True} if consumes_card and self.evaluator.units.enabled
                           and not self.evaluator.action_distance else {}),
@@ -646,6 +651,8 @@ class OneStepPlanner:
                 "q": plan["total"], "terminal_rank": 0,
                 **({"unit_removal_score": after.unit_removal_score} if after.unit_removal_score else {}),
                 **({"card_event_score": after.card_event_value} if after.card_event_value else {}),
+                **({"expansion_score": after.expansion_score, "expansion_sites": after.expansion_sites}
+                   if after.expansion_sites else {}),
                 "continuations": [], "choice_signatures": [], "reallocation": plan}
 
     @staticmethod
@@ -690,7 +697,7 @@ class OneStepPlanner:
         return result
 
     def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None,
-                card_events=0, original_board=frozenset(), direct_removals=frozenset()):
+                card_events=0, original_board=frozenset(), direct_removals=frozenset(), constructed=frozenset()):
         self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
@@ -708,6 +715,12 @@ class OneStepPlanner:
         effects = {"initial_units": initial_units, "played_card": played_card, "card_event_value": card_events}
         if self.evaluator.settlement:
             effects["direct_removals"] = direct_removals
+            if self.evaluator.settlement.expansion_vp:
+                constructed = constructed.union(
+                    move["token_id"] for record in processor.records if record["operation_type"] in CONSTRUCTION
+                    for move in record["outcome"]["changes"] if move["to"] in processor.rules.regions
+                    and state.tokens[move["token_id"]].token_type == "UNIT")
+                effects["constructed"] = constructed
         if state.winner:
             # Terminal positions may retain irrelevant pending frame cleanup.
             return self.end_score(processor, country, deadline, **effects), []
@@ -740,7 +753,7 @@ class OneStepPlanner:
             CoreAPI(branch, (actor,)).apply(command)
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
                                         played_card=played_card, card_events=card_events, original_board=original_board,
-                                        direct_removals=direct_removals)
+                                        direct_removals=direct_removals, constructed=constructed)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

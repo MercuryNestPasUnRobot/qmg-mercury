@@ -520,6 +520,8 @@ async function mount(data) {
           node("small", [vp, "地图 " + signed(c.map_delta),
             "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
         if (c.unit_removal_score) li.append(node("small", "地图分中移除单位 " + signed(c.unit_removal_score)));
+        if (c.expansion_score) li.append(node("small", "地图分中扩张偏好 " + signed(c.expansion_score)
+          + " · 可继续争取 " + c.expansion_sites.length + " 个分点"));
         if (c.card_event_score) li.append(node("small", "牌分中返牌与牌库顶操作 " + signed(c.card_event_score)));
       } else {
         li.append(node("small", shortReason(c.reason)));
@@ -537,6 +539,8 @@ async function mount(data) {
         picked(c.command) ? "picked" : "");
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
       if (c.retention) li.append(node("small", retentionDetails(c.retention)));
+      if (c.expansion) li.append(node("small", "剩余建造牌可达 " + c.expansion.sites.length
+        + " 个分点 · 扩张偏好 " + signed(c.expansion.score)));
       if (c.response_forecast) {
         const r = c.response_forecast;
         if (r.immediate != null) {
