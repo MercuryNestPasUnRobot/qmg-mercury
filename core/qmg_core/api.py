@@ -157,12 +157,26 @@ def observation(processor, controlled_countries, *, include_history=True):
                     "use" if len(candidates) == 1 else key: s.tokens[key].source_token_id for key in candidates
                 }
                 event = s.stack[-1].context.get("event", {})
+                result = s.stack[-1].context.get("event_outcome", {})
                 decision["response_abilities"] = {
                     option: s.tokens[key].definition_id for option, key in
                     zip(decision["response_sources"], candidates)
                 }
                 decision["event_region"] = event.get("target") if event.get("target") in rules.regions else None
                 decision["event_actor"] = event.get("actor_country")
+                decision["response_event"] = {
+                    **{key: event[key] for key in ("type", "actor_country", "announced_type",
+                                                  "air_action", "declared_kind", "target_country") if key in event},
+                    **({"target": event["target"]} if event.get("target") in rules.regions else {}),
+                    **{key: event[key] for key in ("target_token", "attacker_token", "source_token_id")
+                       if event.get(key) in visible},
+                }
+                decision["response_unit_moves"] = [
+                    {key: change[key] for key in ("token_id", "from", "to")}
+                    for change in result.get("changes", ()) if change["token_id"] in visible
+                    and visible[change["token_id"]]["token_type"] == "UNIT"
+                    and (change["from"] in rules.regions or change["to"] in rules.regions)
+                ]
             if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
                     s.decision.continuation["effect"]["type"] == "choose-country"):
                 decision["deck_discard_count"] = s.decision.continuation["effect"]["count"]

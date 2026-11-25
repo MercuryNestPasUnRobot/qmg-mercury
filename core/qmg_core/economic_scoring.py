@@ -48,6 +48,13 @@ class EconomicForecast:
         from .status_scoring import StatusForecast
         return StatusForecast(self, **self.status_weights) if self.status_weights else None
 
+    @cached_property
+    def responses(self):
+        from .response_scoring import ResponseForecast
+        if self.map_weights and self.map_weights.get("action_distance_scoring") and self.map_weights.get("response_timing_scoring"):
+            return ResponseForecast(self)
+        return None
+
     def gaps(self, team):
         lead = self.scores[team] - self.scores["allies" if team == "axis" else "axis"]
         return max(0, self.margin - lead), max(0, self.margin + lead)

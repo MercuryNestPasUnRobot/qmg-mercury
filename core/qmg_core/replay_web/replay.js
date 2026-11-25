@@ -64,7 +64,7 @@ const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", D
 const optionNames = {use: "使用能力", decline: "放弃", confirm: "确认", cancel: "取消", done: "完成",
   skip: "跳过", discard: "弃牌", air: "空军", unit: "地面／海军单位"};
 const modeNames = {rules: "规则评分 A", search: "完整结算 B", plan: "沿用已评分的续步", forced: "唯一合法指令"};
-const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "no-comparable-commands":"无可比较的行动",
+const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "response-timing":"按响应时机选择", "no-comparable-commands":"无可比较的行动",
   "matched-continuation":"续步吻合", "matched-exchange":"调配方案与合法选项吻合",
   "rules-only":"规则策略", "hand-retention":"手牌保留评分", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
 const shortReason = reason => ({
@@ -537,6 +537,19 @@ async function mount(data) {
         picked(c.command) ? "picked" : "");
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
       if (c.retention) li.append(node("small", retentionDetails(c.retention)));
+      if (c.response_forecast) {
+        const r = c.response_forecast;
+        if (r.immediate != null) {
+          li.append(node("small", "现在发动 " + signed(r.immediate)));
+          if (r.wait) li.append(node("small", "等待 " + r.wait.wait_turns + " 回合 · 联动 "
+            + safeName(r.wait.card) + " → " + (regions[r.wait.target]?.name || r.wait.target)
+            + " · 基础 " + signed(r.wait.base) + " · 延迟 " + signed(-r.wait.time_cost)
+            + " · 净值 " + signed(r.wait.net)));
+        } else {
+          li.append(node("small", "盖置基础 " + signed(r.base) + " · 等待 " + r.wait_turns
+            + " 回合 · 延迟 " + signed(-r.time_cost) + (r.window_remaining ? "" : " · 已无后续窗口")));
+        }
+      }
       if (c.status_forecast) {
         const s = c.status_forecast;
         li.append(node("small", "状态预估 · " + s.windows + " 个席位回合 · 折算 " + s.effective.toFixed(2)

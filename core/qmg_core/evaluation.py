@@ -15,6 +15,7 @@ from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
+from .response_scoring import is_delayed
 from .status_scoring import is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
@@ -27,6 +28,8 @@ class ScoreEvaluator:
         self.weights = deepcopy(weights)
         self.units = ScoreUnits.from_weights(weights)
         self.action_distance = weights.get("action_distance_scoring", False)
+        if type(weights.get("response_timing_scoring", False)) is not bool:
+            raise CoreError("Invalid response timing scoring setting")
         if type(self.action_distance) is not bool or (self.action_distance and
                 (not self.units.enabled or "route_forecast" not in weights or "economic_forecast" not in weights)):
             raise CoreError("Action distance scoring requires standard units, routes and economic forecasting")
@@ -151,6 +154,9 @@ class ScoreEvaluator:
         card_stock = self.units.card if self.units.enabled and include_card else 0
         if card.get("simulation_unknown"):
             return card_stock + weights["unknown"]
+        if economy and is_delayed(card) and economy.responses:
+            estimate = economy.responses.staging(country, card["id"])
+            return card_stock + (max(0, estimate["net"]) if estimate["window_remaining"] else 0)
         if economy and economy.status_weights and is_status(card):
             return (card_stock + economy.statuses.report(country, card["id"], held=True)["future"] +
                     self.program_value(rules, state, country, card["effects"], economy))
@@ -222,6 +228,8 @@ class ScoreEvaluator:
                 return self.units.action_score(0.325 if useful else 0.10)
             raw = self.hand_value(rules, state, country, card, legal, economy, include_card=False)
             if self.status_weights and is_status(card):
+                return raw
+            if economy and is_delayed(card) and economy.responses:
                 return raw
             if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
                 ready = condition_met(rules, state, country, card.get("content_condition"))
@@ -713,6 +721,12 @@ class OneStepPlanner:
         client = CoreAPI(processor, (actor,))
         commands = client.legal_commands()
         width = self.evaluator.weights.get("construction_search_width", 0)
+        if (actor == country and self.evaluator.weights.get("response_timing_scoring") and
+                decision.continuation["type"] == "RESPONSE_SELECTED"):
+            from .ai_match_policy import RulePolicy
+            rows = RulePolicy(processor.rules, self.evaluator).rank(client.observe(include_history=False), commands)
+            if any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in rows):
+                commands = [rows[0]["command"]]
         if width and len(commands) > width:
             view = client.observe(include_history=False)
             if view["decision"].get("map_force") and not view["decision"]["map_battle"]:
