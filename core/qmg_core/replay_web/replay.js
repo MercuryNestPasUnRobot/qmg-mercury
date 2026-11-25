@@ -336,7 +336,7 @@ async function mount(data) {
       button.replaceChildren();
       if (!artMap) {
         button.append(node("span", region.name, "place-name"));
-        if (region.vp) button.append(node("span", region.vp + " VP", "vp"));
+        if (region.vp) button.append(node("span", region.half_site ? "半分点" : region.vp + " VP", "vp"));
       } else if (!groups.size) {
         button.append(node("span", undefined, "board-pin"));
       }
@@ -361,7 +361,7 @@ async function mount(data) {
         return regions[other].name + "（" + regions[strait.land].name + "，" + (axis ? "轴心" : "同盟") + "可通行）";
       });
       $("region-detail").textContent = [selected.name, occupants.join("、") || "无驻军",
-        selected.vp ? selected.vp + " VP" : "",
+        selected.half_site ? "半分点（每个部队 1 VP）" : selected.vp ? selected.vp + " VP" : "",
         "基础相邻 " + (neighbors.join("、") || "—"), passages.length ? "海峡 " + passages.join("、") : "",
       ].filter(Boolean).join(" · ");
     } else {

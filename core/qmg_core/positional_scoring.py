@@ -2,6 +2,7 @@
 from collections import defaultdict, deque
 from math import inf
 
+from .definitions import PER_UNIT_SITE
 from .model import TURN_ORDER, zone
 from .rules import MapGraph, RuleModifierResolver
 
@@ -21,6 +22,10 @@ class ActionDistanceScoring:
         self.include_connections = include_connections
         self.graphs, self.paths, self.bases, self.sites_by_position = {}, {}, {}, {}
         self.income_changes = {}
+        self.source_owners = defaultdict(set)
+        for token in state.tokens.values():
+            if token.token_type == "SCORE_SOURCE" and token.position_id in rules.regions:
+                self.source_owners[token.definition_id, token.position_id].add(token.owner_country)
         self.has_income_changes = include_connections and any(
             m["kind"] == "score_bonus"
             for seat in TURN_ORDER for token in state.positions.get(zone(seat, "STATUS"), ())
@@ -71,9 +76,13 @@ class ActionDistanceScoring:
         return self.capture(force, region, STANDARD_SITE_VP) * vp / STANDARD_SITE_VP
 
     def site_base(self, force, region, site):
-        printed = self.rules.sites[site]["vp"]
+        definition = self.rules.sites[site]
+        seat = self.rules.force_controllers[force]
+        owners = self.source_owners[site, region] if definition.get("dynamic") else {None}
+        if seat not in definition["countries"] or (None not in owners and seat not in owners):
+            return 0
+        printed = definition["vp"]
         if self.has_income_changes:
-            seat = self.rules.force_controllers[force]
             if seat not in self.income_changes:
                 changes = defaultdict(int)
                 for modifier in RuleModifierResolver(self.rules).resolve(self.state, seat):
@@ -83,7 +92,7 @@ class ActionDistanceScoring:
             change = self.income_changes[seat].get(site, 0)
             if change:
                 return self.proportional_base(force, region, max(0, printed + change))
-        if self.rules.sites[site].get("dynamic"):
+        if definition.get("dynamic") or definition.get("scoring") == PER_UNIT_SITE:
             return self.proportional_base(force, region, printed)
         return self.capture(force, region, printed)
 
@@ -96,9 +105,6 @@ class ActionDistanceScoring:
         team = self.rules.team(force)
         routes = []
         for site, locations in self.locations.items():
-            definition = self.rules.sites[site]
-            if not any(self.rules.team(seat) == team for seat in definition["countries"]):
-                continue
             for end in sorted(locations):
                 distance = from_start.get(end)
                 if distance is None:
@@ -108,13 +114,13 @@ class ActionDistanceScoring:
                     continue
                 value = base - self.units.action_score(distance)
                 if value >= 0:
-                    routes.append((distance, site, end, base, value))
+                    routes.append((distance, site, end, value))
         # Multiple physical copies of the same score source still represent one site.
         nearest = {}
         for row in sorted(routes):
             nearest.setdefault(row[1], row)
         routes = list(nearest.values())[:self.nearest_sites]
-        scores = {site: (distance, raw) for distance, site, _, _, raw in routes}
+        scores = {site: (distance, raw) for distance, site, _, raw in routes}
         changes = defaultdict(float)
         for token in self.pieces:
             if token.token_id == excluded:
@@ -122,12 +128,15 @@ class ActionDistanceScoring:
             position = token.position_id
             friendly = self.rules.team(token.owner_country) == team
             best, best_site = 0, None
-            for distance, site, end, base, _ in routes:
+            for distance, site, end, _ in routes:
                 to_end = self.distances(force, end).get(position, inf)
                 if not (to_end < distance or to_end == distance == 0):
                     continue
                 if from_start.get(position, inf) + to_end != distance:
                     continue
+                if friendly and distance == 0 and self.rules.sites[site].get("scoring") == PER_UNIT_SITE:
+                    continue  # An allied unit here does not share the new unit's VP.
+                base = self.site_base(token.owner_country, end, site)
                 change = self.distance_value(base, to_end) / 2
                 if change > best:
                     best, best_site = change, site
@@ -142,10 +151,8 @@ class ActionDistanceScoring:
 
     def best_adjacent_site(self, force, regions):
         regions = set(regions)
-        team = self.rules.team(force)
         return max((self.distance_value(self.site_base(force, end, site), 1)
                     for site, locations in self.locations.items() for end in locations
-                    if any(self.rules.team(seat) == team for seat in self.rules.sites[site]["countries"])
                     if any(self.distances(force, end).get(region) == 1 for region in regions)), default=0)
 
     def board_values(self, country, rates):

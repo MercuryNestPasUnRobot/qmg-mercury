@@ -1,4 +1,7 @@
-"""Boundary audit for the 50-region board used by the local transcribed pack."""
+"""Reviewed rules for the 50-region board used by the local transcribed pack."""
+
+from .definitions import PER_UNIT_SITE
+from .model import TURN_ORDER
 
 PRINTED_REGIONS = frozenset("""
     canada united-states latin-america united-kingdom scandinavia western-europe germany
@@ -9,6 +12,21 @@ PRINTED_REGIONS = frozenset("""
     baltic-sea black-sea caspian-sea mediterranean arabian-sea indian-ocean south-china-sea
     east-china-sea north-pacific central-pacific east-pacific south-pacific
 """.split())
+
+
+def apply_half_sites(regions, sites, initial):
+    for region in ("scandinavia", "north-africa", "hawaii"):
+        site = next((site for site in sites if site["region"] == region and not site.get("dynamic")), None)
+        if site is None:
+            site = {"id": "score-" + region, "region": region, "countries": list(TURN_ORDER),
+                    "requires_supply": True}
+            sites.append(site)
+        site.update(vp=1, scoring=PER_UNIT_SITE)
+
+    hawaii = next(row for row in regions if row["id"] == "hawaii")
+    hawaii["no_construction_for"] = ["united-states"]
+    pacific_army = next(token for token in initial if token["token_id"] == "united-states-army-2")
+    pacific_army["position_id"] = "hawaii"
 
 
 def edge_pairs(rows):

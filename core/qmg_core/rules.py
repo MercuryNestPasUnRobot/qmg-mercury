@@ -331,7 +331,7 @@ class LegalActionGenerator:
             adjacency = self.graph.adjacency(state, country, "build")
             result = []
             for region, definition in self.rules.regions.items():
-                if definition["type"] != expected_terrain:
+                if definition["type"] != expected_terrain or force in definition.get("no_construction_for", ()):
                     continue
                 present = [t for t in units if t.position_id == region]
                 if any(self.rules.team(t.owner_country) != self.rules.team(country) or

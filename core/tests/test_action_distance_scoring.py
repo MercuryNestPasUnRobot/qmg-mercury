@@ -67,8 +67,9 @@ def test_allied_unit_on_site_or_closer_along_path_is_charged_once(data):
     move_initial(data, "italy-army-0", "H")
     move_initial(data, "united-kingdom-army-1", "C")
     foe = forecast(data).routes.position
-    assert foe.site_values("germany", "C")["C"] == (0, 6)
-    assert foe.site_values("germany", "B")["C"] == (1, 4)
+    # The UK army's own capture value is 6, giving it 3 influence on this route.
+    assert foe.site_values("germany", "C")["C"] == (0, 7)
+    assert foe.site_values("germany", "B")["C"] == (1, 5)
 
 
 def test_both_a_and_b_credit_one_action_for_a_certain_removal(data):

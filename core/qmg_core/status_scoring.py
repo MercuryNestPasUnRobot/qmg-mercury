@@ -1,7 +1,7 @@
 """Value remaining public status opportunities from a single seat's projected position."""
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cached_property, lru_cache
 import json
 from math import inf
 
@@ -43,7 +43,7 @@ class RegionalAward:
     gates: tuple
 
 
-def regional_award(effect, condition):
+def regional_award(effect, condition, *, include_global=False):
     kind = effect["type"]
     when = effect.get("when")
     gates = tuple(gate for gate in (condition, when) if gate)
@@ -62,10 +62,12 @@ def regional_award(effect, condition):
         gates = tuple(gate for gate in gates if gate is not occupation)
     else:
         return None
-    if not filters.get("spaces") or filters.keys() - REGION_FILTER_FIELDS:
+    if filters.keys() - REGION_FILTER_FIELDS or (not filters.get("spaces") and not include_global):
         return None
     excluded = set(filters.get("excludeSpaces", ()))
-    spaces = tuple(space for space in dict.fromkeys(filters["spaces"]) if space not in excluded)
+    spaces = tuple(space for space in dict.fromkeys(filters.get("spaces", ())) if space not in excluded)
+    if not spaces and "spaces" in filters:
+        return None
     return RegionalAward(spaces, {key: value for key, value in filters.items() if key not in ("spaces", "excludeSpaces")},
                          amount, mode, gates)
 
@@ -220,7 +222,7 @@ class StatusForecast:
                     values.append(self.program(owner, owner, key, None, committed=True))
         return max(values, default=0)
 
-    def regional_awards(self, card_id):
+    def regional_awards(self, card_id, *, include_global=False):
         card = self.rules.cards[card_id]
         awards = {}
         for key in card.get("abilities", ()):
@@ -228,16 +230,18 @@ class StatusForecast:
             if trigger_of(ability)["type"] != "during-victory":
                 continue
             awards[key] = {index: award for index, step in enumerate(ability["effects"])
-                           if (award := regional_award(step["effect"], card.get("content_condition")))}
+                           if (award := regional_award(step["effect"], card.get("content_condition"),
+                                                       include_global=include_global))}
         return {key: rows for key, rows in awards.items() if rows}
 
-    def regional_award_value(self, owner, key, rows, *, added=None):
+    def regional_award_value(self, owner, key, rows, *, pieces=None):
         position = self.economy.routes.position
         ability = self.rules.abilities[key]
         team = self.rules.team(owner)
+        pieces = self.units if pieces is None else pieces
         value = 0.0
         for index, award in rows.items():
-            if not all(condition_met(self.rules, self.state, owner, gate) for gate in award.gates):
+            if not all(condition_met(self.rules, self.state, owner, gate, pieces=pieces) for gate in award.gates):
                 continue
             effect = ability["effects"][index]["effect"]
             recipient = point_recipient(self.rules, owner, effect["side"])
@@ -249,11 +253,14 @@ class StatusForecast:
                 filters = {"force": "team" if occupied_team == team else "enemy", "kind": "army"}
             else:
                 filters = award.filters
-            pieces = self.units if added is None else (*self.units, added)
             eligible = [t for t in pieces if unit_matches(self.rules, self.state, owner, t, filters)]
+            if not award.spaces:
+                value += side * sum(position.proportional_base(recipient, t.position_id, award.amount)
+                                    for t in eligible)
+                continue
             estimates = []
             for region in award.spaces:
-                base = position.proportional_base(owner, region, abs(award.amount))
+                base = position.proportional_base(recipient, region, abs(award.amount))
                 distances = [position.distances(t.owner_country, t.position_id).get(region, inf) for t in eligible]
                 present = distances.count(0)
                 if award.mode == "each-unit" and present:
@@ -264,25 +271,33 @@ class StatusForecast:
             value += side * area * (-1 if award.amount < 0 else 1)
         return max(0, value) if ability["activation_mode"] == "OPTIONAL" else value
 
-    def regional_placement(self, force, region):
+    @cached_property
+    def active_regional_awards(self):
         active = defaultdict(list)
         for owner, cards in self.sources.items():
             for source, card in cards:
                 if status_enabled(self.rules, self.state, self.state.tokens[source]):
-                    active[owner].extend(self.regional_awards(card).items())
-        active = {owner: awards for owner, awards in active.items() if awards}
-        if not active:
+                    active[owner].extend(self.regional_awards(card, include_global=True).items())
+        return {owner: awards for owner, awards in active.items() if awards}
+
+    def regional_placement(self, force, region):
+        if not self.active_regional_awards:
             return 0
         kind = "ARMY" if self.rules.regions[region]["type"] == "LAND" else "NAVY"
         definition = next((key for key, unit in self.rules.units.items() if unit["kind"] == kind), None)
         if definition is None:
             return 0
         added = Token("forecast:regional-placement", definition, "UNIT", force, region)
+        return self.regional_change(force, (*self.units, added))
 
-        def value(owner, awards, placement=None):
+    def regional_removal(self, token):
+        return -self.regional_change(token.owner_country, [t for t in self.units if t.token_id != token.token_id])
+
+    def regional_change(self, force, after):
+        def value(owner, awards, pieces=None):
             optional, mandatory = 0, 0
             for key, rows in awards:
-                estimate = self.regional_award_value(owner, key, rows, added=placement)
+                estimate = self.regional_award_value(owner, key, rows, pieces=pieces)
                 if self.rules.abilities[key]["activation_mode"] == "OPTIONAL":
                     optional = max(optional, estimate)
                 else:
@@ -290,7 +305,8 @@ class StatusForecast:
             return optional + mandatory
 
         return sum((1 if self.rules.team(owner) == self.rules.team(force) else -1) *
-                   (value(owner, awards, added) - value(owner, awards)) for owner, awards in active.items())
+                   (value(owner, awards, after) - value(owner, awards))
+                   for owner, awards in self.active_regional_awards.items())
 
     def targets(self, owner, force, kind, action):
         return self.action_targets(self.state, owner, force, kind, action)

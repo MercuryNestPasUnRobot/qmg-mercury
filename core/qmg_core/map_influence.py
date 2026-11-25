@@ -12,7 +12,7 @@ from .score_units import ScoreUnits
 
 
 class ScoringRoutes:
-    def __init__(self, rules, state, pieces, weights, *, include_connections=True, regional_points=None):
+    def __init__(self, rules, state, pieces, weights, *, include_connections=True, status_forecast=None):
         self.rules = rules
         self.state = state
         self.weights = weights
@@ -47,7 +47,7 @@ class ScoringRoutes:
         self.near_site_distances = {}
         self.attack_victims = {}
         self.removal_routes = {}
-        self.regional_points = regional_points
+        self.status_forecast = status_forecast
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections)
                          if self.weights.get("action_distance_scoring") else None)
@@ -190,7 +190,8 @@ class ScoringRoutes:
             return 0.0
         if self.position:
             # Price the denied position from its owner's side, plus one lost action.
-            return self.units.action + self.position.value(
+            status_value = self.status_forecast().regional_removal(victim) if self.status_forecast else 0
+            return self.units.action + status_value + self.position.value(
                 victim.owner_country, victim.position_id, excluded=token_id)
         return self._without_unit(token_id).target_value(
             victim.owner_country, victim.position_id, construction=True, local_only=local_only)
@@ -235,8 +236,8 @@ class ScoringRoutes:
         if self.position:
             value = (max((self.removal_value(t.token_id) for t in self._removable_targets(force, region)), default=0)
                      if battle else self.position.value(force, region))
-            if construction and self.regional_points:
-                value += self.regional_points(force, region)
+            if construction and self.status_forecast:
+                value += self.status_forecast().regional_placement(force, region)
             self.target_scores[cache_key] = value
             return value
         if battle and self.weights.get("mirrored_attacks"):

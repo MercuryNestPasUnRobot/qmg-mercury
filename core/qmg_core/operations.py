@@ -1,5 +1,5 @@
 """Atomic rule semantics. All physical changes use ZoneRegistry.transfer."""
-from .definitions import BATTLES, CONSTRUCTION, FORCE_OPERATIONS
+from .definitions import BATTLES, CONSTRUCTION, FORCE_OPERATIONS, PER_UNIT_SITE
 from .model import CoreError, TURN_ORDER, ZoneRegistry, zone
 from .rules import board_units, capture_turn_start, deployed_zones, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver, unit_rule_matches
 
@@ -43,6 +43,9 @@ class ScoreResolver:
             for token, seat in units:
                 if (seat != country or token.position_id not in locations or
                         (site["requires_supply"] and token.token_id not in supplied_for(country))):
+                    continue
+                if site.get("scoring") == PER_UNIT_SITE:
+                    result[site_id] = result.get(site_id, 0) + site["vp"]
                     continue
                 shared = self.rules.settings.get("shared_site_scoring") and any(
                     other != country and other in site["countries"] and self.rules.team(other) == self.rules.team(country)

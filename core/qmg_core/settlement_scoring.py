@@ -1,11 +1,14 @@
 """Score completed B branches from settled effects and durable board assets."""
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 from .api import CoreAPI
-from .engine import CommandProcessor, ResolutionBudgetExceeded
+from .content_effects import condition_met, point_award
+from .economic_scoring import POINT_EFFECTS
+from .engine import AbilityScanner, CommandProcessor, ResolutionBudgetExceeded
 from .model import TURN_ORDER, ZoneRegistry, zone
-from .operations import ScoreResolver
+from .operations import OperationExecutor, ScoreResolver, outcome
 from .rules import SupplyResolver, board_units
 
 
@@ -90,6 +93,52 @@ class SettlementScorer:
             pieces = board_units(rules, state)
         return (), {}
 
+    @staticmethod
+    def scoring_listeners(rules, state):
+        listeners = defaultdict(list)
+        for seat in TURN_ORDER:
+            deployed = state.positions[zone(seat, "STATUS")]
+            for key in state.positions[zone(seat, "ABILITY_READY")]:
+                token = state.tokens[key]
+                if token.source_token_id not in deployed:
+                    continue
+                ability = rules.abilities[token.definition_id]
+                if ability["trigger"].get("card_trigger", {}).get("type") == "during-victory" and (
+                        ability["effects"] and all(step["type"] == "CARD_EFFECT" and
+                            step["effect"]["type"] in POINT_EFFECTS for step in ability["effects"])):
+                    listeners[seat].append(token)
+        return listeners
+
+    @staticmethod
+    def status_points(rules, state, seat, tokens):
+        if not tokens:
+            return {}
+        op = {"type": "CHECK_SCORE", "actor_country": seat}
+        scan = AbilityScanner(rules)
+        executor = OperationExecutor(rules)
+        team = rules.team(seat)
+        fixed = defaultdict(int)
+        best = (0, None)
+        for _, _, token, ability in sorted(scan.candidates(state, op, outcome("CHECK_SCORE"), tokens)):
+            # Unsettled hand payments and programs that change the board are outside this snapshot.
+            if executor.activation_cost(state, token):
+                continue
+            value = 0
+            for step in ability["effects"]:
+                effect = step["effect"]
+                if condition_met(rules, state, seat, effect.get("when")):
+                    recipient, points = point_award(rules, state, seat, effect)
+                    value += points if rules.team(recipient) == team else -points
+            card = state.tokens[token.source_token_id].definition_id
+            key = "status:" + card
+            if ability["activation_mode"] == "AUTO":
+                fixed[key] += value
+            elif value > best[0]:
+                best = (value, key)
+        if best[1] is not None:
+            fixed[best[1]] += best[0]
+        return fixed
+
     def value(self, processor, country, *, initial_units=None, direct_removals=(), played_card=None,
               card_event_value=0, deadline=None):
         state, rules = processor.state, processor.rules
@@ -123,12 +172,17 @@ class SettlementScorer:
             stock += tactical
         site_values = {}
         scorer = ScoreResolver(rules)
+        listeners = self.scoring_listeners(rules, state)
         for index, seat in enumerate(TURN_ORDER):
             scored = index < state.turn.country_index or (index == state.turn.country_index and
                       state.turn.phase in ("Victory", "Discard", "Draw"))
             if state.winner or (scored and state.turn.round_id == rules.settings["max_rounds"]):
                 continue
-            for site, amount in scorer.sites(state, seat, pieces=pieces, supply_cache=supplies).items():
+            # A seat's next scoring window uses its own public rule modifiers.
+            snapshot = replace(state, turn=replace(state.turn, country_index=index, phase="Victory"))
+            rates = scorer.sites(snapshot, seat, pieces=pieces, supply_cache=supplies)
+            rates.update(self.status_points(rules, snapshot, seat, listeners.get(seat)))
+            for site, amount in rates.items():
                 site_values[site] = site_values.get(site, 0) + sign(seat) * self.units.vp_score(amount)
         points = tuple({"site": site, "value": value} for site, value in site_values.items())
         map_value = stock + sum(site_values.values())

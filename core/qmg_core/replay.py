@@ -12,7 +12,7 @@ from tempfile import NamedTemporaryFile
 
 from .api import CoreAPI
 from .board_connections import PRINTED_REGIONS, corrected_edges, corrected_straits, edge_pairs
-from .definitions import RuleSet
+from .definitions import PER_UNIT_SITE, RuleSet
 from .engine import CommandProcessor
 from .model import CoreError, TURN_ORDER, digest, zone
 
@@ -108,12 +108,15 @@ class Tape:
         forces = {force: {"name": COUNTRIES.get(force, rules.auxiliary_forces.get(force, {}).get("name", force)),
                           "seat": seat, "team": rules.team(force)}
                   for force, seat in rules.force_controllers.items()}
-        sites = {}
+        sites, half_sites = {}, set()
         for site in rules.sites.values():
             if not site.get("dynamic"):
                 sites[site["region"]] = sites.get(site["region"], 0) + site["vp"]
+                if site.get("scoring") == PER_UNIT_SITE:
+                    half_sites.add(site["region"])
         return {"frames": self.frames, "tokens": self.tokens, "forces": forces, "turn_order": TURN_ORDER,
-                "regions": {key: {"name": region.get("name", key), "type": region["type"], "vp": sites.get(key, 0)}
+                "regions": {key: {"name": region.get("name", key), "type": region["type"], "vp": sites.get(key, 0),
+                                  **({"half_site": True} if key in half_sites else {})}
                             for key, region in rules.regions.items()},
                 "edges": [[edge["a"], edge["b"]] for edge in rules.connections.values()],
                 "straits": rules.settings.get("straits", [])}

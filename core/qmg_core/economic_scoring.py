@@ -40,11 +40,8 @@ class EconomicForecast:
         from .rules import board_units
         state = self.visible_state()
 
-        def regional_points(force, region):
-            return self.statuses.regional_placement(force, region)
-
-        callback = regional_points if self.status_weights and self.map_weights.get("action_distance_scoring") else None
-        return ScoringRoutes(self.rules, state, board_units(self.rules, state), self.map_weights, regional_points=callback)
+        callback = (lambda: self.statuses) if self.status_weights and self.map_weights.get("action_distance_scoring") else None
+        return ScoringRoutes(self.rules, state, board_units(self.rules, state), self.map_weights, status_forecast=callback)
 
     @cached_property
     def statuses(self):
