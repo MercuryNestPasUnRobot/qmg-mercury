@@ -13,6 +13,7 @@ from .engine import CommandProcessor, ResolutionBudgetExceeded
 from .hand_retention import score_retention
 from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
+from .recruitment import recruitment_play
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import payment_plans, price
 from .response_scoring import is_delayed
@@ -546,9 +547,11 @@ class OneStepPlanner:
                 simulated_seat.apply(command)
                 consumes_card = command["type"] in ("PLAY_CARD", "USE_AIR")
                 played = command["card"] if consumes_card and self.evaluator.action_distance else None
+                source = root_state.tokens.get(command.get("card"))
+                recruitment_path = source and recruitment_play(root.rules, root.rules.cards[source.definition_id], command)
                 value, choices = self._finish(candidate, country, nodes, deadline,
                                               initial_units=initial_units, played_card=played,
-                                              original_board=original_board)
+                                              original_board=original_board, recruitment_path=recruitment_path)
                 initial = -self.evaluator.hand_slot_cost if consumes_card and not self.evaluator.units.enabled else 0.0
                 vp_delta = value.actual_vp - before.actual_vp
                 yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
@@ -559,6 +562,7 @@ class OneStepPlanner:
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
                        "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
                        **({"unit_removal_score": value.unit_removal_score} if value.unit_removal_score else {}),
+                       **({"temporary_vp": value.temporary_vp} if value.temporary_vp else {}),
                        **({"card_event_score": value.card_event_value} if value.card_event_value else {}),
                        **({"expansion_score": value.expansion_score, "expansion_sites": value.expansion_sites}
                           if value.expansion_sites else {}),
@@ -699,7 +703,8 @@ class OneStepPlanner:
         return result
 
     def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None,
-                card_events=0, original_board=frozenset(), direct_removals=frozenset(), constructed=frozenset()):
+                card_events=0, original_board=frozenset(), direct_removals=frozenset(), constructed=frozenset(),
+                recruited=frozenset(), recruitment_path=False):
         self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
@@ -717,11 +722,14 @@ class OneStepPlanner:
         effects = {"initial_units": initial_units, "played_card": played_card, "card_event_value": card_events}
         if self.evaluator.settlement:
             effects["direct_removals"] = direct_removals
+            new_units = [(record["operation_type"], move["token_id"]) for record in processor.records
+                         if record["operation_type"] in CONSTRUCTION
+                         for move in record["outcome"]["changes"] if move["to"] in processor.rules.regions
+                         and state.tokens[move["token_id"]].token_type == "UNIT"]
+            recruited = recruited.union(key for action, key in new_units if action == "RECRUIT")
+            effects["recruited"] = recruited
             if self.evaluator.settlement.expansion_vp:
-                constructed = constructed.union(
-                    move["token_id"] for record in processor.records if record["operation_type"] in CONSTRUCTION
-                    for move in record["outcome"]["changes"] if move["to"] in processor.rules.regions
-                    and state.tokens[move["token_id"]].token_type == "UNIT")
+                constructed = constructed.union(key for _, key in new_units)
                 effects["constructed"] = constructed
         if state.winner:
             # Terminal positions may retain irrelevant pending frame cleanup.
@@ -742,7 +750,8 @@ class OneStepPlanner:
             rows = RulePolicy(processor.rules, self.evaluator).rank(client.observe(include_history=False), commands)
             if any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in rows):
                 commands = [rows[0]["command"]]
-        if width and len(commands) > width:
+        # A port or route may first look unsupplied and then make a later action legal.
+        if width and len(commands) > width and not (recruitment_path or recruited):
             view = client.observe(include_history=False)
             if view["decision"].get("map_force") and not view["decision"]["map_battle"]:
                 from .ai_match_policy import RulePolicy
@@ -755,7 +764,8 @@ class OneStepPlanner:
             CoreAPI(branch, (actor,)).apply(command)
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
                                         played_card=played_card, card_events=card_events, original_board=original_board,
-                                        direct_removals=direct_removals, constructed=constructed)
+                                        direct_removals=direct_removals, constructed=constructed, recruited=recruited,
+                                        recruitment_path=recruitment_path)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

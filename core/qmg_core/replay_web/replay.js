@@ -529,6 +529,7 @@ async function mount(data) {
           node("small", [vp, "地图 " + signed(c.map_delta),
             "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
         if (c.unit_removal_score) li.append(node("small", "地图分中移除单位 " + signed(c.unit_removal_score)));
+        if (c.temporary_vp) li.append(node("small", "地图分中临时占领实得 " + signed(c.temporary_vp) + " VP"));
         if (c.expansion_score) li.append(node("small", "地图分中扩张偏好 " + signed(c.expansion_score)
           + " · 可继续争取 " + c.expansion_sites.length + " 个分点"));
         if (c.card_event_score) li.append(node("small", "牌分中返牌与牌库顶操作 " + signed(c.card_event_score)));
@@ -550,6 +551,11 @@ async function mount(data) {
       if (c.retention) li.append(node("small", retentionDetails(c.retention)));
       if (c.expansion) li.append(node("small", "剩余建造牌可达 " + c.expansion.sites.length
         + " 个分点 · 扩张偏好 " + signed(c.expansion.score)));
+      if (c.recruitment) {
+        const r = c.recruitment;
+        li.append(node("small", r.complete ? "征召结算 · 地图 " + signed(r.map_delta) + " · 实得 " +
+          signed(r.actual_vp_delta + (r.temporary_vp || 0)) + " VP" : "征召未确认 · " + shortReason(r.reason)));
+      }
       if (c.response_forecast) {
         const r = c.response_forecast;
         if (r.immediate != null) {

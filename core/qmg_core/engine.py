@@ -604,14 +604,16 @@ class CommandProcessor:
             return frame.context["bound_source"]
         return value
 
-    def advance(self, max_steps=None):
+    def advance(self, max_steps=None, *, stop_on_turn_change=False):
         budget = self.rules.settings["max_atomic_steps"] if max_steps is None else max_steps
+        turn_id = self._state.turn.turn_id
         for _ in range(budget):
             s = self._state
-            if s.decision or not s.stack or s.winner:
+            if s.decision or not s.stack or s.winner or (stop_on_turn_change and s.turn.turn_id != turn_id):
                 return self.state
             self.step()
-        if self._state.stack and not self._state.decision and not self._state.winner:
+        if (self._state.stack and not self._state.decision and not self._state.winner and
+                not (stop_on_turn_change and self._state.turn.turn_id != turn_id)):
             raise ResolutionBudgetExceeded("Atomic-step budget exceeded; committed prefix remains resumable")
         return self.state
 
