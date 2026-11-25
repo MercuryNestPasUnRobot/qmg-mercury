@@ -7,7 +7,7 @@ from time import perf_counter
 from .content_effects import available_options, condition_met
 from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .definitions import BATTLES, CONSTRUCTION
-from .hand_retention import is_hand_choice
+from .hand_retention import cycling_ev, is_hand_choice
 from .model import CoreError, zone
 from .recruitment import recruitment_play
 from .response_scoring import is_delayed
@@ -202,9 +202,9 @@ class RulePolicy:
             return {}
         penalty = self.rules.settings.get("discard_phase_penalty", 0)
         saved = self.units.vp_score(penalty) if not view["turn"].get("discarded_in_phase") else 0
-        average = sum(terms["short_term"] for terms in retention.values()) / len(retention)
         # Each choice is compared with stopping now, so only new draw slots count.
-        cycle = self.units.card - average if penalty and replacement else 0
+        cycling = cycling_ev(retention, self.units.card, int(bool(penalty and replacement)))
+        cycle = cycling["cycle_score"]
         exhaustion = self.units.vp_score(self.rules.settings["deck_exhaustion_vp"]) if penalty and draw_slot and not replacement else 0
         result = {}
         for key, terms in retention.items():
@@ -214,7 +214,7 @@ class RulePolicy:
             cost = terms["net"] if replacement else (
                 max(0, terms["short_term"]) + terms["basic_reserve"] + terms.get("used_basic_cost", 0) + self.units.card)
             score = saved + cycle + gain + exhaustion - cost
-            result[key] = (score, {"hand_average": average, "extra_draws": int(replacement),
+            result[key] = (score, {"hand_average": cycling["hand_average"], "extra_draws": int(replacement),
                                    "draw_cycle": cycle, "penalty_saved": saved, "discard_trigger": gain,
                                    "exhaustion": exhaustion, "discard_cost": cost})
         return result
@@ -235,8 +235,10 @@ class RulePolicy:
         return (1 if delta > 0 else -1) if delta and economy.closes_game(seat, delta) else 0
 
     def reallocation_plan(self, view, seat, economy):
+        cycling = (cycling_ev(self.evaluator.retention(view, seat), self.units.card, view["reallocation"]["cost"])
+                   if self.evaluator and self.evaluator.hand_slot_cost else {})
         plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view))
-        return max((price(plan, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
+        return max((price({**plan, **cycling}, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
                     for plan in plans),
                    key=lambda plan: plan["total"], default=None)
 
@@ -356,7 +358,7 @@ class RulePolicy:
                     results[key] = {"complete": False, "reason": str(error)}
         return results
 
-    def rank(self, view, commands, *, recruitment_deadline=None):
+    def rank(self, view, commands, *, recruitment_deadline=None, verify_recruitment=True):
         if not commands:
             return []
         seat = commands[0]["actor"]
@@ -449,8 +451,9 @@ class RulePolicy:
             return (self.play_card_value(card, seat, economy, spent_card=command["card"]) if kind == "PLAY_CARD" else
                     self.card_value(card, seat, economy, active=kind == "USE_STATUS", closeout=True))
         rows = [{"command": command, "rule_score": score(command)} for command in commands]
-        recruitment = self.recruitment_forecasts(
+        recruitment = (self.recruitment_forecasts(
             view, [row["command"] for row in sorted(rows, key=lambda row: -row["rule_score"])], seat, recruitment_deadline)
+            if verify_recruitment else {})
         for row in rows:
             command = row["command"]
             if terminal := self.terminal_priority(view, command, seat, economy):
@@ -626,9 +629,42 @@ class SeatPolicy:
         actual = (decision["decision_type"], decision["operation_type"], sorted(decision["legal_options"]))
         # Simulated decision IDs are from a different state. Bind only to the equivalent live window.
         command = {**planned, "decision_id": decision["decision_id"]}
+        if "exchange_followup" in score:
+            command["expected_version"] = view["version"]
         if signature == actual and command in commands:
             return command, score
         self.plan.clear()
+        return None
+
+    def remember_choices(self, score, country, *, acquired=None):
+        followup = score.get("exchange_followup") if acquired is not None else None
+        steps = followup or score
+        target = followup["target"] if followup else None
+        self.plan = []
+        for choice, signature in takewhile(
+                lambda item: item[0]["type"] == "CHOOSE" and item[0]["actor"] == country,
+                zip(steps["continuations"], steps["choice_signatures"])):
+            if target is not None:
+                kind, operation, options = signature
+                signature = (kind, operation, sorted(acquired if option == target else option for option in options))
+                if choice["option"] == target:
+                    choice = {**choice, "option": acquired}
+            self.plan.append((choice, signature, score))
+
+    def resume_exchange(self, view, commands, country):
+        if self.exchange is None or view["decision"]:
+            return None
+        _, score, acquired = self.exchange
+        self.exchange = None
+        followup = score.get("exchange_followup")
+        if not followup or acquired is None:
+            return None
+        play = {**followup["play"], "expected_version": view["version"]}
+        if play.get("card") == followup["target"]:
+            play["card"] = acquired
+        if play in commands:
+            self.remember_choices(score, country, acquired=acquired)
+            return play, score
         return None
 
     def decide(self, client, country):
@@ -637,13 +673,18 @@ class SeatPolicy:
         commands = client.legal_commands()
         if not commands or any(c["actor"] != country for c in commands):
             raise CoreError("No legal action for the AI seat")
-        ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(2.1, self.budget_ms * 0.00075))
         phase = view["turn"]["phase"]
+        compare_exchange = bool(self.search and self.rule.evaluator and self.rule.evaluator.settlement and
+                                phase == "Play" and any(c["type"] == "REALLOCATE" for c in commands))
+        ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(2.1, self.budget_ms * 0.00075),
+                                verify_recruitment=not compare_exchange)
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
         preferred = paper_play_choices(ranked, mandatory)
         manual = next((row["command"] for row in ranked if row.get("immediate_response")), None)
         response_choice = any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in ranked)
         chosen = preferred[0]["command"]
+        if compare_exchange:
+            chosen = next((row["command"] for row in preferred if row["command"]["type"] != "REALLOCATE"), chosen)
         mode, status, tried, rows, selected = "rules", "rules-only", [], [], None
         if manual and not view["decision"]:
             chosen = manual
@@ -653,7 +694,7 @@ class SeatPolicy:
         if len(commands) == 1:
             mode, status = "forced", "only-legal-command"
         forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in commands)
-        if (self.rule.evaluator and self.rule.evaluator.hand_slot_cost and
+        if (not compare_exchange and self.rule.evaluator and self.rule.evaluator.hand_slot_cost and
                 is_hand_choice(view, country, forced_play_discard=forced_play_discard)):
             status = "hand-retention"
         elif response_choice:
@@ -663,7 +704,7 @@ class SeatPolicy:
             chosen, selected = planned
             mode, status = "plan", "matched-continuation"
         elif self.search and status != "response-timing":
-            if self.exchange and (not view["decision"] or self.exchange[0] != view["turn"]["turn_id"]):
+            if self.exchange and self.exchange[0] != view["turn"]["turn_id"]:
                 self.exchange = None
             info = view.get("reallocation", {})
             options = planned_options(self.rule.rules, info, self.exchange[1]["reallocation"]) if self.exchange else []
@@ -671,7 +712,12 @@ class SeatPolicy:
                 options = []
             if planned_exchange := next((c for c in commands if c.get("option") in options), None):
                 chosen, selected = planned_exchange, self.exchange[1]
+                if "targets" in info:
+                    self.exchange = (self.exchange[0], selected, chosen["option"])
                 mode, status = "plan", "matched-exchange"
+            elif resumed := self.resume_exchange(view, commands, country):
+                chosen, selected = resumed
+                mode, status = "plan", "matched-exchange-play"
             elif planned := self.planned_choice(view, commands):
                 chosen, selected = planned
                 mode, status = "plan", "matched-continuation"
@@ -686,7 +732,10 @@ class SeatPolicy:
                 if len(eligible) > 1 or (mandatory and any(c["type"] in ("PLAY_CARD", "USE_STATUS") for c in eligible)):
                     tried = eligible[:self.width]
                     exchange = next((c for c in eligible if c["type"] == "REALLOCATE"), None)
-                    if exchange and exchange not in tried and self.width > 1:
+                    if compare_exchange and exchange:
+                        direct = [c for c in eligible if c != exchange]
+                        tried = direct[:1] + [exchange] + direct[1:self.width - 1]
+                    elif exchange and exchange not in tried and self.width > 1:
                         tried.insert(1, exchange)
                         del tried[self.width:]
                     end = next((c for c in eligible if c["type"] == "END_PHASE"), None)
@@ -708,7 +757,11 @@ class SeatPolicy:
                         extra, status = self.search.run(
                             view, pending, country, started + (self.budget_ms - reserve_ms) / 1000)
                         rows.extend(extra)
+                        if status == "finished" and any(row.get("reason") == "deadline" for row in extra):
+                            status = "deadline"
                     completed = [row for row in rows if row["complete"]]
+                    if compare_exchange and not any(row["command"]["type"] != "REALLOCATE" for row in completed):
+                        completed = [row for row in completed if row["command"]["type"] != "REALLOCATE"]
                     rejected = [row["command"] for row in completed if not acceptable_play(row, mandatory=mandatory)]
                     selected = max((row for row in completed if acceptable_play(row, mandatory=mandatory)),
                                    key=candidate_key, default=None)
@@ -717,16 +770,15 @@ class SeatPolicy:
                     if selected:
                         mode, chosen = "search", selected["command"]
                         if selected.get("reallocation"):
-                            self.exchange = (view["turn"]["turn_id"], selected)
-                        steps = zip(selected["continuations"], selected["choice_signatures"])
-                        self.plan = [(c, signature, selected) for c, signature in takewhile(
-                            lambda step: step[0]["type"] == "CHOOSE" and step[0]["actor"] == country, steps)]
+                            self.exchange = (view["turn"]["turn_id"], selected, None)
+                        self.remember_choices(selected, country)
                 elif len(commands) > 1:
                     status = "no-comparable-commands"
         if not view["decision"] and not selected:
             self.plan = next(row.get("recruitment_plan", []) for row in ranked if row["command"] == chosen)
         # Projected opposing choices are internal to the worker result and never become commands.
-        logged_rows = [{k: v for k, v in row.items() if k not in ("continuations", "choice_signatures")}
+        logged_rows = [{k: v for k, v in row.items()
+                        if k not in ("continuations", "choice_signatures", "exchange_followup")}
                        for row in rows]
         for command in tried:
             if not any(row["command"] == command for row in rows):
@@ -739,4 +791,6 @@ class SeatPolicy:
                         "rule_scores": [{k: v for k, v in row.items() if k not in ("recruitment_plan", "recruitment_result")}
                                         for row in ranked],
                         "candidate_scores": logged_rows,
+                        **({"selected_reallocation": {k: selected["reallocation"][k] for k in ("source", "kind", "target")}}
+                           if selected and chosen["type"] == "REALLOCATE" else {}),
                         "selected_q": selected["q"] if selected else None}

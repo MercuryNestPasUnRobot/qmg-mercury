@@ -10,7 +10,7 @@ from .api import CoreAPI, observed_position, simulation_from_observation
 from .definitions import CONSTRUCTION, RuleSet
 from .economic_scoring import EconomicForecast
 from .engine import CommandProcessor, ResolutionBudgetExceeded
-from .hand_retention import score_retention
+from .hand_retention import cycling_ev, score_retention
 from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .recruitment import recruitment_play
@@ -213,11 +213,11 @@ class ScoreEvaluator:
         weight = self.units.card_score(self.weights.get("basic_usage_cost", 0))
         return weight * use["played"] / use["total"] if use else 0.0
 
-    def retention(self, view, country):
+    def retention(self, view, country, *, position=None):
         from .air import air_options
         from .content_effects import condition_met
 
-        rules, state = observed_position(self.rules, view)
+        rules, state = position if position is not None else observed_position(self.rules, view)
         legal = LegalActionGenerator(rules)
         economy = self.economic_from_state(rules, state)
 
@@ -538,7 +538,7 @@ class OneStepPlanner:
             nodes = [0]
             try:
                 if command["type"] == "REALLOCATE":
-                    yield self._rank_exchange(root, view, country, command, nodes, deadline, before=before)
+                    yield from self._rank_exchange(root, root_state, view, country, command, before, deadline)
                     continue
                 candidate = CommandProcessor(root.rules, root_state, search_projection=True)
                 simulated_seat = CoreAPI(candidate, (country,))
@@ -575,91 +575,145 @@ class OneStepPlanner:
                 yield {"command": deepcopy(command), "complete": False,
                        "reason": str(e), "q": None, "nodes": nodes[0]}
 
-    def _rank_exchange(self, root, view, country, command, nodes, deadline=None, *, before=None):
-        """Evaluate the ordinary play of one representative of the estimated acquisition."""
-        state, rules = root.state, root.rules
+    def _rank_exchange(self, root, state, view, country, command, before, deadline):
+        """Yield completed alternatives as they finish, using one public starting position."""
+        from .ai_match_policy import RulePolicy
+
+        rules = root.rules
         legal = LegalActionGenerator(rules)
         economy = self.evaluator.economic_from_state(rules, state)
+        retention = (self.evaluator.retention(view, country, position=(rules, state))
+                     if self.evaluator.hand_slot_cost else {})
 
-        def hand_value(card):
-            return self.evaluator.hand_value(rules, state, country, card, legal, economy)
+        def payment_cost(card):
+            return (-self.evaluator.hand_value(rules, state, country, card, legal, economy) -
+                    self.evaluator.basic_discard_cost(view, country, card))
 
-        plans = payment_plans(rules, view, country, lambda card: -hand_value(card) -
-                              self.evaluator.basic_discard_cost(view, country, card))
-        plan = max(plans, key=lambda p: price(p, hand_value(rules.cards[p["definition"]]))["total"], default=None)
-        if plan is None:
+        by_definition = {}
+        for plan in payment_plans(rules, view, country, payment_cost):
+            key = (plan["source"], plan["definition"])
+            if key not in by_definition or plan["discard_score"] > by_definition[key]["discard_score"]:
+                by_definition[key] = plan
+        if not by_definition:
             raise SimulationIncomplete("No exchange plan from the seat's visible inventory")
-        hand, discard = zone(country, "HAND"), zone(country, "DISCARD")
-        target = plan["target"]
+        paper = RulePolicy(rules, self.evaluator)
+        plans = sorted(by_definition.values(),
+                       key=lambda p: -paper.play_card_value(rules.cards[p["definition"]], country, economy))
+        pool = zone(country, "OBJECT_POOL")
+        deck_samples = {}
+        for plan in plans:
+            if plan["source"] == "deck":
+                definition = plan["definition"]
+                deck_samples[definition] = {
+                    "token_id": f"estimate:reallocation:{country}:{plan['kind']}",
+                    "definition_id": definition, "token_type": "CARD", "owner_country": country,
+                    "source_token_id": None, "position_id": pool}
         stock = root
-        if target is None:
-            # A catalog representative replaces one unknown deck slot. No real deck token is used.
+        if deck_samples:
+            # Park representatives outside the hand and deck. Only the selected one replaces
+            # an opaque deck slot; follow-up effects still see an otherwise opaque deck.
             projected = deepcopy(view)
-            positions = projected["positions"]
-            positions[zone(country, "DECK")]["count"] -= 1
-            target = "estimate:reallocation:" + country
-            projected["tokens"][target] = {"token_id": target, "definition_id": plan["definition"], "token_type": "CARD",
-                "owner_country": country, "source_token_id": None, "position_id": hand}
-            positions[hand]["tokens"].append(target)
-            positions[hand]["count"] += 1
+            for sample in deck_samples.values():
+                key = sample["token_id"]
+                projected["tokens"][key] = sample
+                projected["positions"][pool]["tokens"].append(key)
+                projected["positions"][pool]["count"] += 1
             stock = simulation_from_observation(self.evaluator.rules, projected, search_projection=True)
+        stock_state = stock.state
+        original_board = frozenset(t.token_id for t in board_units(rules, state)) if self.evaluator.settlement else frozenset()
+        cycling = cycling_ev(retention, self.evaluator.units.card, view["reallocation"]["cost"])
+        for index, plan in enumerate(plans):
+            nodes = [0]
+            try:
+                self._check_deadline(deadline)
+                # Leave time to try the remaining kinds even when the first has a long response chain.
+                plan_deadline = deadline
+                if deadline is not None:
+                    reserve = min(0.18 * (len(plans) - index - 1), max(0, deadline - perf_counter()) / 2)
+                    plan_deadline -= reserve
+                yield self._exchange_play(stock, stock_state, deck_samples, plan, cycling, country, command,
+                                          before, original_board, nodes, plan_deadline)
+            except (SimulationIncomplete, ResolutionBudgetExceeded, TimeoutError) as error:
+                yield {"command": deepcopy(command), "complete": False,
+                       "reason": "deadline" if isinstance(error, TimeoutError) else str(error),
+                       "q": None, "nodes": nodes[0], "reallocation": plan}
 
-        post_payment = stock.state
+    def _exchange_play(self, stock, stock_state, deck_samples, plan, cycling, country, command, before, original_board,
+                       nodes, deadline):
+        from .air import opportunity
+        from .ai_match_policy import RulePolicy
+
+        hand, discard = zone(country, "HAND"), zone(country, "DISCARD")
+        post_payment = deepcopy(stock_state)
+        executor = stock.executor
         changes = outcome("ESTIMATED_REALLOCATION")
         for key in plan["payment"]:
-            stock.executor.transfer(post_payment, key, discard, changes)
-        if plan["source"] == "discard":
-            stock.executor.transfer(post_payment, target, hand, changes)
+            executor.transfer(post_payment, key, discard, changes)
+        marker = opportunity(post_payment, "reallocation-opportunity-" + country)
+        executor.transfer(post_payment, marker.token_id, zone(country, "RESPONSE"), changes)
+        target = plan["target"]
+        if target is None:
+            target = deck_samples[plan["definition"]]["token_id"]
+            deck = post_payment.positions[zone(country, "DECK")]
+            executor.transfer(post_payment, deck[-1], zone(country, "OBJECT_POOL"), changes)
+        executor.transfer(post_payment, target, hand, changes)
         ordinary = CommandProcessor(stock.rules, post_payment, search_projection=True)
+        client = CoreAPI(ordinary, (country,))
+        legal_play = [c for c in client.legal_commands()
+                      if c["type"] in ("PLAY_CARD", "USE_STATUS", "FORFEIT_PLAY", "DISCARD_CARD", "END_PHASE")]
+        plays = [c for c in legal_play if c["type"] == "PLAY_CARD" and c.get("card") == target]
         if self.evaluator.settlement:
-            from .ai_match_policy import RulePolicy, paper_play_choices
-            before = before or self.end_score(root, country, deadline)
             initial_units = dict(before.surviving_units)
-            client = CoreAPI(ordinary, (country,))
-            legal_play = [c for c in client.legal_commands()
-                          if c["type"] in ("PLAY_CARD", "USE_STATUS", "FORFEIT_PLAY", "DISCARD_CARD")]
-            ranked = RulePolicy(ordinary.rules, self.evaluator).rank(client.observe(include_history=False), legal_play)
-            plays = [row["command"] for row in paper_play_choices(ranked, True)][:3]
+            if not plays and legal_play:
+                ranked = RulePolicy(ordinary.rules, self.evaluator).rank(
+                    client.observe(include_history=False), legal_play, verify_recruitment=False)
+                plays = [ranked[0]["command"]]
         else:
             before = self.end_score(ordinary, country, deadline)
             initial_units = ({piece.token_id: piece.owner_country for piece in board_units(ordinary.rules, post_payment)}
                              if self.evaluator.action_distance else None)
-            plays = [c for c in CoreAPI(ordinary, (country,)).legal_commands()
-                     if c["type"] == "PLAY_CARD" and c.get("card") == target]
         outcomes = []
-        original_board = (frozenset(t.token_id for t in board_units(root.rules, state))
-                          if self.evaluator.settlement else frozenset())
         for play in plays:
             self._check_deadline(deadline)
-            branch = CommandProcessor(ordinary.rules, post_payment, search_projection=True)
+            branch = ordinary if len(plays) == 1 else CommandProcessor(ordinary.rules, post_payment, search_projection=True)
             CoreAPI(branch, (country,)).apply(play)
             played = play["card"] if self.evaluator.action_distance and play["type"] == "PLAY_CARD" else None
-            value, _ = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
-                                    played_card=played, original_board=original_board)
-            outcomes.append(value)
-        after = max(outcomes, key=lambda value: (value.terminal_rank, value.total), default=before)
+            source = post_payment.tokens.get(play.get("card"))
+            recruitment_path = source and recruitment_play(ordinary.rules, ordinary.rules.cards[source.definition_id], play)
+            value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
+                                        played_card=played, original_board=original_board, recruitment_path=recruitment_path)
+            self._check_deadline(deadline)
+            outcomes.append((value, play, trail))
+        after, play, choices = max(outcomes, key=lambda row: (row[0].terminal_rank, row[0].total),
+                                   default=(before, None, []))
         initial = -self.evaluator.hand_slot_cost if outcomes and not self.evaluator.units.enabled else 0.0
+        plan = {**plan, **cycling}
         if self.evaluator.settlement:
             # The final stock already contains the acquisition and has paid the real expense.
             fees = -self.evaluator.units.card_score(len(plan["payment"]))
             plan = price({**plan, "discard_score": fees}, after.total - before.total - fees)
-            fees_already_counted = True
+            card_adjustment = 0
         else:
             plan = price(plan, after.total - before.total + initial)
-            fees_already_counted = False
+            card_adjustment = plan["discard_score"]
         return {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                 "weights_digest": digest(self.evaluator.weights),
                 "actual_vp_delta": after.actual_vp - before.actual_vp,
                 "vp_score_delta": self.evaluator.units.vp_score(after.actual_vp - before.actual_vp),
                 "map_delta": after.map_value - before.map_value,
-                "card_delta": after.card_value - before.card_value + (0 if fees_already_counted else plan["discard_score"]) + initial,
+                "card_delta": after.card_value - before.card_value + card_adjustment + initial,
                 "resource_delta": after.resource_adjustment - before.resource_adjustment,
-                "q": plan["total"], "terminal_rank": 0,
+                **({"cycle_score": cycling["cycle_score"]} if cycling else {}),
+                "q": plan["total"], "terminal_rank": after.terminal_rank,
                 **({"unit_removal_score": after.unit_removal_score} if after.unit_removal_score else {}),
                 **({"card_event_score": after.card_event_value} if after.card_event_value else {}),
                 **({"expansion_score": after.expansion_score, "expansion_sites": after.expansion_sites}
                    if after.expansion_sites else {}),
-                "continuations": [], "choice_signatures": [], "reallocation": plan}
+                "continuations": [], "choice_signatures": [], "reallocation": plan,
+                **({"exchange_followup": {"play": play, "target": target,
+                                          "continuations": [choice for choice, _ in choices],
+                                          "choice_signatures": [signature for _, signature in choices]}}
+                   if self.evaluator.settlement and play else {})}
 
     @staticmethod
     def _check_deadline(deadline):

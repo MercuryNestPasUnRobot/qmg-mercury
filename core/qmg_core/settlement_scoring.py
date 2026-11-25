@@ -167,8 +167,8 @@ class SettlementScorer:
         def sign(seat):
             return 1 if rules.team(seat) == own else -1
 
-        cards = sum(sign(seat) * len(state.positions.get(zone(seat, area), ()))
-                    for seat in TURN_ORDER for area in ("HAND", "STATUS", "DISABLED_STATUS", "RESPONSE"))
+        cards = sum(sign(seat) for seat in TURN_ORDER for area in ("HAND", "STATUS", "DISABLED_STATUS", "RESPONSE")
+                    for key in state.positions.get(zone(seat, area), ()) if state.tokens[key].token_type == "CARD")
         if played_card and state.tokens[played_card].position_id != zone(country, "HAND"):
             cards += 1
         cards = self.units.card_score(cards) + card_event_value

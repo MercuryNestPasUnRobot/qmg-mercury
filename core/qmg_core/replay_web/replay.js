@@ -66,14 +66,18 @@ const optionNames = {use: "使用能力", decline: "放弃", confirm: "确认", 
 const modeNames = {rules: "规则评分 A", search: "完整结算 B", plan: "沿用已评分的续步", forced: "唯一合法指令"};
 const statusNames = {"deadline":"达到时限", "pending-choice":"待决选择", "response-timing":"按响应时机选择", "no-comparable-commands":"无可比较的行动",
   "matched-continuation":"续步吻合", "matched-exchange":"调配方案与合法选项吻合",
+  "matched-exchange-play":"沿用已结算的调配出牌",
   "rules-only":"规则策略", "hand-retention":"手牌保留评分", "only-legal-command":"唯一合法指令", "finished":"搜索完成"};
 const shortReason = reason => ({
   "Action cannot be represented from this observation": "席位观察无法表示",
   "Within-card choice budget exceeded; no partial score assigned": "超过结算分支上限",
 })[reason] || statusNames[reason] || reason || "未完成";
 const signed = n => (n > 0 ? "+" : "") + Number(n).toFixed(Number.isInteger(n) ? 0 : 2);
+const basicNames = {"build-army": "建设陆军", "build-navy": "建设海军", "land-battle": "发起陆战", "sea-battle": "发起海战"};
 const exchangeDetails = plan => [
   "出牌 " + signed(plan.play_score), "弃牌 " + signed(plan.discard_score),
+  ...(plan.cycle_score == null ? [] : ["过牌 " + signed(plan.cycle_score) + "（" + plan.cycle_cards +
+    " 张，手牌平均 " + signed(plan.hand_average) + "）"]),
   ...(plan.deck_score === undefined ? [] : ["牌库 " + signed(plan.deck_score),
     "余陆 " + plan.land_remaining + "／海 " + plan.naval_remaining]),
 ].join(" · ");
@@ -520,8 +524,13 @@ async function mount(data) {
       Object.keys(c).length === Object.keys(row.command).length;
     const list = node("ul", undefined, "candidate-list");
     for (const c of row.candidate_scores) {
-      const li = node("li", undefined, picked(c.command) ? "picked" : "");
-      li.append(node("strong", commandLabel(c.command, false) + (picked(c.command) ? " ✓" : "")));
+      const plan = c.reallocation;
+      const chosenPlan = row.selected_reallocation;
+      const selected = picked(c.command) && (!chosenPlan || (plan && plan.kind === chosenPlan.kind &&
+        plan.source === chosenPlan.source && plan.target === chosenPlan.target));
+      const suffix = plan ? " · " + (basicNames[plan.kind] || plan.kind) + (plan.source === "discard" ? "（弃牌堆）" : "") : "";
+      const li = node("li", undefined, selected ? "picked" : "");
+      li.append(node("strong", commandLabel(c.command, false) + suffix + (selected ? " ✓" : "")));
       if (c.complete) {
         const vp = "实得 " + signed(c.actual_vp_delta) + " VP" +
           (c.vp_score_delta != null && c.vp_score_delta !== c.actual_vp_delta ? "（折 " + signed(c.vp_score_delta) + " 分）" : "");
@@ -536,7 +545,7 @@ async function mount(data) {
       } else {
         li.append(node("small", shortReason(c.reason)));
       }
-      if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
+      if (plan && c.complete) li.append(node("small", exchangeDetails(plan)));
       if (c.initial_card_score) li.append(node("small", "初始出牌分 " + signed(c.initial_card_score)));
       list.append(li);
     }

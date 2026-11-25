@@ -1,5 +1,5 @@
 {
-  "profile": "ai-test-v1.20-recruitment-settlement",
+  "profile": "ai-test-v1.21-exchange-settlement",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "action_distance_scoring": true,
   "settlement_scoring": true,

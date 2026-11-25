@@ -182,3 +182,75 @@ def test_projected_payment_retires_a_listener_bound_to_a_paid_hand_card(data, we
         client.submit(step)
     assert p.state.tokens["g-build"].position_id == "germany:HAND"
     assert all(p.state.tokens[key].position_id == "germany:DISCARD" for key in payment)
+
+
+def test_exchange_compares_all_basics_and_rebinds_the_actual_play_after_payment(data):
+    from test_ai_match import profile
+
+    enable(data, ("germany",))
+    data["settings"]["mandatory_turn_play"] = True
+    for token in data["initial_tokens"]:
+        if token["position_id"] == "germany:HAND":
+            token["position_id"] = "germany:DECK"
+    for n in range(4):
+        add_card(data, "germany", f"exchange-junk-{n}", "HAND")
+    card(data, "g-battle")["legacy_kind"] = "land-battle"
+    card(data, "g-build")["legacy_kind"] = "build-army"
+    add_card(data, "germany", "exchange-navy", "DECK", kind="build-navy")
+    add_card(data, "germany", "exchange-sea", "DECK", kind="sea-battle")
+    move_initial(data, "g-status", "germany:STATUS")
+    move_initial(data, "uk-status", "united-kingdom:DISCARD")
+    move_initial(data, "united-kingdom-army-0", "B")
+    ability = next(a for a in data["abilities"] if a["id"] == "g-extra")
+    ability.pop("discard_cost", None)
+    ability["effects"] = [{"type": "GAIN_VP", "amount": 8}]
+
+    p = make(data)
+    client = CoreAPI(p, ("germany",))
+    weights = profile()
+    planner = OneStepPlanner(p.rules, weights)
+    alternatives = {}
+
+    class InProcessSearch:
+        def run(self, view, commands, country, deadline):
+            rows = list(planner.iter_rank(CandidateView(view, commands), country))
+            alternatives.update((r["reallocation"]["kind"], r) for r in rows if r.get("reallocation"))
+            return rows, "finished"
+
+    b = SeatPolicy(p.rules, evaluator=planner.evaluator, search=InProcessSearch())
+    command, log = b.decide(client, "germany")
+    assert command["type"] == "REALLOCATE"
+    assert set(alternatives) == {"build-army", "build-navy", "land-battle", "sea-battle"}
+    assert all(r["complete"] for r in alternatives.values())
+    assert log["selected_reallocation"]["kind"] == "land-battle"
+    battle = alternatives["land-battle"]
+    assert battle["actual_vp_delta"] == 8
+    assert battle["card_delta"] == -2
+    assert battle["cycle_score"] == 3
+    assert battle["q"] == pytest.approx(sum(battle[k] for k in
+        ("actual_vp_delta", "map_delta", "card_delta", "resource_delta", "cycle_score")))
+    assert any(r["command"]["type"] == "PLAY_CARD" and r["complete"] for r in log["candidate_scores"])
+
+    class MissingDirectScore:
+        def run(self, view, commands, country, deadline):
+            return [battle], "deadline"
+
+    fallback = SeatPolicy(p.rules, evaluator=planner.evaluator, search=MissingDirectScore())
+    assert fallback.decide(client, "germany")[0]["type"] == "PLAY_CARD"
+
+    client.apply(command)
+    while p.state.decision:
+        step, log = b.decide(client, "germany")
+        assert log["search_status"] == "matched-exchange"
+        client.apply(step)
+    play, log = b.decide(client, "germany")
+    assert play["type"] == "PLAY_CARD" and play["card"] == "g-battle"
+    assert log["search_status"] == "matched-exchange-play"
+    client.apply(play)
+    step, log = b.decide(client, "germany")
+    assert step["option"] == "B" and log["search_status"] == "matched-continuation"
+    client.apply(step)
+    response, _ = b.decide(client, "germany")
+    assert response["option"] == "use"
+    client.apply(response)
+    assert p.state.scores["axis"] == 8

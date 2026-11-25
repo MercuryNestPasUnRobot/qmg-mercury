@@ -49,7 +49,7 @@ def payment_plans(rules, view, seat, discard_value):
 
 def price(plan, play_score):
     return {**plan, "play_score": play_score,
-            "total": play_score + plan["discard_score"]}
+            "total": play_score + plan["discard_score"] + plan.get("cycle_score", 0)}
 
 
 def planned_options(rules, info, plan):
