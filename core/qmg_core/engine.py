@@ -1074,6 +1074,11 @@ class CommandProcessor:
             count = max(0, len(s.positions[zone(country, "HAND")]) - self.rules.settings["hand_limit"])
             f.remaining_operations.extend(reversed([{"type": "CHOOSE", "operation": {"type": "DISCARD", "target_token": "$choice"}} for _ in range(count)]))
             return outcome(kind), True
+        if kind == "CHECK_DISCARD_PENALTY":
+            if not s.turn.discarded_in_phase:
+                f.remaining_operations.append({"type": "GAIN_VP", "amount": -self.rules.settings["discard_phase_penalty"],
+                                               "reason": "no-discard"})
+            return outcome(kind), False
         if kind == "DRAW_TO_LIMIT":
             f.remaining_operations.append({"type": "DRAW", "count": max(0, self.rules.settings["hand_limit"] - len(s.positions[zone(country, "HAND")]))})
             return outcome(kind), False

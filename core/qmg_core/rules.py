@@ -438,6 +438,8 @@ def validate_state(rules, state, *, legacy_snapshot=False):
         raise CoreError("Invalid state identity, version, counter or RNG")
     if any(type(v) is not int or v < 1 for v in (state.turn.round_id, state.turn.turn_id)) or type(state.turn.country_index) is not int or type(state.turn.plays_remaining) is not int or state.turn.plays_remaining < 0:
         raise CoreError("Invalid turn counters")
+    if type(state.turn.discarded_in_phase) is not bool or (state.turn.discarded_in_phase and state.turn.phase != "Discard"):
+        raise CoreError("Invalid discard phase record")
     expected_positions = set(rules.regions) | {"RESOLUTION", "SCORE_DORMANT"} | {zone(c, z) for c in TURN_ORDER for z in ZONES}
     expected_positions.update(auxiliary_reserves(rules))
     expected_positions.update(zone(c, "SET_ASIDE") for c in rules.settings.get("staging_countries", ()))

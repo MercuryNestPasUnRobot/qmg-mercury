@@ -48,7 +48,7 @@ const forceColors = {
   "united-states": "#23824b", italy: "#7f49a5", germany: "#222226", japan: "#f3e6c8",
 };
 const teamNames = {axis: "轴心", allies: "同盟", draw: "平局"};
-const phaseNames = {Setup: "设置", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "抓牌"};
+const phaseNames = {Setup: "设置", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "摸牌"};
 const unitNames = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};
 const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "状态区", DISABLED_STATUS: "停用区",
   RESPONSE: "响应区", RESERVE_ARMY: "陆军预备", RESERVE_NAVY: "海军预备", RESERVE_AIR: "空军预备",
@@ -82,6 +82,10 @@ const retentionDetails = value => [
   "基础储备 " + signed(value.basic_reserve), "重复 " + signed(value.redundancy),
   value.used_basic_cost ? "弃置成本 " + signed(-value.used_basic_cost) : "",
   value.forced ? "无牌可出，必须弃牌" : value.replacement_available ? "" : "无额外补牌",
+  value.extra_draws ? "过牌 " + signed(value.draw_cycle) + "（手牌平均 " + signed(value.hand_average) + "）" : "",
+  value.penalty_saved ? "免扣分 " + signed(value.penalty_saved) : "",
+  value.discard_trigger ? "弃牌触发 " + signed(value.discard_trigger) : "",
+  value.exhaustion ? "牌库耗尽 " + signed(value.exhaustion) : "",
 ].filter(Boolean).join(" · ");
 
 function pieceIcon(kind, color, label, count = 1) {
@@ -483,7 +487,8 @@ async function mount(data) {
     const list = node("ul", undefined, "event-list");
     for (const event of frame.events) {
       const li = node("li");
-      li.append(node("strong", [country(event.actor), eventNames[event.type] || event.type, event.ok ? "" : "未生效"].filter(Boolean).join(" · ")));
+      const eventName = event.reason === "no-discard" ? "弃牌阶段未弃牌" : eventNames[event.type] || event.type;
+      li.append(node("strong", [country(event.actor), eventName, event.ok ? "" : "未生效"].filter(Boolean).join(" · ")));
       if (event.site?.startsWith("hidden:")) {
         const [, source, , , region] = event.site.split(":");
         li.append(node("small", ["隐分点", safeName(source), regions[region]?.name].filter(Boolean).join(" · ")));

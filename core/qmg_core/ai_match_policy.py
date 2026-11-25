@@ -195,6 +195,28 @@ class RulePolicy:
             cost += self.units.card
         return -max(0, self.card_value(card, seat, economy)) - cost
 
+    def discard_phase_options(self, view, seat, economy, retention, *, draw_slot, replacement):
+        if not retention:
+            return {}
+        penalty = self.rules.settings.get("discard_phase_penalty", 0)
+        saved = self.units.vp_score(penalty) if not view["turn"].get("discarded_in_phase") else 0
+        average = sum(terms["short_term"] for terms in retention.values()) / len(retention)
+        # Each choice is compared with stopping now, so only new draw slots count.
+        cycle = self.units.card - average if penalty and replacement else 0
+        exhaustion = self.units.vp_score(self.rules.settings["deck_exhaustion_vp"]) if penalty and draw_slot and not replacement else 0
+        result = {}
+        for key, terms in retention.items():
+            card = self.rules.cards[view["tokens"][key]["definition_id"]]
+            gain = (economy.statuses.discard_gain(seat, card)
+                    if economy and self.evaluator.action_distance and economy.status_weights else 0)
+            cost = terms["net"] if replacement else (
+                max(0, terms["short_term"]) + terms["basic_reserve"] + terms.get("used_basic_cost", 0) + self.units.card)
+            score = saved + cycle + gain + exhaustion - cost
+            result[key] = (score, {"hand_average": average, "extra_draws": int(replacement),
+                                   "draw_cycle": cycle, "penalty_saved": saved, "discard_trigger": gain,
+                                   "exhaustion": exhaustion, "discard_cost": cost})
+        return result
+
     def play_card_value(self, card, seat, economy, *, spent_card=None):
         card_cost = self.evaluator.card_play_cost if self.evaluator else 0
         return self.card_value(card, seat, economy, closeout=True, spent_card=spent_card) - card_cost
@@ -330,7 +352,11 @@ class RulePolicy:
             region_scores = self.evaluator.target_proximity(view, seat, regions) if self.evaluator and regions else {}
         hand = view["positions"][zone(seat, "HAND")]["count"]
         slots = max(0, self.rules.settings["hand_limit"] - hand)
-        replacement_available = view["positions"][zone(seat, "DECK")]["count"] > slots
+        draw_slot = hand <= self.rules.settings["hand_limit"]
+        replacement_available = draw_slot and view["positions"][zone(seat, "DECK")]["count"] > slots
+        discards = (self.discard_phase_options(view, seat, economy, retention, draw_slot=draw_slot,
+                                               replacement=replacement_available)
+                    if phase == "Discard" and any(c["type"] == "DISCARD_CARD" for c in commands) else {})
         info = view.get("reallocation", {})
         plan = (self.reallocation_plan(view, seat, economy)
                 if "payment" in info or any(c["type"] == "REALLOCATE" for c in commands) else None)
@@ -368,14 +394,7 @@ class RulePolicy:
                 if forced_play_discard:
                     return -net if retention else self.discard_value(
                         self.rules.cards[view["tokens"][command["card"]]["definition_id"]], seat, economy, view)
-                if economy and self.evaluator.action_distance and economy.status_weights and phase == "Discard":
-                    card = self.rules.cards[view["tokens"][command["card"]]["definition_id"]]
-                    gain = economy.statuses.discard_gain(seat, card)
-                    cost = max(0, retention.get(command["card"], {}).get("short_term", 0))
-                    if not replacement_available:
-                        cost += self.units.card
-                    return gain - cost if gain > cost else -1
-                return -net if net < 0 and replacement_available else -1
+                return discards.get(command["card"], (-1, None))[0]
             if kind == "FORFEIT_PLAY":
                 return self.units.vp_score(-1)
             if kind == "REALLOCATE":
@@ -411,6 +430,8 @@ class RulePolicy:
             if key in retention and command["type"] in ("DISCARD_CARD", "CHOOSE"):
                 row["retention"] = {**retention[key], "replacement_available": replacement_available,
                                     **({"forced": True} if forced_play_discard else {})}
+                if command["type"] == "DISCARD_CARD" and key in discards:
+                    row["retention"].update(discards[key][1])
             if card_cost and command["type"] in ("PLAY_CARD", "USE_AIR"):
                 row["initial_card_score"] = -card_cost
             if economy and economy.status_weights and command["type"] == "PLAY_CARD":

@@ -3,13 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import card, finish_choices, make, move_initial
-from qmg_core import CoreAPI, CoreError
+from conftest import card, finish_choices, make, move_initial, play
+from qmg_core import CoreAPI, CoreError, SaveRepository
 from qmg_core.ai_match_policy import RulePolicy, SeatPolicy
 from qmg_core.evaluation import OneStepPlanner, ScoreEvaluator, acceptable_play
 from qmg_core.hand_retention import is_hand_choice, score_retention
 from qmg_core.model import TURN_ORDER, zone
 from qmg_core.replay import Tape
+from test_air_and_content_actions import add_air
 from test_reallocation import add_card, execute
 
 
@@ -29,6 +30,82 @@ def hand_only(data, *keys):
 def reach_discard(client):
     while client.observe()["turn"]["phase"] != "Discard":
         execute(client, "END_PHASE")
+
+
+def test_six_phase_turn_penalizes_skipping_discard_before_drawing(data):
+    add_air(data)
+    hand_only(data, "g-deck-2")
+    data["settings"].update(hand_limit=1, discard_phase_penalty=1)
+    p = make(data)
+    client = CoreAPI(p, ("germany",))
+    play(p, "g-deck-2")
+    for phase in ("Play", "Air", "Supply", "Victory"):
+        assert p.state.turn.phase == phase
+        execute(client, "END_PHASE")
+    assert p.state.turn.phase == "Discard"
+    assert not client.observe()["turn"]["discarded_in_phase"]
+    points = p.state.scores["axis"]
+    tape = Tape(p)
+    execute(client, "END_PHASE")
+    assert p.state.turn.phase == "Draw"
+    assert p.state.scores["axis"] == points - 1
+    assert len(p.state.positions["germany:HAND"]) == 1
+    operations = [r["operation"] for r in p.records]
+    penalty = next(i for i, op in enumerate(operations) if op.get("reason") == "no-discard")
+    draw = next(i for i, op in enumerate(operations) if op["type"] == "DRAW")
+    assert penalty < draw
+    tape.capture()
+    assert any(e.get("reason") == "no-discard" for e in tape.frames[-1]["events"])
+
+
+def test_discard_waives_only_the_active_turn_penalty_and_survives_recovery(data, tmp_path):
+    hand_only(data, "g-build", "g-deck-2")
+    data["settings"].update(hand_limit=1, discard_phase_penalty=1)
+    p = make(data)
+    client = CoreAPI(p, ("germany",))
+    reach_discard(client)
+    assert p.state.decision and not client.observe()["turn"]["discarded_in_phase"]
+    finish_choices(p)
+    assert client.observe()["turn"]["discarded_in_phase"]
+    save = tmp_path / "after-discard.json"
+    SaveRepository.save(save, p)
+    p = SaveRepository.recover(save, p.rules)
+    client = CoreAPI(p, ("germany",))
+    assert client.observe()["turn"]["discarded_in_phase"]
+    points = p.state.scores["axis"]
+    execute(client, "END_PHASE")
+    assert p.state.scores["axis"] == points
+    assert not client.observe()["turn"]["discarded_in_phase"]
+    execute(client, "END_PHASE")
+    britain = CoreAPI(p, ("united-kingdom",))
+    while p.state.turn.phase != "Discard":
+        execute(britain, "END_PHASE")
+        finish_choices(p)
+    assert not britain.observe()["turn"]["discarded_in_phase"]
+    execute(britain, "END_PHASE")
+    assert any(r["actor"] == "united-kingdom" and r["operation"].get("reason") == "no-discard" for r in p.records)
+
+
+def test_discard_ranking_counts_one_penalty_waiver_and_one_score_per_extra_draw(data, profile):
+    hand_only(data, "g-deck-2", "g-build")
+    data["settings"].update(hand_limit=2, discard_phase_penalty=1)
+    card(data, "g-build")["legacy_kind"] = "build-army"
+    p = make(data)
+    client = CoreAPI(p, ("germany",))
+    reach_discard(client)
+    policy = RulePolicy(p.rules, ScoreEvaluator(p.rules, profile))
+    before = policy.rank(client.observe(), client.legal_commands())
+    assert before[0]["command"].get("card") == "g-deck-2"
+    weak, basic = (next(row["retention"] for row in before if row["command"].get("card") == key)
+                   for key in ("g-deck-2", "g-build"))
+    assert weak["penalty_saved"] == 1
+    assert weak["draw_cycle"] == pytest.approx(1 - (weak["short_term"] + basic["short_term"]) / 2)
+    assert before[0]["rule_score"] == pytest.approx(1 + weak["draw_cycle"] - weak["net"])
+    client.submit(before[0]["command"])
+    after = policy.rank(client.observe(), client.legal_commands())
+    remaining = next(row["retention"] for row in after if row["command"].get("card") == "g-build")
+    assert remaining["penalty_saved"] == 0
+    assert remaining["draw_cycle"] == pytest.approx(1 - basic["short_term"])
 
 
 def test_voluntary_discard_settles_a_listener_and_draw_replaces_the_card(data, profile):
@@ -105,7 +182,7 @@ def test_basics_use_the_same_floor_in_all_six_seats_and_redundancy_needs_crowdin
 
 def test_deck_slots_are_reserved_before_voluntary_discard(data, profile):
     hand_only(data, "g-deck-2")
-    data["settings"]["hand_limit"] = 2
+    data["settings"].update(hand_limit=2, discard_phase_penalty=1, deck_exhaustion_vp=-1)
     data["initial_tokens"] = [t for t in data["initial_tokens"]
                               if t["position_id"] != "germany:DECK" or t["token_id"] == "g-deck-1"]
     p = make(data)
@@ -117,6 +194,10 @@ def test_deck_slots_are_reserved_before_voluntary_discard(data, profile):
     discard = next(row for row in ranked if row["command"]["type"] == "DISCARD_CARD")
     assert discard["retention"]["net"] < 0
     assert discard["retention"]["replacement_available"] is False
+    assert discard["retention"]["extra_draws"] == 0
+    assert discard["retention"]["draw_cycle"] == 0
+    assert discard["retention"]["exhaustion"] == -1
+    assert discard["retention"]["penalty_saved"] == 1
 
 
 def test_opening_forced_discard_can_keep_a_better_card_over_a_basic_for_a_later_seat(data, profile):
@@ -160,7 +241,7 @@ def test_initial_charge_applies_to_play_scores_but_preserves_immediate_victory(d
 
 def test_discard_score_depends_on_visible_hand_and_deck_count(data, profile):
     hand_only(data, "g-deck-2", "g-build")
-    data["settings"]["hand_limit"] = 2
+    data["settings"].update(hand_limit=2, discard_phase_penalty=1)
     card(data, "g-build")["legacy_kind"] = "build-army"
     p, q = make(data, seed=31), make(data, seed=73)
     assert p.state.positions["germany:DECK"] != q.state.positions["germany:DECK"]

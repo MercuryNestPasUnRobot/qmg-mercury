@@ -24,7 +24,7 @@ def zone(country, kind):
 
 ZONES = ("DECK", "HAND", "DISCARD", "STATUS", "RESPONSE", "RESERVE_ARMY", "RESERVE_NAVY",
          "ABILITY_READY", "ABILITY_PENDING", "ABILITY_COOLDOWN", "ABILITY_INACTIVE", "SCORE_DORMANT", "OBJECT_POOL")
-PHASES = ("Play", "Supply", "Victory", "Discard", "Draw")
+PHASES = ("Play", "Air", "Supply", "Victory", "Discard", "Draw")
 TURN_ORDER = ("germany", "united-kingdom", "japan", "soviet-union", "italy", "united-states")
 
 
@@ -45,6 +45,7 @@ class TurnClock:
     phase: str = "Play"
     turn_id: int = 1
     plays_remaining: int = 1
+    discarded_in_phase: bool = False
 
 
 @dataclass
@@ -92,6 +93,8 @@ class GameState:
 
     def to_dict(self):
         data = asdict(self)
+        if not self.turn.discarded_in_phase:
+            del data["turn"]["discarded_in_phase"]
         if not self.turn_start:
             del data["turn_start"]
         return data

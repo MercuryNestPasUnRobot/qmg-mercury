@@ -29,7 +29,7 @@ CARD_NAMES = {
     "uk-guard": "自动阻止", "uk-secret": "计分示例", "uk-other": "抽牌示例",
 }
 PHASE_NAMES = {"Setup": "开局", "Play": "出牌", "Air": "空军", "Supply": "补给", "Victory": "计分",
-               "Discard": "弃牌", "Draw": "抽牌"}
+               "Discard": "弃牌", "Draw": "摸牌"}
 ZONE_NAMES = {"DECK": "牌库", "HAND": "手牌", "DISCARD": "弃牌", "STATUS": "状态",
               "RESPONSE": "响应", "RESERVE_ARMY": "陆军预备", "RESERVE_NAVY": "海军预备"}
 
