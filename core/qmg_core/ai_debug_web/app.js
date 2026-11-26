@@ -191,6 +191,7 @@ function renderControls() {
   $("step").hidden = !paused && ![status?.state, status?.requested].some(value => ["step", "stepping"].includes(value));
   $("step").disabled = app.busy || !paused;
   for (const id of ["seed", "mode"]) $(id).disabled = locked || app.busy || !app.drafts;
+  for (const id of ["match-map", "edit-map"]) $(id).disabled = locked || app.busy || !app.mapsReady;
   const editable = (!locked || paused) && !app.busy && Boolean(app.drafts);
   for (const id of ["version", "policy", "reset", "paste-profile"]) $(id).disabled = !editable;
   for (const id of ["edit-axis", "edit-allies", "copy-side", "copy-both"]) $(id).disabled = !app.drafts;
@@ -218,7 +219,7 @@ function renderOverview() {
   $("state").dataset.state = state;
   $("state").textContent = states[state] || state;
   const lineup = status?.configs ? sides.map(team => `${teams[team]} ${caption(status.configs[status.match?.swapped ? opposite[team] : team])}`).join(" / ") : run?.version_label;
-  $("run-context").textContent = run ? [lineup, modes[run.mode], run.catalog].join(" · ") :
+  $("run-context").textContent = run ? [lineup, modes[run.mode], run.map?.name, run.catalog].filter(Boolean).join(" · ") :
     "选择版本与参数后，即可开始测试。";
   $("completed").textContent = status?.completed || 0;
   $("round").textContent = status?.round ?? "—";
@@ -489,6 +490,7 @@ function acceptLive(detail) {
   if (app.live?.run.id !== detail.run.id) {
     $("seed").value = detail.run.seed;
     $("mode").value = detail.run.mode;
+    if (detail.run.map && app.mapsReady) $("match-map").value = detail.run.map.id;
   }
   app.live = detail;
   const key = [detail.run.id, status.weights_revision, status.match?.swapped].join(":");
@@ -510,7 +512,7 @@ async function refresh() {
   try {
     const index = await api("/api/runs");
     if (!app.runId || !index.runs.some(run => run.id === app.runId)) app.runId = index.active || index.runs[0]?.id || "";
-    setOptions($("runs"), index.runs.map(run => [run.id, `${date(run.created_at)} · ${run.version_label}`]), app.runId, "暂无测试");
+    setOptions($("runs"), index.runs.map(run => [run.id, [date(run.created_at), run.map?.name, run.version_label].filter(Boolean).join(" · ")]), app.runId, "暂无测试");
     const browsing = app.runId;
     const [live, viewed] = await Promise.all([
       index.active ? api("/api/runs/" + index.active) : null,
@@ -667,7 +669,7 @@ async function act(action) {
   let url = "/api/runs";
   if (action === "start") {
     if (!$("seed").reportValidity()) return;
-    Object.assign(payload, {seed: $("seed").valueAsNumber, mode: $("mode").value});
+    Object.assign(payload, {seed: $("seed").valueAsNumber, mode: $("mode").value, map: $("match-map").value || "standard"});
   } else if (app.live) {
     url += "/" + app.live.run.id + "/" + action;
   } else return;

@@ -53,6 +53,8 @@ class ScoreUnits:
     capture_rounds: int = 0
     enabled: bool = False
     supply_stability: float | None = None
+    home_importance: float = 0
+    auxiliary_home_importance: float = 0
     linked_values: dict = field(default_factory=dict, hash=False)
 
     @classmethod
@@ -61,7 +63,8 @@ class ScoreUnits:
             return cls()
         units = weights["scoring_units"]
         required = {"vp", "card", "action", "capture_rounds"}
-        if not isinstance(units, dict) or not required <= units.keys() <= required | {"supply_stability"}:
+        additional = {"supply_stability", "home_importance", "auxiliary_home_importance"}
+        if not isinstance(units, dict) or not required <= units.keys() <= required | additional:
             raise CoreError("Invalid scoring units")
         if any(type(units[key]) not in (float, int) or not isfinite(units[key]) or units[key] <= 0
                for key in ("vp", "card", "action")):
@@ -71,6 +74,10 @@ class ScoreUnits:
         stability = units.get("supply_stability", 0)
         if type(stability) not in (float, int) or not isfinite(stability) or stability < 0:
             raise CoreError("Supply stability must be finite and nonnegative")
+        for key in ("home_importance", "auxiliary_home_importance"):
+            value = units.get(key, 0)
+            if type(value) not in (float, int) or not isfinite(value) or value < 0:
+                raise CoreError(f"Invalid scoring unit: {key}")
         overrides = weights.get("scoring_overrides", {})
         if not isinstance(overrides, dict) or any(
             key not in LINKED_SCORES or type(value) not in (int, float) or not isfinite(value) or value < 0

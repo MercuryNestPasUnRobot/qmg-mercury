@@ -3,6 +3,7 @@
 from argparse import ArgumentParser
 from copy import deepcopy
 from datetime import datetime, timezone
+from functools import cached_property
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
@@ -19,6 +20,9 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from .ai_debug_worker import read_json, timestamp, write_json
+from .definitions import RuleSet
+from .map_variants import map_layout, match_rules
+from .model import CoreError
 from .score_units import LINKED_SCORES
 
 
@@ -32,6 +36,7 @@ TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.26": ("v1.26 · 基础值联动", "fc48f21d38cf8df5cf2cf79dbf4267aaab8c73d0", DISCARD_CATALOG),
     "v1.25": ("v1.25 · 持续规则与补给", "9aeaa3f3de6b50576415eee7513fecbcf3541b3f", DISCARD_CATALOG),
     "v1.24": ("v1.24 · 就绪能力时机", "872d7720e5dd3391a63ae5061baef690465051e3", DISCARD_CATALOG),
     "v1.23": ("v1.23 · 弃牌与过牌", "173dd0ebe51561fed8a4b5dd70a1fb3e581025e8", DISCARD_CATALOG),
@@ -52,6 +57,7 @@ GROUPS = {
 LABELS = {
     "vp": "每 1 VP", "card": "每张牌", "action": "每次行动", "capture_rounds": "占点评估回合数",
     "supply_stability": "补给稳定基础分",
+    "home_importance": "主要国大本营加分", "auxiliary_home_importance": "辅助国大本营加分",
     "expansion_preference": "每个可达分点的扩张偏好", "basic_usage_cost": "基础牌已用比例成本",
     "status_held_factor": "手中状态牌折算比例", "time_discount": "时间折扣",
     "horizon": "展望回合数", "saturation": "收益饱和阈值", "expansion_weight": "扩张权重",
@@ -122,6 +128,8 @@ LINK_LABELS = {
 }
 TERMINAL = {"completed", "stopped", "failed", "interrupted"}
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
+MAP_ID = re.compile(r"[0-9a-f]{32}")
+STANDARD_MAP = {"id": "standard", "name": "标准地图", "layout": None}
 
 
 class RequestError(ValueError):
@@ -309,7 +317,60 @@ class DebugPanel:
     def __init__(self, output=OUTPUT, versions=None):
         self.output = Path(output)
         self.versions = versions or VersionRegistry(ROOT, ROOT / ".cache" / "ai-debug-versions")
+        self.maps_directory = self.output.parent / (self.output.name + "-maps")
         self.active = None
+
+    @cached_property
+    def catalog(self):
+        option = self.versions.options["current"]
+        return Path(option["catalog"]) if option["catalog"] else self.versions.core("current") / "data" / "architecture_fixture.json"
+
+    @cached_property
+    def base_rules(self):
+        rules = RuleSet.load(self.catalog)
+        expected = self.versions.options["current"]["rules_digest"]
+        if expected and expected != rules.fingerprint:
+            raise RequestError("当前卡库与该版本的校验值不符。", HTTPStatus.CONFLICT)
+        return rules
+
+    def map_record(self, map_id):
+        if map_id == STANDARD_MAP["id"]:
+            return STANDARD_MAP
+        if isinstance(map_id, str) and MAP_ID.fullmatch(map_id):
+            file = self.maps_directory / (map_id + ".json")
+            if file.is_file():
+                return read_json(file)
+        raise RequestError("找不到这张地图。", HTTPStatus.NOT_FOUND)
+
+    def list_maps(self):
+        records = [self.map_record(file.stem) for file in sorted(self.maps_directory.glob("*.json")) if MAP_ID.fullmatch(file.stem)]
+        records.sort(key=lambda row: row["name"].casefold())
+        return [{key: row[key] for key in ("id", "name")} for row in (STANDARD_MAP, *records)]
+
+    def map_details(self, map_id):
+        record = self.map_record(map_id)
+        rules = match_rules(self.base_rules, record["layout"])
+        return {"id": record["id"], "name": record["name"], "layout": map_layout(rules),
+                "regions": {key: {"name": region.get("name", key), "type": region["type"],
+                                  "home": region.get("home_country")}
+                            for key, region in rules.regions.items()}}
+
+    def save_map(self, data):
+        name, layout = data.get("name"), data.get("layout")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 48 or any(ord(char) < 32 for char in name):
+            raise RequestError("请填写 1 至 48 个字符的地图名称。")
+        if any(row["name"].casefold() == name.strip().casefold() for row in self.list_maps()):
+            raise RequestError("已有同名地图，请换一个名称。", HTTPStatus.CONFLICT)
+        if not isinstance(layout, dict):
+            raise RequestError("缺少地图配置。")
+        try:
+            match_rules(self.base_rules, layout)
+        except CoreError as error:
+            raise RequestError(str(error)) from error
+        record = {"id": uuid4().hex, "name": name.strip(), "layout": layout}
+        self.maps_directory.mkdir(parents=True, exist_ok=True)
+        write_json(self.maps_directory / (record["id"] + ".json"), record)
+        return {key: record[key] for key in ("id", "name")}
 
     def directory(self, run_id):
         directory = self.output / run_id
@@ -386,10 +447,12 @@ class DebugPanel:
         paths = self.policy_paths(configs)
         option = self.versions.options["current"]
         core = self.versions.core("current")
-        catalog = option["catalog"] or str(core / "data" / "architecture_fixture.json")
+        selected_map = self.map_record(data.get("map", STANDARD_MAP["id"]))
+        rules = match_rules(self.base_rules, selected_map["layout"])
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:8]
         directory = self.output / run_id
         directory.mkdir(parents=True)
+        write_json(directory / "map.json", selected_map)
         write_json(directory / "status.json", {"state": "starting", "control_revision": 0, "weights_revision": 0,
             "step": 0, "completed": 0, "match": None, "configs": configs})
         write_json(directory / "control.json", {"action": "run", "revision": 1, "configs": configs, "paths": paths})
@@ -397,11 +460,11 @@ class DebugPanel:
             "version_label": "轴心 " + configs["axis"]["version"] + " " + configs["axis"]["policy"] +
                 " / 同盟 " + configs["allies"]["version"] + " " + configs["allies"]["policy"],
             "referee_commit": option["commit"], "catalog": "本地六席卡库" if option["catalog"] else "合成测试场景",
-            "rules_digest": option["rules_digest"]})
+            "rules_digest": rules.fingerprint, "map": {key: selected_map[key] for key in ("id", "name")}})
         try:
             with (directory / "worker.log").open("ab") as output:
                 worker = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ai_debug_worker.py")),
-                    str(directory), str(core), catalog], stdin=subprocess.DEVNULL, stdout=output, stderr=output, cwd=core)
+                    str(directory), str(core), str(self.catalog)], stdin=subprocess.DEVNULL, stdout=output, stderr=output, cwd=core)
         except OSError:
             status = read_json(directory / "status.json")
             write_json(directory / "status.json", {**status, "state": "failed", "error": "无法启动本地调试进程。"})
@@ -495,11 +558,15 @@ def handler_for(panel):
                         with writes:
                             started = panel.start(data)
                         return self.send_json(started, HTTPStatus.CREATED)
+                    if parts == ["api", "maps"]:
+                        with writes:
+                            saved = panel.save_map(data)
+                        return self.send_json(saved, HTTPStatus.CREATED)
                     if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("pause", "resume", "weights", "step", "stop"):
                         with writes:
                             detail = panel.control(parts[2], parts[3], data)
                         return self.send_json(detail)
-                elif url.path in ("/", "/app.js", "/app.css", "/board.js", "/board.css"):
+                elif url.path in ("/", "/app.js", "/app.css", "/board.js", "/board.css", "/map-editor.js"):
                     name = "index.html" if url.path == "/" else url.path[1:]
                     mime = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}[Path(name).suffix]
                     folder = BOARD_ASSETS if name.startswith("board.") else ASSETS
@@ -508,6 +575,10 @@ def handler_for(panel):
                     return self.send_content(BOARD_ART.read_bytes(), "image/png")
                 elif parts == ["api", "versions"]:
                     return self.send_json(panel.versions.public())
+                elif parts == ["api", "maps"]:
+                    return self.send_json(panel.list_maps())
+                elif len(parts) == 3 and parts[:2] == ["api", "maps"]:
+                    return self.send_json(panel.map_details(parts[2]))
                 elif parts == ["api", "runs"]:
                     return self.send_json(panel.list_runs())
                 elif len(parts) == 3 and parts[:2] == ["api", "runs"]:

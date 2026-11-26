@@ -18,6 +18,8 @@ from qmg_core.api import CoreAPI
 from qmg_core.definitions import RuleSet
 from qmg_core.engine import CommandProcessor
 from qmg_core.model import zone
+from qmg_core.map_variants import match_rules
+from qmg_core.rules import MapGraph
 from qmg_core.score_units import ScoreUnits
 
 
@@ -276,6 +278,42 @@ def test_paused_config_restores_linkage_and_keeps_old_preset_coefficients(tmp_pa
     assert reset["axis"]["weights"]["scoring_overrides"] == {}
     with pytest.raises(RequestError, match="没有该评分覆盖项"):
         panel.configurations(configs() | {"axis": {**draft["axis"], "overrides": {"obsolete": 1}}})
+
+
+def test_saved_map_is_available_after_reload_and_runs_in_the_referee(tmp_path, data):
+    panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
+    try:
+        standard = panel.map_details("standard")
+        layout = standard["layout"]
+        layout["connections"] = [{"a": "A", "b": "D", "uses": ["build"]}]
+        layout["straits"] = [{"land": "A", "seas": ["S", "T"]}]
+        layout["points"].update(A=1, D=2)
+        saved = panel.save_map({"name": "新测试地图", "layout": layout})
+        reloaded = DebugPanel(panel.output, panel.versions)
+        assert reloaded.list_maps()[1] == saved
+        assert reloaded.map_details(saved["id"])["layout"] == layout
+        assert panel.map_details("standard")["layout"] != layout
+        with pytest.raises(RequestError, match="普通连接或海峡"):
+            panel.save_map({"name": "重复通道", "layout": {**layout, "connections": [*layout["connections"],
+                                                                                 {"a": "S", "b": "T", "uses": ["build"]}]}})
+
+        rules = match_rules(panel.base_rules, layout)
+        state = CommandProcessor.create(rules).state
+        paths = MapGraph(rules)
+        assert paths.neighbors("A", state, "germany", "build") == ["D"]
+        assert paths.neighbors("A", state, "germany", "supply") == []
+        assert paths.neighbors("S", state, "germany") == ["T"]
+        assert paths.neighbors("S", state, "united-kingdom") == []
+
+        started = panel.start({"map": saved["id"], "seed": 31, "mode": "single", "configs": configs()})
+        run = started["run"]
+        assert run["map"] == saved and run["rules_digest"] == rules.fingerprint
+        assert ai_debug.read_json(panel.directory(run["id"]) / "map.json")["layout"] == layout
+        board = eventually(lambda: panel.board(run["id"], 1))
+        assert board["regions"]["A"]["vp"] == 1 and board["regions"]["D"]["vp"] == 2
+        eventually(lambda: panel.detail(run["id"])["status"]["step"] > 0)
+    finally:
+        panel.close()
 
 
 def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):

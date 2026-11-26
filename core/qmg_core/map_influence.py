@@ -220,8 +220,9 @@ class ScoringRoutes:
 
     def capture_value(self, force, region):
         if self.position:
-            return sum(self.position.site_base(force, region, site)
-                       for site, locations in self.position.locations.items() if region in locations)
+            sites = sum(self.position.site_base(force, region, site)
+                        for site, locations in self.position.locations.items() if region in locations)
+            return sites + sum(self.position.home_values(force, region, local_only=True).values())
         remaining = max(0, self.rules.settings["max_rounds"] - self.state.turn.round_id + 1)
         return self.units.vp_score(min(remaining, self.units.capture_rounds) * self.direct_site_gain(force, region))
 

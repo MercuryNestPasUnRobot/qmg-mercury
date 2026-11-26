@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/app.css">
   <script src="/board.js" defer></script>
   <script src="/app.js" defer></script>
+  <script src="/map-editor.js" defer></script>
 </head>
 <body>
   <header class="top">
@@ -45,6 +46,8 @@
               </select>
             </label>
             <p class="muted meta" id="mode-note">本局结束后自动停止。</p>
+            <label class="field">对局地图<select id="match-map" disabled><option value="standard">标准地图</option></select></label>
+            <button class="text-button" id="edit-map" type="button" disabled>打开地图编辑器</button>
           </div>
         </section>
         <section class="panel parameters">
@@ -162,6 +165,59 @@
         <button class="button secondary" id="confirm-paste" type="button">载入配置</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="map-editor" aria-labelledby="map-editor-title">
+    <form method="dialog" class="map-editor-head">
+      <div><h2 id="map-editor-title">地图编辑器</h2><p id="map-source" class="muted meta"></p></div>
+      <button class="button quiet" type="submit">关闭</button>
+    </form>
+    <div class="map-editor-layout">
+      <div class="map-editor-visual">
+        <div class="map-editor-scroll">
+          <div class="map-editor-stage">
+            <img id="map-editor-art" src="/board-map.png" alt="" hidden>
+            <canvas id="map-editor-lines" width="1200" height="643" aria-hidden="true"></canvas>
+            <div id="map-editor-regions"></div>
+          </div>
+        </div>
+        <p class="map-editor-legend meta"><span>● 全分点</span><span>◐ 半分点</span><span>○ 普通地区</span><span>┄ 海峡</span></p>
+      </div>
+      <div class="map-editor-controls">
+        <label class="field">当前地区<select id="map-region"></select></label>
+        <label class="field">分点类型<select id="map-points"><option value="0">普通地区</option><option value="1">半分点 · 每支部队 1 VP</option><option value="2">全分点 · 每国最多 2 VP</option></select></label>
+        <details open class="map-tool">
+          <summary>地区连接</summary>
+          <ul id="map-neighbors" class="map-list"></ul>
+          <form id="map-link-form">
+            <label class="field">连接到<select id="map-link-destination" required></select></label>
+            <fieldset class="map-use-fields"><legend>连接用途</legend>
+              <label><input name="uses" type="checkbox" value="build" checked>建设</label>
+              <label><input name="uses" type="checkbox" value="battle" checked>战斗</label>
+              <label><input name="uses" type="checkbox" value="supply" checked>补给</label>
+            </fieldset>
+            <button class="button secondary" type="submit">保存连接</button>
+          </form>
+        </details>
+        <details class="map-tool">
+          <summary>海峡配置</summary>
+          <ul id="map-straits" class="map-list"></ul>
+          <form id="map-strait-form">
+            <label class="field">控制陆地<select id="map-strait-land" required></select></label>
+            <div class="two">
+              <label class="field">海域一<select id="map-strait-first" required></select></label>
+              <label class="field">海域二<select id="map-strait-second" required></select></label>
+            </div>
+            <p class="muted meta">配置海峡会将这两个海域间的普通连接改为受控通道。</p>
+            <button class="button secondary" type="submit" id="map-strait-apply">添加海峡</button>
+          </form>
+        </details>
+      </div>
+    </div>
+    <form id="map-save-form" class="map-save">
+      <label class="field">新地图名称<input id="map-name" maxlength="48" required></label>
+      <button class="button primary" id="map-save" type="submit">保存并用于下次对局</button>
+    </form>
+    <p id="map-editor-message" class="message" role="status" hidden></p>
   </dialog>
 </body>
 </html>

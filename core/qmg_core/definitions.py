@@ -194,7 +194,8 @@ class RuleSet:
                 raise CoreError(f"Invalid setting: {k}")
         if self.settings["setup_discard"] > self.settings["initial_hand"] or self.settings["max_atomic_steps"] == 0 or self.settings["max_rounds"] == 0:
             raise CoreError("Invalid setup or execution budget")
-        for setting in ("mandatory_turn_play", "shared_site_scoring", "regional_status_sites"):
+        for setting in ("mandatory_turn_play", "shared_site_scoring", "regional_status_sites",
+                        "round_end_victory", "occupied_home_blocks_scoring"):
             if type(self.settings.get(setting, False)) is not bool:
                 raise CoreError(f"Invalid {setting} setting")
         penalty = self.settings.get("discard_phase_penalty", 0)
@@ -257,6 +258,11 @@ class RuleSet:
 
     def controlled_forces(self, country):
         return tuple(force for force, controller in self.force_controllers.items() if controller == country)
+
+    @property
+    def victory_threshold(self):
+        margin = self.settings["victory_margin"]
+        return margin + int(bool(margin and self.settings.get("round_end_victory")))
 
     @cached_property
     def hidden_score_rules(self):

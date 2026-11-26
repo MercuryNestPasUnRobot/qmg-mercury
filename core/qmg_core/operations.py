@@ -1,7 +1,8 @@
 """Atomic rule semantics. All physical changes use ZoneRegistry.transfer."""
 from .definitions import BATTLES, CONSTRUCTION, FORCE_OPERATIONS, PER_UNIT_SITE
 from .model import CoreError, TURN_ORDER, ZoneRegistry, zone
-from .rules import board_units, capture_turn_start, deployed_zones, initial_abilities, LegalActionGenerator, SupplyResolver, RuleModifierResolver, unit_rule_matches
+from .rules import (board_units, capture_turn_start, deployed_zones, initial_abilities, LegalActionGenerator, SupplyResolver,
+                    RuleModifierResolver, occupied_home_forces, unit_rule_matches)
 
 
 PREVENTABLE = FORCE_OPERATIONS | {"ELIMINATE"}
@@ -29,6 +30,7 @@ class ScoreResolver:
 
         units = [(piece, self.rules.force_controllers[piece.owner_country]) for piece in pieces
                  if self.rules.units[piece.definition_id]["kind"] != "AIR"]
+        blocked = occupied_home_forces(self.rules, state, pieces)
         result = {}
         for site_id, site in self.rules.sites.items():
             if country not in site["countries"]:
@@ -41,7 +43,7 @@ class ScoreResolver:
             else:
                 locations = {site["region"]}
             for token, seat in units:
-                if (seat != country or token.position_id not in locations or
+                if (seat != country or token.owner_country in blocked or token.position_id not in locations or
                         (site["requires_supply"] and token.token_id not in supplied_for(country))):
                     continue
                 if site.get("scoring") == PER_UNIT_SITE:
@@ -59,7 +61,7 @@ class ScoreResolver:
         for modifier in RuleModifierResolver(self.rules).resolve(state, country):
             if modifier["kind"] == "score_bonus" and modifier["site"] in result:
                 result[modifier["site"]] += modifier["amount"]
-        if self.rules.hidden_score_rules:
+        if self.rules.hidden_score_rules and country not in blocked:
             from .regional_sites import active_hidden_sites
             for site in active_hidden_sites(self.rules, state, owner=country):
                 if amount := site.income(self.rules, state, pieces):
@@ -67,12 +69,18 @@ class ScoreResolver:
         return result
 
     def terminal(self, state, round_end=False):
+        boundary_only = self.rules.settings.get("round_end_victory", False)
+        if boundary_only and not round_end:
+            return None
         diff = state.scores["axis"] - state.scores["allies"]
-        margin = self.rules.settings["victory_margin"]
+        margin = self.rules.victory_threshold
         if margin > 0 and abs(diff) >= margin:
             state.winner = "axis" if diff > 0 else "allies"
-        elif round_end and state.turn.round_id > self.rules.settings["max_rounds"]:
+            return "victory_margin"
+        if round_end and state.turn.round_id >= self.rules.settings["max_rounds"] + int(not boundary_only):
             state.winner = "axis" if diff > 0 else "allies" if diff < 0 else "draw"
+            return "round_limit"
+        return None
 
 
 class OperationExecutor:
@@ -247,15 +255,18 @@ class OperationExecutor:
         elif kind == "BEGIN_PHASE":
             if op.get("advance_country"):
                 scoring = ScoreResolver(self.rules)
-                scoring.terminal(state)
+                boundary_only = self.rules.settings.get("round_end_victory", False)
+                round_end = state.turn.country_index == len(TURN_ORDER) - 1
+                reason = scoring.terminal(state, round_end=boundary_only and round_end)
                 if state.winner:
-                    return outcome("GAME_END", reason="victory_margin")
+                    return outcome("GAME_END", reason=reason or "victory_margin")
                 state.turn.country_index = (state.turn.country_index + 1) % len(TURN_ORDER)
                 state.turn.turn_id += 1
                 state.turn.plays_remaining = self.rules.settings["plays_per_turn"]
                 if state.turn.country_index == 0:
                     state.turn.round_id += 1
-                    scoring.terminal(state, round_end=True)
+                    if not boundary_only:
+                        scoring.terminal(state, round_end=True)
             if state.turn.phase == "Discard":
                 state.turn.discarded_in_phase = False
             state.turn.phase = op["phase"]
