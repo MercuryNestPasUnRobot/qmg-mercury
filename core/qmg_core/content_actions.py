@@ -1,6 +1,6 @@
 """Player operations built from existing choices, transfers and settlement."""
 from .air import opportunity
-from .model import zone
+from .model import TURN_ORDER, zone
 from .operations import outcome, outcome_failure
 from .rules import RuleModifierResolver
 
@@ -14,11 +14,18 @@ def reallocation_terms(rules, state, country):
     return min(costs) if costs else 3, any(m["kind"] == "reallocate_discard" and m["country"] == country for m in modifiers)
 
 
+def reallocation_at_opening(rules, state, country):
+    return bool(rules.settings.get("reallocation") and state.turn.phase == "Play" and
+                country == TURN_ORDER[state.turn.country_index] and
+                state.turn.plays_remaining == rules.settings["plays_per_turn"] and
+                opportunity(state, "reallocation-opportunity-" + country))
+
+
 def reallocation_available(rules, state, country):
+    if not reallocation_at_opening(rules, state, country):
+        return False
     cost, discard = reallocation_terms(rules, state, country)
-    return bool(state.turn.plays_remaining == rules.settings["plays_per_turn"] and
-                opportunity(state, "reallocation-opportunity-" + country) and
-                len(state.positions[zone(country, "HAND")]) >= cost and any(
+    return bool(len(state.positions[zone(country, "HAND")]) >= cost and any(
                     is_basic(rules, state, key)
                     for kind in (("DECK", "DISCARD", "HAND") if discard else ("DECK",))
                     for key in state.positions[zone(country, kind)]))

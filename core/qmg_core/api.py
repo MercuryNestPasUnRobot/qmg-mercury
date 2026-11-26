@@ -32,25 +32,25 @@ def _public_spent_statuses(processor, state, controlled):
     return spent
 
 
-def _visible_position(position, rules, controlled):
+def _visible_position(position, rules, controlled, *, private_discards=False):
     if position is None:
         return False
     country, _, kind = position.partition(":")
+    if private_discards and kind == "DISCARD":
+        return country in controlled
     return (position in rules.regions or position == "RESOLUTION" or kind in PUBLIC_ZONES
             or (country in controlled and kind != "DECK"))
 
 
 def _reallocation_view(rules, s, controlled, visible):
-    from .content_actions import BASIC_KINDS, reallocation_terms
-    from .air import opportunity
+    from .content_actions import BASIC_KINDS, reallocation_at_opening, reallocation_terms
 
     seat = TURN_ORDER[s.turn.country_index]
     if seat not in controlled or s.turn.phase != "Play" or not rules.settings.get("reallocation"):
         return None
     decision = s.decision
     own_exchange = decision and decision.required_country == seat and s.stack[-1].context.get("reallocation")
-    if not own_exchange and (s.stack or s.turn.plays_remaining != rules.settings["plays_per_turn"] or
-                             not opportunity(s, "reallocation-opportunity-" + seat)):
+    if not own_exchange and (s.stack or not reallocation_at_opening(rules, s, seat)):
         return None
 
     def basic_kind(token):
@@ -78,15 +78,20 @@ def _reallocation_view(rules, s, controlled, visible):
     return result
 
 
-def observation(processor, controlled_countries, *, include_history=True, include_card_details=False):
+def observation(processor, controlled_countries, *, include_history=True, include_card_details=False,
+                private_discards=False):
     rules, s = processor.rules, processor.state
     controlled = set(controlled_countries)
     if not controlled <= set(TURN_ORDER):
         raise CoreError("Unknown seat")
+
+    def visible_position(position):
+        return _visible_position(position, rules, controlled, private_discards=private_discards)
+
     visible, positions = {}, {}
     for position, ids in s.positions.items():
         country, _, kind = position.partition(":")
-        permitted = _visible_position(position, rules, controlled)
+        permitted = visible_position(position)
         positions[position] = {"count": len(ids)}
         if include_card_details and kind == "RESPONSE":
             positions[position]["card_count"] = sum(s.tokens[key].token_type == "CARD" for key in ids)
@@ -94,7 +99,7 @@ def observation(processor, controlled_countries, *, include_history=True, includ
             positions[position]["count"] = 0
         if permitted:
             known = [key for key in ids if s.tokens[key].token_type not in ("ABILITY", "RULE") or
-                     _visible_position(s.tokens[s.tokens[key].source_token_id].position_id, rules, controlled)]
+                     visible_position(s.tokens[s.tokens[key].source_token_id].position_id)]
             positions[position].update(tokens=known, count=len(known))
             for token_id in known:
                 visible[token_id] = deepcopy(s.tokens[token_id].__dict__)
@@ -117,13 +122,13 @@ def observation(processor, controlled_countries, *, include_history=True, includ
         source_definition = rules.cards.get(s.tokens[source].definition_id) if source in s.tokens else None
         response_private = source_definition and source_definition["type"] == "RESPONSE" and source not in revealed_sources and record["actor"] not in controlled
         hidden_source = hidden_response or (source is not None and (response_private or (
-            source not in visible and source not in public_objects and not _visible_position(source_position, rules, controlled))))
+            source not in visible and source not in public_objects and not visible_position(source_position))))
         history.append({"sequence_id": record["sequence_id"],
                         "operation_type": "PRIVATE_OPERATION" if hidden_source else record["operation_type"],
                         "actor": record["actor"], "source": None if hidden_source else source,
-                        "changes": [deepcopy(c) for c in moves if _visible_position(c["to"], rules, controlled)
+                        "changes": [deepcopy(c) for c in moves if visible_position(c["to"])
                                     and (c["token_id"] in visible or c["to"] == "RESOLUTION"
-                                         or _visible_position(c["from"], rules, controlled))],
+                                         or visible_position(c["from"]))],
                         "score_changes": deepcopy(outcome["score_changes"]),
                         "success": outcome["success"]})
         public_objects.difference_update(c["token_id"] for c in moves if c["from"] == "RESOLUTION")
@@ -153,6 +158,8 @@ def observation(processor, controlled_countries, *, include_history=True, includ
             if action["type"] in BATTLES | CONSTRUCTION:
                 decision.update(map_force=action.get("force", s.decision.required_country),
                                 map_battle=action["type"] in BATTLES)
+                if include_card_details and action["type"] == "RECRUIT":
+                    decision["map_recruit"] = True
                 if not decision["map_battle"]:
                     from .status_scoring import ability_airdrop
 
@@ -246,15 +253,39 @@ def observation(processor, controlled_countries, *, include_history=True, includ
 
 class CoreAPI:
     """The host assigns seats; caller-provided network identity is not authentication."""
-    def __init__(self, processor, controlled_countries):
+    def __init__(self, processor, controlled_countries, *, private_discards=False):
         if not set(controlled_countries) <= set(TURN_ORDER):
             raise CoreError("Invalid seat assignment")
         self._processor = processor
         self.controlled_countries = tuple(controlled_countries)
+        self.private_discards = private_discards
 
     def observe(self, *, include_history=True, include_card_details=False):
         return observation(self._processor, self.controlled_countries, include_history=include_history,
-                           include_card_details=include_card_details)
+                           include_card_details=include_card_details, private_discards=self.private_discards)
+
+    def public_card_plays(self, cursor=0):
+        """Cards actually shown in the public resolution zone, including revealed responses."""
+        records = self._processor.records
+        tokens = self._processor._state.tokens
+        cards = self._processor.rules.cards
+        plays = []
+        for record in records[cursor:]:
+            for change in record["outcome"]["changes"]:
+                origin = (change["from"] or "").partition(":")[2]
+                if change["to"] != "RESOLUTION" or origin not in ("HAND", "DECK", "DISCARD", "RESPONSE"):
+                    continue
+                token = tokens[change["token_id"]]
+                if token.token_type != "CARD":
+                    continue
+                play = ("response" if origin == "RESPONSE" or
+                        record["outcome"]["context"].get("revealed_source") == token.token_id else
+                        "air" if record["operation_type"] == "USE_AIR" else "play")
+                card = cards[token.definition_id]
+                plays.append({"key": token.token_id, "country": record["actor"], "owner": token.owner_country,
+                              "kind": play, "name": card.get("title", token.definition_id), "text": card.get("text", ""),
+                              "sequence": record["sequence_id"]})
+        return len(records), plays
 
     def legal_commands(self):
         return deepcopy(self._processor.legal_commands(self.controlled_countries))

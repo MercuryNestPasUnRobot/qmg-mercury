@@ -24,6 +24,7 @@ TEAMS = {"axis": "轴心", "allies": "同盟", "draw": "平局"}
 COUNT_ZONES = ("HAND", "DECK", "DISCARD")
 CARD_ZONES = ("STATUS", "DISABLED_STATUS", "RESPONSE")
 DATA_TAG = '<script type="application/json" id="replay-data">'
+PRIVATE_DISCARDS = "own"
 
 
 def write_text(path, content):
@@ -49,7 +50,8 @@ class Tape:
     """Capture quiescent or blocked decision points and the Core operations between them."""
     def __init__(self, processor, perspective=None):
         self.perspective = perspective
-        self.client = CoreAPI(processor, (perspective,) if perspective else TURN_ORDER)
+        self.client = CoreAPI(processor, (perspective,) if perspective else TURN_ORDER,
+                              private_discards=perspective is not None)
         self.processor = processor
         self.frames = []
         self.tokens = {}
@@ -59,6 +61,11 @@ class Tape:
     def capture(self, row=None):
         rules = self.processor.rules
         view = self.client.observe(include_history=False, include_card_details=self.perspective is not None)
+        plays = self.client.public_card_plays(self.cursor)[1] if self.perspective else []
+        played = {play["key"] for play in plays}
+        for play in plays:
+            self.tokens[play["key"]] = {"kind": "CARD", "force": play["owner"], "source": None,
+                                        "name": play["name"], "text": play["text"]}
         for key, token in view["tokens"].items():
             if key in self.tokens:
                 continue
@@ -76,7 +83,7 @@ class Tape:
             for change in result["changes"]:
                 origin, destination = change["from"], change["to"]
                 key = change["token_id"]
-                if self.perspective and key not in view["tokens"]:
+                if self.perspective and key not in view["tokens"] and not (key in played and destination == "RESOLUTION"):
                     continue
                 if (origin in rules.regions or destination in rules.regions or
                         (row and row["command"]["type"] == "DISCARD_CARD" and
@@ -103,9 +110,14 @@ class Tape:
         if row and self.perspective:
             command = row["command"]
             public = {"type": command["type"]}
-            if command.get("card") in view["tokens"]:
+            own = row["country"] == self.perspective
+            key = command.get("card")
+            if key in played or (own and key in view["tokens"]) or (
+                    command["type"] in ("USE_STATUS", "ACTIVATE_CARD") and key in view["tokens"]):
                 public["card"] = command["card"]
-            elif command.get("card") and row["country"] != self.perspective:
+                if "play_as" in command:
+                    public["play_as"] = command["play_as"]
+            elif key and not own and command["type"] != "DISCARD_CARD":
                 public["type"] = "PRIVATE_OPERATION"
             if command.get("option") in rules.regions:
                 public["option"] = command["option"]
@@ -116,6 +128,8 @@ class Tape:
             "turn": view["turn"], "version": view["version"], "scores": view["scores"], "winner": view["winner"],
             "board": {region: ids for region in rules.regions if (ids := view["positions"][region]["tokens"])},
             "seats": seat_zones, "events": changes,
+            **({"plays": [{"key": play["key"], "kind": play["kind"], "country": play["country"]} for play in plays]}
+               if self.perspective else {}),
             "resolution": [frame["source"] for frame in view["resolution"]],
             "waiting": ({k: view["decision"][k] for k in ("required_country", "decision_type") if k in view["decision"]}
                         if view["decision"] else None),
@@ -215,7 +229,9 @@ def refresh_recordings(root):
     """Re-render the viewer from already verified recordings without executing games."""
     refreshed = 0
     for manifest in sorted(root.glob("batches/*/manifest.json")):
-        for key in read_json(manifest)["games"]:
+        for key, game in read_json(manifest)["games"].items():
+            if game.get("human") and game.get("discard_visibility") != PRIVATE_DISCARDS:
+                continue
             if not fullmatch(r"[0-9a-f]{16}", key):
                 raise CoreError("Invalid recording key")
             target = manifest.parent / (key + ".html")
@@ -253,6 +269,8 @@ class ReplayBatch:
         keys = ("game_id", "human", "seats", "winner", "scores") if game.get("human") else (
             "game_id", "seed", "search_team", "winner", "scores")
         self.info["games"][key] = {k: game[k] for k in keys}
+        if game.get("human"):
+            self.info["games"][key]["discard_visibility"] = PRIVATE_DISCARDS
         payload = {**tape.data(), "batch": {k: v for k, v in self.info.items() if k != "games"},
                    "game": self.info["games"][key]}
         render_recording(self.directory / (key + ".html"), payload)
@@ -279,6 +297,9 @@ def refresh_library(root):
             heading = COUNTRIES[human] if human else f'种子 {game["seed"]}'
             winner = game["winner"]
             result = (TEAMS[winner] + ("获胜" if winner != "draw" else "")) if winner else "提前结束"
+            if human and game.get("discard_visibility") != PRIVATE_DISCARDS:
+                games.append(f'<p>{heading} · 这局需要从原始日志重新生成玩家视角录像。</p>')
+                continue
             games.append(f'''<a class="game-link" href="batches/{key}/{game_key}.html">
 <span><strong>{heading}</strong><small>{label}</small></span>
 <span><strong>{scores["axis"]} <i>:</i> {scores["allies"]}</strong><small>{result}</small></span>
@@ -310,17 +331,44 @@ def import_batch(source, root, rules, *, name, version, note):
         print(f'重放已核对 {game["game_id"]} · {len(tape.frames) - 1} 步', flush=True)
 
 
+def refresh_player_recordings(root, *, batch_directory=None):
+    """Rebuild earlier player recordings with private discards from their verified commands."""
+    refreshed = 0
+    manifests = ([batch_directory / "manifest.json"] if batch_directory is not None
+                 else sorted(root.glob("batches/*/manifest.json")))
+    for manifest in manifests:
+        info = read_json(manifest)
+        for game in info["games"].values():
+            key = game["game_id"]
+            if (not game.get("human") or game.get("discard_visibility") == PRIVATE_DISCARDS or
+                    not fullmatch(r"player-[0-9a-f]{12}", key)):
+                continue
+            source = root.parent / "player-games" / key
+            fingerprint = info["rules_digest"]
+            if not (source / "summary.json").is_file() or not fullmatch(r"[0-9a-f]{64}", fingerprint):
+                continue
+            rules = RuleSet.load(root / "rules" / (fingerprint + ".json"))
+            import_batch(source, root, rules, name=info["name"], version=info["ai_version"], note=info["ai_note"])
+            refreshed += 1
+    refresh_library(root)
+    return refreshed
+
+
 def main():
     parser = ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--batch", type=Path)
     action.add_argument("--refresh", action="store_true", help="Update the appearance of saved recordings")
+    action.add_argument("--refresh-player", action="store_true", help="Rebuild earlier player recordings from private logs")
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--library", type=Path, default=LIBRARY)
     parser.add_argument("--name")
     parser.add_argument("--ai-version")
     parser.add_argument("--ai-note")
     args = parser.parse_args()
+    if args.refresh_player:
+        print(f'已重建 {refresh_player_recordings(args.library)} 局玩家视角录像')
+        return
     if args.refresh:
         print(f'已更新 {refresh_recordings(args.library)} 局录像的界面')
         print(args.library / "打开录像.html")

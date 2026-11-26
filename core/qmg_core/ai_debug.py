@@ -21,10 +21,10 @@ from zipfile import ZipFile
 
 from .ai_debug_worker import read_json, timestamp, write_json
 from .definitions import RuleSet
-from .map_variants import map_layout, match_rules
+from .map_variants import correct_saved_connections, map_layout, match_rules
 from .model import CoreError, zone
 from .player_game import PlayerError, PlayerGames
-from .replay import LIBRARY
+from .replay import LIBRARY, PRIVATE_DISCARDS, refresh_player_recordings
 from .score_units import LINKED_SCORES
 
 
@@ -343,7 +343,10 @@ class DebugPanel:
         if isinstance(map_id, str) and MAP_ID.fullmatch(map_id):
             file = self.maps_directory / (map_id + ".json")
             if file.is_file():
-                return read_json(file)
+                record = read_json(file)
+                if not record.get("reviewed_balkans_border"):
+                    correct_saved_connections(record["layout"]["connections"], self.base_rules.regions, "uses")
+                return record
         raise RequestError("找不到这张地图。", HTTPStatus.NOT_FOUND)
 
     def list_maps(self):
@@ -380,7 +383,7 @@ class DebugPanel:
             match_rules(self.base_rules, layout)
         except CoreError as error:
             raise RequestError(str(error)) from error
-        record = {"id": uuid4().hex, "name": name.strip(), "layout": layout}
+        record = {"id": uuid4().hex, "name": name.strip(), "layout": layout, "reviewed_balkans_border": True}
         self.maps_directory.mkdir(parents=True, exist_ok=True)
         write_json(self.maps_directory / (record["id"] + ".json"), record)
         return {key: record[key] for key in ("id", "name")}
@@ -598,6 +601,14 @@ def handler_for(panel):
                     is_index = unquote(url.path) in ("/replays/", "/replays/打开录像.html")
                     file = panel.players.library / ("打开录像.html" if is_index else url.path.removeprefix("/replays/"))
                     if file.is_file():
+                        if not is_index:
+                            game = read_json(file.with_name("manifest.json"))["games"].get(file.stem, {})
+                            if game.get("human") and game.get("discard_visibility") != PRIVATE_DISCARDS:
+                                with writes:
+                                    refresh_player_recordings(panel.players.library, batch_directory=file.parent)
+                                    game = read_json(file.with_name("manifest.json"))["games"].get(file.stem, {})
+                                if game.get("discard_visibility") != PRIVATE_DISCARDS:
+                                    raise RequestError("找不到这局的原始日志，无法生成玩家视角录像。", HTTPStatus.CONFLICT)
                         return self.send_content(file.read_bytes(), "text/html; charset=utf-8", inline_replay=True)
                     if is_index:
                         return self.send_content("还没有已归档的录像。".encode("utf-8"), "text/plain; charset=utf-8")

@@ -58,7 +58,7 @@ def command_description(rules, view, command):
         return card_details(rules, definition) if definition in rules.cards else None
 
     if kind == "REALLOCATE":
-        return {"label": f"调配资源 · 弃 {view.get('reallocation', {}).get('cost', 3)} 找 1"}
+        return {"label": f"调配资源 · 弃 {view.get('reallocation', {}).get('cost', 3)} 找 1", "opening": True}
     if kind == "CHOOSE":
         option = command["option"]
         source = decision.get("response_sources", {}).get(option)
@@ -71,16 +71,22 @@ def command_description(rules, view, command):
                 label = "发动 · " + label
             elif view["turn"]["phase"] == "Setup" or decision.get("hand_discard") or decision.get("operation_type") == "DISCARD":
                 label = "弃置 · " + label
-            elif decision.get("operation_type") in ("COST_SELECTED", "PAYMENT_SELECTED"):
+            elif decision.get("operation_type") in ("COST_SELECTED", "PAYMENT_SELECTED", "REALLOCATION_SELECTED"):
                 label = "支付 · " + label
             return {"label": label, "text": details.get("text", "")}
+        if option == "done" and decision.get("map_recruit"):
+            if decision["legal_options"] == ["done"]:
+                return {"label": "结束征召 · 已无其他合法落点或预备部队"}
+            return {"label": "跳过额外征召"}
         target = option.rsplit("|", 1)[-1]
         if decision.get("operation_type") == "AIR_ACTION_SELECTED":
             action, _, target, _ = json.loads(option)
             label = {"deploy": "部署空军", "marshal": "调动空军", "superiority": "争夺制空"}.get(action, "空军行动")
         elif target in rules.regions:
             label = ("空降至" if option in decision.get("map_airdrop_options", ()) else
-                     "攻击" if decision.get("map_battle") else "选择地区")
+                     "攻击" if decision.get("map_battle") else
+                     "额外征召" if decision.get("map_recruit") and decision.get("optional_flag") else
+                     "征召" if decision.get("map_recruit") else "选择地区")
         else:
             return {"label": (decision.get("option_labels", {}).get(option) or
                               view.get("reallocation", {}).get("sources", {}).get(option) or CHOICE_NAMES.get(option) or
@@ -115,8 +121,8 @@ def battlefield(rules, client, view, human):
                        "cards": {kind: [card_details(rules, view["tokens"][key]["definition_id"])
                                         for key in group.get("tokens", ()) if view["tokens"][key]["token_type"] == "CARD"]
                                  for kind, group in groups.items()
-                                 if kind in ("STATUS", "DISABLED_STATUS", "DISCARD") or
-                                 (seat == human and kind in ("HAND", "RESPONSE"))}}
+                                 if kind in ("STATUS", "DISABLED_STATUS") or
+                                 (seat == human and kind in ("HAND", "RESPONSE", "DISCARD"))}}
     return {"regions": board["regions"], "forces": board["forces"], "seats": seats, "scores": view["scores"]}
 
 
@@ -181,9 +187,10 @@ class PlayerGame:
         try:
             info = self.record
             processor = CommandProcessor.create(self.rules, seed=info["seed"], game_id=info["id"])
-            clients = {seat: CoreAPI(processor, (seat,)) for seat in TURN_ORDER}
+            clients = {seat: CoreAPI(processor, (seat,), private_discards=True) for seat in TURN_ORDER}
             human = clients[self.human]
             path = self.folder / "commands.jsonl"
+            cursor, recent = 0, []
             with path.open("x", encoding="utf-8", buffering=1) as log:
                 while True:
                     view = human.observe(include_history=False, include_card_details=True)
@@ -191,6 +198,8 @@ class PlayerGame:
                     active = TURN_ORDER[turn["country_index"]]
                     actor = (view["decision"] or {}).get("required_country", active)
                     board = battlefield(self.rules, human, view, self.human)
+                    cursor, played = human.public_card_plays(cursor)
+                    recent = [*played[::-1], *recent][:10]
                     # Core exposes human interruptions at other seats' decision boundaries.
                     actions = [] if view["winner"] else human.legal_commands()
                     descriptions = [command_description(self.rules, view, c) for c in actions]
@@ -201,7 +210,10 @@ class PlayerGame:
                         self.state.update(board=board, turn=turn, actor=actor, active=active, version=view["version"],
                                           step=sum(counts.values()), winner=view["winner"],
                                           state="archiving" if view["winner"] else "human" if actions else "ai",
-                                          choices=descriptions, may_pass=bool(actions and actor != self.human))
+                                          choices=descriptions, may_pass=bool(actions and actor != self.human),
+                                          recent_plays=recent,
+                                          reallocation_open=bool(view.get("reallocation") and not view["decision"]
+                                                                 and not view["resolution_depth"]))
                         if view["winner"]:
                             break
                         if actions:
@@ -240,7 +252,8 @@ class PlayerGame:
                 return
             with self.lock:
                 self.state.update(state="archiving", choices=[], may_pass=False, winner=winner,
-                                  board=board, turn=turn, version=view["version"], step=sum(counts.values()))
+                                  board=board, turn=turn, version=view["version"], step=sum(counts.values()),
+                                  recent_plays=recent)
             link = self.archive(processor, counts, path)
             with self.lock:
                 self.state.update(state=final, replay=link)

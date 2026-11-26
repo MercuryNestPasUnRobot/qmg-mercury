@@ -34,7 +34,9 @@ def edge_pairs(rows):
 
 
 # Shared borders, including the printed links across the east/west edge.
+BALKANS_GERMANY = ("balkans", "germany")
 ADDED = edge_pairs((
+    BALKANS_GERMANY,
     ("north-sea", "north-africa"),
     ("north-sea", "central-atlantic"),
     ("south-atlantic", "indian-ocean"),

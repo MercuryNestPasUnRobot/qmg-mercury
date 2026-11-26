@@ -384,7 +384,7 @@ class CommandProcessor:
                     if self.rules.cards[s.tokens[token_id].definition_id].get("legacy_kind") == "air-power":
                         commands.append({"type": "USE_AIR", "actor": country, "expected_version": s.version,
                                          "card": token_id, "force": force})
-        if s.turn.phase == "Play" and self.rules.settings.get("reallocation"):
+        if s.turn.phase == "Play":
             from .content_actions import reallocation_available
             if reallocation_available(self.rules, s, country):
                 commands.append({"type": "REALLOCATE", "actor": country, "expected_version": s.version})

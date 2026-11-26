@@ -92,7 +92,7 @@ async function mount(data) {
   $("match-name").textContent = batch.name;
   if (game.human) {
     $("reveal").closest("label").hidden = true;
-    if ($("seat-help")) $("seat-help").textContent = "点击可见牌名查看牌文。其他席位的手牌和响应牌保留数量。";
+    if ($("seat-help")) $("seat-help").textContent = "点击可见牌名查看牌文。其他席位的手牌、盖放响应和弃牌只显示数量。";
   }
   $("match-info").textContent = [
     batch.ai_version, game.human ? "玩家执 " + country(game.human) : "种子 " + game.seed,
@@ -405,8 +405,8 @@ async function mount(data) {
     $("pile-title").textContent = country(id) + " · " + label + " · " + frame.seats[id][kind] + " 张";
     const cards = $("pile-cards");
     cards.replaceChildren();
-    if (kind === "HAND" && game.human && id !== game.human) {
-      cards.append(node("small", "该席位只显示手牌数量。"));
+    if (game.human && id !== game.human) {
+      cards.append(node("small", "该席位只显示" + label + "数量。"));
     } else if (kind === "HAND" && !game.human && !judge()) {
       cards.append(node("small", "打开上方的「裁判视角」查看手牌内容。"));
     } else if (!keys.length) {
@@ -429,6 +429,14 @@ async function mount(data) {
           row.elapsed_ms.toFixed(1) + " / " + row.budget_ms + " ms"].join(" · "), "action-meta muted"));
     } else {
       area.append(node("p", "开局 · 初始发牌", "muted"));
+    }
+    if (frame.plays?.length) {
+      const revealed = node("div", undefined, "cards");
+      for (const {key, kind, country: actor} of frame.plays) {
+        const label = {play: "出牌", response: "响应", air: "空军"}[kind];
+        revealed.append(cardButton(key, "", country(actor) + " · " + label + " · "));
+      }
+      area.append(revealed);
     }
     if (frame.waiting) area.append(node("p", "等待 " + country(frame.waiting.required_country) + " 选择", "action-meta"));
     if (frame.resolution.length) {
