@@ -17,7 +17,7 @@ from .recruitment import recruitment_play
 from .operations import ScoreResolver, outcome
 from .reallocation_scoring import extra_refill, payment_plans, price
 from .response_scoring import is_delayed
-from .status_scoring import STATUS_FORECAST_DEFAULTS, is_airdrop, is_status, verify_status
+from .status_scoring import STATUS_FORECAST_DEFAULTS, ability_airdrop, is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 from .score_units import ACTION_SUPPORT_EFFECTS, PLAY_OPPORTUNITY_COMMANDS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 from .settlement_scoring import PositionValue, SettlementScorer
@@ -852,9 +852,25 @@ class OneStepPlanner:
                     result += self.evaluator.units.card_score(1 if rules.team(owner) == team else -1)
         return result
 
+    @staticmethod
+    def _settled_airdrops(processor, state):
+        placements = {}
+        for record in processor.records:
+            if record["operation_type"] not in CONSTRUCTION:
+                continue
+            action = record["operation"]
+            ability = state.tokens.get(action.get("object_token_id"))
+            if not ability:
+                continue
+            for move in record["outcome"]["changes"]:
+                if (move["to"] in processor.rules.regions and state.tokens[move["token_id"]].token_type == "UNIT" and
+                        ability_airdrop(processor.rules, state, ability, action, move["to"])):
+                    placements[move["token_id"]] = move["to"]
+        return placements
+
     def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None,
                 card_events=0, original_board=frozenset(), direct_removals=frozenset(), constructed=frozenset(),
-                recruited=frozenset(), recruitment_path=False, draw_economy=None):
+                recruited=frozenset(), recruitment_path=False, draw_economy=None, airdrops=None):
         self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
@@ -879,6 +895,9 @@ class OneStepPlanner:
                          and state.tokens[move["token_id"]].token_type == "UNIT"]
             recruited = recruited.union(key for action, key in new_units if action == "RECRUIT")
             effects["recruited"] = recruited
+            if self.evaluator.weights.get("known_ability_scoring"):
+                airdrops = {**(airdrops or {}), **self._settled_airdrops(processor, state)}
+                effects["airdrops"] = airdrops
             if self.evaluator.settlement.expansion_vp:
                 constructed = constructed.union(key for _, key in new_units)
                 effects["constructed"] = constructed
@@ -922,7 +941,7 @@ class OneStepPlanner:
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
                                         played_card=played_card, card_events=card_events, original_board=original_board,
                                         direct_removals=direct_removals, constructed=constructed, recruited=recruited,
-                                        recruitment_path=recruitment_path, draw_economy=draw_economy)
+                                        recruitment_path=recruitment_path, draw_economy=draw_economy, airdrops=airdrops)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

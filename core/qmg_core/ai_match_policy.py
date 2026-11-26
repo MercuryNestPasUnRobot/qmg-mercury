@@ -479,6 +479,12 @@ class RulePolicy:
             region_scores = {option: economy.routes.target_value(decision["map_force"], region,
                              battle=decision["map_battle"], construction=not decision["map_battle"])
                              for option, region in regions.items() if region in self.rules.regions}
+            if economy.known_abilities and decision.get("map_airdrop_options"):
+                from .status_scoring import placement_value
+
+                for option in decision["map_airdrop_options"]:
+                    if option in regions:
+                        region_scores[option] = placement_value(economy, decision["map_force"], regions[option], airdrop=True)
         else:
             regions = {option for option in options if option in self.rules.regions}
             region_scores = self.evaluator.target_proximity(view, seat, regions) if self.evaluator and regions else {}

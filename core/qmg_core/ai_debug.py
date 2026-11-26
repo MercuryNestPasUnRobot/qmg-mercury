@@ -31,6 +31,7 @@ TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.23": ("v1.23 · 弃牌与过牌", "173dd0ebe51561fed8a4b5dd70a1fb3e581025e8", DISCARD_CATALOG),
     "v1.22": ("v1.22 · 行动机会与落点", "7f748bb278e3eb0bc292576f98cd317a001c9a07", DISCARD_CATALOG),
     "v1.21": ("v1.21 · 逐种结算调配", "90a084ed419528357d650f32ac80e38243c7d3b7", DISCARD_CATALOG),
     "v1.20": ("v1.20 · 征召与留存", "0fa645af31cd879ef6773334ef86f394f59c233d", DISCARD_CATALOG),
@@ -104,9 +105,11 @@ def numeric_fields(weights):
                 group = "旧版牌效估值（当前主线已替代）"
             if weights.get("marginal_opportunity_scoring") and (path[0] == "hand_retention" or key == "economic_forecast.deck_top_look"):
                 group = "旧版估值（当前主线已替代）"
+            label = f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last)
+            if weights.get("known_ability_scoring") and key == "status_forecast.extra_trigger_opportunities":
+                label = "基础牌相关能力的最低预计次数"
             fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
-                "label": f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last),
-                "group": group})
+                "label": label, "group": group})
 
     visit(weights, ())
     return fields

@@ -1,8 +1,9 @@
 {
-  "profile": "ai-test-v1.23-marginal-opportunities",
+  "profile": "ai-test-v1.24-known-ability-windows",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
   "action_opportunity_scoring": true,
   "marginal_opportunity_scoring": true,
+  "known_ability_scoring": true,
   "action_distance_scoring": true,
   "settlement_scoring": true,
   "response_timing_scoring": true,
