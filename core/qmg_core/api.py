@@ -78,7 +78,7 @@ def _reallocation_view(rules, s, controlled, visible):
     return result
 
 
-def observation(processor, controlled_countries, *, include_history=True):
+def observation(processor, controlled_countries, *, include_history=True, include_card_details=False):
     rules, s = processor.rules, processor.state
     controlled = set(controlled_countries)
     if not controlled <= set(TURN_ORDER):
@@ -88,6 +88,8 @@ def observation(processor, controlled_countries, *, include_history=True):
         country, _, kind = position.partition(":")
         permitted = _visible_position(position, rules, controlled)
         positions[position] = {"count": len(ids)}
+        if include_card_details and kind == "RESPONSE":
+            positions[position]["card_count"] = sum(s.tokens[key].token_type == "CARD" for key in ids)
         if position == "SCORE_DORMANT" or (country not in controlled and (kind.startswith("ABILITY_") or kind in ("SCORE_DORMANT", "SET_ASIDE", "OBJECT_POOL"))):
             positions[position]["count"] = 0
         if permitted:
@@ -142,6 +144,12 @@ def observation(processor, controlled_countries, *, include_history=True):
                 elif effect["type"] == "choose-one":
                     decision["effect_branches"] = {str(i): deepcopy(option["effects"])
                         for i, option in enumerate(effect["options"]) if str(i) in s.decision.legal_options}
+                    if include_card_details:
+                        decision["option_labels"] = {str(i): option["label"] for i, option in enumerate(effect["options"])
+                                                     if str(i) in s.decision.legal_options and option.get("label")}
+                elif include_card_details and effect["type"] == "search-deck":
+                    decision["visible_choices"] = {key: s.tokens[key].definition_id for key in s.decision.legal_options
+                                                   if key in s.tokens and s.tokens[key].owner_country == s.decision.required_country}
             if action["type"] in BATTLES | CONSTRUCTION:
                 decision.update(map_force=action.get("force", s.decision.required_country),
                                 map_battle=action["type"] in BATTLES)
@@ -244,8 +252,9 @@ class CoreAPI:
         self._processor = processor
         self.controlled_countries = tuple(controlled_countries)
 
-    def observe(self, *, include_history=True):
-        return observation(self._processor, self.controlled_countries, include_history=include_history)
+    def observe(self, *, include_history=True, include_card_details=False):
+        return observation(self._processor, self.controlled_countries, include_history=include_history,
+                           include_card_details=include_card_details)
 
     def legal_commands(self):
         return deepcopy(self._processor.legal_commands(self.controlled_countries))

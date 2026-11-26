@@ -15,7 +15,7 @@ import subprocess
 import sys
 from threading import Lock
 from time import monotonic, sleep
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -23,6 +23,8 @@ from .ai_debug_worker import read_json, timestamp, write_json
 from .definitions import RuleSet
 from .map_variants import map_layout, match_rules
 from .model import CoreError, zone
+from .player_game import PlayerError, PlayerGames
+from .replay import LIBRARY
 from .score_units import LINKED_SCORES
 
 
@@ -318,6 +320,8 @@ class DebugPanel:
         self.output = Path(output)
         self.versions = versions or VersionRegistry(ROOT, ROOT / ".cache" / "ai-debug-versions")
         self.maps_directory = self.output.parent / (self.output.name + "-maps")
+        self.players = PlayerGames(self, self.output.parent / "player-games",
+                                   LIBRARY if self.output == OUTPUT else self.output.parent / "replays")
         self.active = None
 
     @cached_property
@@ -426,21 +430,18 @@ class DebugPanel:
     def configurations(self, supplied, previous=None):
         if not isinstance(supplied, dict) or set(supplied) != set(TEAMS):
             raise RequestError("请提供轴心和同盟各自的 AI 配置。")
-        configs = {}
-        for team in TEAMS:
-            config = supplied[team]
-            if not isinstance(config, dict):
-                raise RequestError("阵营配置格式有误。")
-            version, policy = config.get("version"), config.get("policy")
-            if not isinstance(version, str) or version not in self.versions.options or policy not in ("A", "B"):
-                raise RequestError("请选择有效的 AI 版本和 A／B 策略。")
-            option = self.versions.options[version]
-            old = previous[team] if previous else None
-            base = old["weights"] if old and old["version"] == version else option["defaults"]
-            configs[team] = {"version": version, "label": option["label"], "commit": option["commit"],
-                             "policy": policy, "weights": edited_weights(base, config.get("values", {}),
-                                                                          overrides=config.get("overrides"))}
-        return configs
+        return {team: self.configuration(supplied[team], previous[team] if previous else None) for team in TEAMS}
+
+    def configuration(self, config, previous=None):
+        if not isinstance(config, dict):
+            raise RequestError("阵营配置格式有误。")
+        version, policy = config.get("version"), config.get("policy")
+        if not isinstance(version, str) or version not in self.versions.options or policy not in ("A", "B"):
+            raise RequestError("请选择有效的 AI 版本和 A／B 策略。")
+        option = self.versions.options[version]
+        base = previous["weights"] if previous and previous["version"] == version else option["defaults"]
+        return {"version": version, "label": option["label"], "commit": option["commit"],
+                "policy": policy, "weights": edited_weights(base, config.get("values", {}), overrides=config.get("overrides"))}
 
     def policy_paths(self, configs):
         return {version: str(self.versions.core(version))
@@ -508,6 +509,7 @@ class DebugPanel:
         return self.detail(run_id)
 
     def close(self):
+        self.players.close()
         if self.active and self.active[1].poll() is None:
             directory, process = self.active
             request = read_json(directory / "control.json")
@@ -528,14 +530,14 @@ def handler_for(panel):
         def log_message(self, _format, *_args):
             return
 
-        def send_content(self, data, mime, status=HTTPStatus.OK, filename=None):
+        def send_content(self, data, mime, status=HTTPStatus.OK, filename=None, *, inline_replay=False):
             self.send_response(status)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy",
-                             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+            policy = "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+            self.send_header("Content-Security-Policy", policy if inline_replay else "default-src 'self'; " + policy)
             if filename:
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.end_headers()
@@ -567,6 +569,14 @@ def handler_for(panel):
                         with writes:
                             started = panel.start(data)
                         return self.send_json(started, HTTPStatus.CREATED)
+                    if parts == ["api", "player"]:
+                        with writes:
+                            started = panel.players.start(data)
+                        return self.send_json(started, HTTPStatus.CREATED)
+                    if len(parts) == 4 and parts[:2] == ["api", "player"] and parts[3] in ("command", "stop"):
+                        with writes:
+                            state = panel.players.act(parts[2], parts[3], data)
+                        return self.send_json(state)
                     if parts == ["api", "maps"]:
                         with writes:
                             saved = panel.save_map(data)
@@ -575,19 +585,31 @@ def handler_for(panel):
                         with writes:
                             detail = panel.control(parts[2], parts[3], data)
                         return self.send_json(detail)
-                elif url.path in ("/", "/app.js", "/app.css", "/board.js", "/board.css", "/map-editor.js"):
-                    name = "index.html" if url.path == "/" else url.path[1:]
+                elif url.path in ("/", "/app.js", "/app.css", "/board.js", "/board.css", "/map-editor.js",
+                                   "/player", "/player.js", "/player.css"):
+                    name = {"/": "index.html", "/player": "player.html"}.get(url.path, url.path[1:])
                     mime = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}[Path(name).suffix]
                     folder = BOARD_ASSETS if name.startswith("board.") else ASSETS
                     return self.send_content((folder / name).read_bytes(), mime + "; charset=utf-8")
-                elif url.path == "/board-map.png" and BOARD_ART.is_file():
+                elif url.path in ("/board-map.png", "/replays/board/map.png") and BOARD_ART.is_file():
                     return self.send_content(BOARD_ART.read_bytes(), "image/png")
+                elif (unquote(url.path) in ("/replays/", "/replays/打开录像.html") or
+                      re.fullmatch(r"/replays/batches/[0-9a-f]{16}/[0-9a-f]{16}\.html", url.path)):
+                    is_index = unquote(url.path) in ("/replays/", "/replays/打开录像.html")
+                    file = panel.players.library / ("打开录像.html" if is_index else url.path.removeprefix("/replays/"))
+                    if file.is_file():
+                        return self.send_content(file.read_bytes(), "text/html; charset=utf-8", inline_replay=True)
+                    if is_index:
+                        return self.send_content("还没有已归档的录像。".encode("utf-8"), "text/plain; charset=utf-8")
                 elif parts == ["api", "versions"]:
                     return self.send_json(panel.versions.public())
                 elif parts == ["api", "maps"]:
                     return self.send_json(panel.list_maps())
                 elif len(parts) == 3 and parts[:2] == ["api", "maps"]:
                     return self.send_json(panel.map_details(parts[2]))
+                elif parts == ["api", "player"]:
+                    game = panel.players.current
+                    return self.send_json(game.status() if game else None)
                 elif parts == ["api", "runs"]:
                     return self.send_json(panel.list_runs())
                 elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
@@ -613,7 +635,7 @@ def handler_for(panel):
                     if file.is_file():
                         return self.send_content(file.read_bytes(), "application/x-ndjson; charset=utf-8", filename=name)
                 raise RequestError("找不到这个页面或日志。", HTTPStatus.NOT_FOUND)
-            except RequestError as error:
+            except (RequestError, PlayerError) as error:
                 self.send_json({"error": str(error)}, error.status)
             except (ValueError, OverflowError):
                 self.send_json({"error": "请求中的数值或格式有误。"}, HTTPStatus.BAD_REQUEST)

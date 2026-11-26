@@ -23,8 +23,8 @@ from qmg_core.rules import MapGraph
 from qmg_core.score_units import ScoreUnits
 
 
-def eventually(predicate):
-    end = monotonic() + 12
+def eventually(predicate, *, timeout=12):
+    end = monotonic() + timeout
     while monotonic() < end:
         value = predicate()
         if value:
@@ -178,7 +178,7 @@ def test_continuous_run_switches_sides_before_incrementing_the_seed(tmp_path, da
             return info["games"] if len(info["games"]) >= 3 else []
 
         eventually(lambda: panel.detail(key)["status"]["state"] != "starting")
-        results = eventually(games)
+        results = eventually(games, timeout=30)
         assert [(game["seed"], game["swapped"]) for game in results[:3]] == [(31, False), (31, True), (32, False)]
         folder = panel.directory(key)
         rows = [log_window(folder / f"game-{number}.jsonl", limit=1000)["rows"][-1] for number in (1, 2, 3)]

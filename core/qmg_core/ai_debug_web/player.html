@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>玩家对局 · QMG Mercury</title>
+  <link rel="stylesheet" href="/board.css">
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/player.css">
+  <script src="/board.js" defer></script>
+  <script src="/player.js" defer></script>
+</head>
+<body>
+  <header class="top"><div class="top-inner">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>QMG <strong>Mercury</strong></div>
+    <nav class="player-links" aria-label="页面导航"><a href="/">AI 调试台</a><a href="/replays/">录像台</a></nav>
+  </div></header>
+  <main class="workspace player-workspace">
+    <div class="page-head"><div><h1>玩家对局</h1><p id="match-caption">选择一个真人席位，其余五席由 AI 控制。</p></div>
+      <div class="controls"><a class="button secondary" id="match-replay" hidden>打开本局录像</a>
+        <button class="button quiet" id="match-stop" type="button" hidden>结束这局</button>
+        <button class="button primary" id="match-new" type="button" hidden>新开一局</button></div></div>
+    <p class="message" id="player-message" role="status" hidden></p>
+
+    <section id="player-setup" class="player-setup">
+      <form class="panel setup-panel" id="player-start-form">
+        <h2>开局设置</h2>
+        <label class="field">阵营<select id="human-team"><option value="axis">轴心</option><option value="allies">同盟</option></select></label>
+        <label class="field">真人席位<select id="human-seat" required></select></label>
+        <label class="field">对局地图<select id="player-map" required></select></label>
+        <label class="field">随机种子<input id="player-seed" type="number" min="0" max="4294967295" step="1" placeholder="留空随机"></label>
+        <button class="button primary" type="submit" id="player-start" disabled>开始对局</button>
+      </form>
+      <section class="panel setup-panel" aria-labelledby="ai-setup-title">
+        <h2 id="ai-setup-title">AI 席位</h2>
+        <div class="seat-picker" id="setup-seats" aria-label="选择要设置的席位"></div>
+        <div class="two ai-fields">
+          <label class="field">AI 版本<select id="player-version"></select></label>
+          <label class="field">AI 策略<select id="player-policy"><option value="A">A · 规则</option><option value="B">B · 搜索</option></select></label>
+        </div>
+        <details class="ai-parameters"><summary>评分参数</summary><div id="player-weights" class="two"></div></details>
+        <div class="preset-controls">
+          <button class="button secondary" id="copy-all-ai" type="button">应用到全部 AI</button>
+          <button class="button secondary" id="copy-axis-ai" type="button">应用到轴心 AI</button>
+          <button class="button secondary" id="copy-allies-ai" type="button">应用到同盟 AI</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="player-match" hidden aria-label="当前对局">
+      <div class="panel match-clock"><div><h2 id="player-turn">准备开局</h2><p id="player-timing" role="status"></p></div>
+        <div class="match-scores"><span>轴心 <strong id="axis-vp">0</strong> VP</span><span>同盟 <strong id="allies-vp">0</strong> VP</span></div></div>
+      <div class="player-grid">
+        <section class="panel player-board" aria-labelledby="player-map-title">
+          <div class="section-head"><h2 id="player-map-title">棋盘</h2><button id="player-fit" class="text-button" type="button" aria-pressed="false">适应宽度</button></div>
+          <div class="board-scroll" id="player-board-scroll"><div class="board-stage" id="player-board-stage">
+            <img id="player-board-art" src="/board-map.png" alt="" hidden><div id="board-regions"></div>
+          </div></div>
+          <div class="player-region" id="player-region" aria-live="polite"></div>
+        </section>
+        <section class="panel player-action-panel" aria-labelledby="player-actions-title">
+          <h2 id="player-actions-title">可用操作</h2>
+          <div id="player-actions"></div>
+          <button class="button secondary" id="player-pass" type="button" hidden>跳过响应，交给 AI</button>
+        </section>
+      </div>
+      <section class="panel player-zones" aria-labelledby="player-zones-title">
+        <h2 id="player-zones-title">各国牌区</h2><div id="player-seats" class="player-seat-grid"></div>
+        <div id="player-card-zones"></div>
+      </section>
+    </section>
+  </main>
+  <dialog id="player-card-dialog" aria-labelledby="player-card-title">
+    <form method="dialog"><div class="section-head"><h2 id="player-card-title"></h2><button class="button quiet">关闭</button></div>
+      <p id="player-card-text"></p></form>
+  </dialog>
+</body>
+</html>

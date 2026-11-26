@@ -47,8 +47,9 @@ def read_json(path):
 
 class Tape:
     """Capture quiescent or blocked decision points and the Core operations between them."""
-    def __init__(self, processor):
-        self.client = CoreAPI(processor, TURN_ORDER)
+    def __init__(self, processor, perspective=None):
+        self.perspective = perspective
+        self.client = CoreAPI(processor, (perspective,) if perspective else TURN_ORDER)
         self.processor = processor
         self.frames = []
         self.tokens = {}
@@ -57,7 +58,7 @@ class Tape:
 
     def capture(self, row=None):
         rules = self.processor.rules
-        view = self.client.observe(include_history=False)
+        view = self.client.observe(include_history=False, include_card_details=self.perspective is not None)
         for key, token in view["tokens"].items():
             if key in self.tokens:
                 continue
@@ -75,6 +76,8 @@ class Tape:
             for change in result["changes"]:
                 origin, destination = change["from"], change["to"]
                 key = change["token_id"]
+                if self.perspective and key not in view["tokens"]:
+                    continue
                 if (origin in rules.regions or destination in rules.regions or
                         (row and row["command"]["type"] == "DISCARD_CARD" and
                          (origin or "").endswith(":HAND") and (destination or "").endswith(":DISCARD")) or
@@ -82,7 +85,7 @@ class Tape:
                             for position in (origin, destination)) or
                         "RESOLUTION" in (origin, destination)):
                     moves.append([key, origin, destination])
-            if moves or result["score_changes"] or not result["success"]:
+            if moves or result["score_changes"] or (not self.perspective and not result["success"]):
                 changes.append({"type": record["operation_type"], "actor": record["actor"],
                                 "moves": moves, "scores": result["score_changes"], "ok": result["success"],
                                 **({"reason": "no-discard"} if record["operation"].get("reason") == "no-discard" else {}),
@@ -94,14 +97,27 @@ class Tape:
             seat_zones[seat] = {
                 **{kind: view["positions"].get(zone(seat, kind), {}).get("count", 0) for kind in COUNT_ZONES},
                 **{kind: view["positions"].get(zone(seat, kind), {}).get("tokens", []) for kind in CARD_ZONES},
-                "piles": {kind: view["positions"][zone(seat, kind)]["tokens"] for kind in ("HAND", "DISCARD")},
+                "piles": {kind: view["positions"][zone(seat, kind)].get("tokens", []) for kind in ("HAND", "DISCARD")},
+                **({"response_count": view["positions"][zone(seat, "RESPONSE")]["card_count"]} if self.perspective else {}),
             }
+        if row and self.perspective:
+            command = row["command"]
+            public = {"type": command["type"]}
+            if command.get("card") in view["tokens"]:
+                public["card"] = command["card"]
+            elif command.get("card") and row["country"] != self.perspective:
+                public["type"] = "PRIVATE_OPERATION"
+            if command.get("option") in rules.regions:
+                public["option"] = command["option"]
+            # Neither the chosen hidden card nor any candidate from an opponent's private view is retained.
+            row = {"country": row["country"], "policy": row["policy"], "command": public,
+                   "label": row.get("label") if row["country"] == self.perspective else None}
         self.frames.append({
             "turn": view["turn"], "version": view["version"], "scores": view["scores"], "winner": view["winner"],
             "board": {region: ids for region in rules.regions if (ids := view["positions"][region]["tokens"])},
             "seats": seat_zones, "events": changes,
             "resolution": [frame["source"] for frame in view["resolution"]],
-            "waiting": ({k: view["decision"][k] for k in ("required_country", "decision_type")}
+            "waiting": ({k: view["decision"][k] for k in ("required_country", "decision_type") if k in view["decision"]}
                         if view["decision"] else None),
             "decision": row,
         })
@@ -125,10 +141,10 @@ class Tape:
                 "straits": rules.settings.get("straits", [])}
 
 
-def replay_game(rules, game, path):
+def replay_game(rules, game, path, *, perspective=None):
     """Execute the recorded commands, accepting only the original state sequence and result."""
     processor = CommandProcessor.create(rules, seed=game["seed"], game_id=game["game_id"])
-    tape = Tape(processor)
+    tape = Tape(processor, perspective)
     clients = {seat: CoreAPI(processor, (seat,)) for seat in TURN_ORDER}
     expected = game["decisions_by_seat"]
     total = sum(expected.values())
@@ -164,7 +180,7 @@ def page(title, body, payload=None):
         data = f'{DATA_TAG}{encoded}</script>'
     return f'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash_source(script)}; style-src {hash_source(style)}; img-src file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {hash_source(script)}; style-src {hash_source(style)}; img-src 'self' file:">
 <title>{escape(title)} · Mercury</title><style>{style}</style>
 </head><body>{body}{data}<script>{script}</script></body></html>'''
 
@@ -177,7 +193,7 @@ def render_recording(path, payload):
 
 
 def recording_topology(path, payload):
-    if set(payload["regions"]) != PRINTED_REGIONS:
+    if payload.get("game", {}).get("human") or set(payload["regions"]) != PRINTED_REGIONS:
         return payload
     result = {**payload}
     result.pop("board_reference", None)
@@ -234,12 +250,15 @@ class ReplayBatch:
 
     def add(self, game, tape):
         key = digest(game["game_id"])[:16]
-        self.info["games"][key] = {k: game[k] for k in ("game_id", "seed", "search_team", "winner", "scores")}
+        keys = ("game_id", "human", "seats", "winner", "scores") if game.get("human") else (
+            "game_id", "seed", "search_team", "winner", "scores")
+        self.info["games"][key] = {k: game[k] for k in keys}
         payload = {**tape.data(), "batch": {k: v for k, v in self.info.items() if k != "games"},
                    "game": self.info["games"][key]}
         render_recording(self.directory / (key + ".html"), payload)
         write_json(self.manifest, self.info)
         refresh_library(self.root)
+        return key
 
 
 def refresh_library(root):
@@ -255,10 +274,13 @@ def refresh_library(root):
         games = []
         for game_key, game in info["games"].items():
             scores = game["scores"]
-            team = TEAMS[game["search_team"]]
-            result = TEAMS[game["winner"]] + ("获胜" if game["winner"] != "draw" else "")
+            human = game.get("human")
+            label = "玩家席位" if human else f'B 执{TEAMS[game["search_team"]]}'
+            heading = COUNTRIES[human] if human else f'种子 {game["seed"]}'
+            winner = game["winner"]
+            result = (TEAMS[winner] + ("获胜" if winner != "draw" else "")) if winner else "提前结束"
             games.append(f'''<a class="game-link" href="batches/{key}/{game_key}.html">
-<span><strong>种子 {game["seed"]}</strong><small>B 执{team}</small></span>
+<span><strong>{heading}</strong><small>{label}</small></span>
 <span><strong>{scores["axis"]} <i>:</i> {scores["allies"]}</strong><small>{result}</small></span>
 <span class="launch">播放 <b aria-hidden="true">→</b></span></a>''')
         panels.append(f'''<section class="batch" id="batch-{key}"{' hidden' if index else ''}>
@@ -277,13 +299,13 @@ def import_batch(source, root, rules, *, name, version, note):
     report = read_json(source / "summary.json")
     if rules.fingerprint != report["rules_digest"]:
         raise CoreError("Use the original catalog for this batch")
-    settings = {key: report[key] for key in ("budget_ms", "shortlist_width", "nodes_per_candidate", "weights_digest")}
+    settings = {key: report[key] for key in ("budget_ms", "shortlist_width", "nodes_per_candidate", "weights_digest") if key in report}
     batch = ReplayBatch(root, source, rules, name=name, version=version, note=note, settings=settings)
     for game in report["games"]:
         log = source / game["decision_log"]
         if log.resolve().parent != source.resolve():
             raise CoreError("Decision log must be inside the batch")
-        tape = replay_game(rules, game, log)
+        tape = replay_game(rules, game, log, perspective=game.get("human"))
         batch.add(game, tape)
         print(f'重放已核对 {game["game_id"]} · {len(tape.frames) - 1} 步', flush=True)
 
