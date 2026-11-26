@@ -104,7 +104,9 @@ def test_instant_look_and_card_return_score_in_b_simulation(data, effect, expect
     view = client.observe()
     paper, = RulePolicy(game.rules, ScoreEvaluator(game.rules, weights)).rank(view, [play])
     searched, = OneStepPlanner(game.rules, weights).rank(CandidateView(view, [play]), "germany")
-    assert paper["rule_score"] == pytest.approx(expected)
+    assert paper["rule_score"] == pytest.approx(expected - 2)
+    evaluator = ScoreEvaluator(game.rules, weights)
+    assert evaluator.retention(view, "germany")["g-deck-2"]["short_term"] == pytest.approx(expected)
     assert searched["card_event_score"] == pytest.approx(expected)
     assert searched["actual_vp_delta"] == 0
 

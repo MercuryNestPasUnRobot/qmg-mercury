@@ -482,12 +482,13 @@ async function mount(data) {
           (c.vp_score_delta != null && c.vp_score_delta !== c.actual_vp_delta ? "（折 " + signed(c.vp_score_delta) + " 分）" : "");
         li.append(node("small", "总分 " + signed(c.q) + (c.terminal_rank === 2 ? " · 获胜" : c.terminal_rank === -2 ? " · 落败" : "")),
           node("small", [vp, "地图 " + signed(c.map_delta),
-            "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta)].join(" · ")));
+            "牌 " + signed(c.card_delta), "资源 " + signed(c.resource_delta),
+            ...(c.action_cost ? ["行动机会 " + signed(c.action_cost)] : [])].join(" · ")));
         if (c.unit_removal_score) li.append(node("small", "地图分中移除单位 " + signed(c.unit_removal_score)));
         if (c.temporary_vp) li.append(node("small", "地图分中临时占领实得 " + signed(c.temporary_vp) + " VP"));
         if (c.expansion_score) li.append(node("small", "地图分中扩张偏好 " + signed(c.expansion_score)
           + " · 可继续争取 " + c.expansion_sites.length + " 个分点"));
-        if (c.card_event_score) li.append(node("small", "牌分中返牌与牌库顶操作 " + signed(c.card_event_score)));
+        if (c.card_event_score) li.append(node("small", "牌区事件调整 " + signed(c.card_event_score)));
       } else {
         li.append(node("small", shortReason(c.reason)));
       }
@@ -503,6 +504,7 @@ async function mount(data) {
       const li = node("li", commandLabel(c.command, false) + " · " + signed(c.rule_score) + (picked(c.command) ? " ✓" : ""),
         picked(c.command) ? "picked" : "");
       if (c.reallocation) li.append(node("small", exchangeDetails(c.reallocation)));
+      if (c.action_cost) li.append(node("small", "行动机会 " + signed(c.action_cost)));
       if (c.retention) li.append(node("small", retentionDetails(c.retention)));
       if (c.expansion) li.append(node("small", "剩余建造牌可达 " + c.expansion.sites.length
         + " 个分点 · 扩张偏好 " + signed(c.expansion.score)));

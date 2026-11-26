@@ -27,6 +27,7 @@ def fixed_capture_profile():
 def forecast_search_profile():
     weights = profile()
     weights["settlement_scoring"] = False
+    weights["action_opportunity_scoring"] = False
     return weights
 
 

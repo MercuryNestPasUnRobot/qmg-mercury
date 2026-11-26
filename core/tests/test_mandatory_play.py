@@ -51,7 +51,8 @@ def test_empty_hand_costs_exactly_one_vp_and_consumes_the_play(data):
     weights["scoring_units"]["vp"] = 2
     policy = SeatPolicy(p.rules, evaluator=ScoreEvaluator(p.rules, weights))
     action, row = policy.decide(client, "germany")
-    assert row["rule_scores"][0]["rule_score"] == -2
+    assert row["rule_scores"][0]["rule_score"] == -4
+    assert row["rule_scores"][0]["action_cost"] == -2
     client.submit(action)
     assert p.state.scores == {"axis": -1, "allies": 0}
     assert p.state.turn.plays_remaining == 0

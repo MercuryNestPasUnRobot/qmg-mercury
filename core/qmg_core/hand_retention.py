@@ -14,11 +14,12 @@ def is_hand_choice(view, seat, *, forced_play_discard=False):
     return (phase == "Discard" or forced_play_discard) and TURN_ORDER[view["turn"]["country_index"]] == seat
 
 
-def cycling_ev(retention, card_unit, count):
-    if not retention:
-        return {}
-    average = sum(terms["short_term"] for terms in retention.values()) / len(retention)
-    return {"hand_average": average, "cycle_cards": count, "cycle_score": count * (card_unit - average)}
+def cycling_ev(retention, card_unit, count, *, hand_average=None):
+    if hand_average is None:
+        if not retention:
+            return {}
+        hand_average = sum(terms["short_term"] for terms in retention.values()) / len(retention)
+    return {"hand_average": hand_average, "cycle_cards": count, "cycle_score": count * (card_unit - hand_average)}
 
 
 def score_retention(rules, state, seat, settings, short_term, basic_cost=None):

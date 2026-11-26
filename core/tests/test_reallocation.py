@@ -227,8 +227,9 @@ def test_exchange_compares_all_basics_and_rebinds_the_actual_play_after_payment(
     assert battle["actual_vp_delta"] == 8
     assert battle["card_delta"] == -2
     assert battle["cycle_score"] == 3
+    assert battle["action_cost"] == -2
     assert battle["q"] == pytest.approx(sum(battle[k] for k in
-        ("actual_vp_delta", "map_delta", "card_delta", "resource_delta", "cycle_score")))
+        ("actual_vp_delta", "map_delta", "card_delta", "resource_delta", "cycle_score", "action_cost")))
     assert any(r["command"]["type"] == "PLAY_CARD" and r["complete"] for r in log["candidate_scores"])
 
     class MissingDirectScore:

@@ -60,7 +60,7 @@ LABELS = {
     "paper_fraction": "纸面地图折算", "paper_cap": "纸面地图上限", "build_friendly_neighbor": "友军建设系数",
     "supplied": "有补给", "unsupplied": "无补给", "no_reserve_expansion": "无预备队的扩张",
     "ARMY": "陆军", "NAVY": "海军", "AIR": "空军", "empty_deck": "牌库用尽",
-    "unknown": "未知牌", "ability_ready": "就绪能力", "CHOOSE": "选择", "REDEPLOY": "重新部署",
+    "unknown": "未知牌", "ability_ready": "可发动能力的兜底权重", "CHOOSE": "选择", "REDEPLOY": "重新部署",
     "DRAW": "摸牌", "GAIN_VP": "增加 VP", "TRANSFER": "移动对象", "BUILD_ARMY": "建设陆军",
     "BUILD_NAVY": "建设海军", "RECRUIT": "征召", "LAND_BATTLE": "陆战", "SEA_BATTLE": "海战",
     "default": "默认效果", "points": "计分", "build": "建设", "recruit": "征召", "choose-space": "选择地区",
@@ -69,6 +69,7 @@ LABELS = {
 }
 INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "horizon", "construction_search_width",
            "max_simulation_nodes"}
+LEGACY_CARD_VALUES = {"REDEPLOY", "DRAW", "GAIN_VP", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE"}
 TERMINAL = {"completed", "stopped", "failed", "interrupted"}
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
 
@@ -89,9 +90,12 @@ def numeric_fields(weights):
         elif type(value) in (int, float):
             key = ".".join(map(str, path))
             last = path[-1]
+            group = GROUPS.get(path[0], "搜索设置" if "width" in key or key == "max_simulation_nodes" else "通用估值")
+            if weights.get("action_opportunity_scoring") and path[0] == "card_value_weights" and last in LEGACY_CARD_VALUES:
+                group = "旧版牌效估值（当前主线已替代）"
             fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
                 "label": f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last),
-                "group": GROUPS.get(path[0], "搜索设置" if "width" in key or key == "max_simulation_nodes" else "通用估值")})
+                "group": group})
 
     visit(weights, ())
     return fields

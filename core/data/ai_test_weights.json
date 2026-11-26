@@ -1,6 +1,7 @@
 {
-  "profile": "ai-test-v1.21-exchange-settlement",
+  "profile": "ai-test-v1.22-action-opportunities",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2},
+  "action_opportunity_scoring": true,
   "action_distance_scoring": true,
   "settlement_scoring": true,
   "response_timing_scoring": true,

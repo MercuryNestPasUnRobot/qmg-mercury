@@ -5,6 +5,7 @@ from time import perf_counter
 
 from .api import CoreAPI
 from .content_effects import condition_met, point_award
+from .definitions import PER_UNIT_SITE
 from .economic_scoring import POINT_EFFECTS
 from .engine import AbilityScanner, CommandProcessor, ResolutionBudgetExceeded
 from .expansion_scoring import ConstructionNetwork
@@ -32,9 +33,10 @@ class PositionValue:
 
 
 class SettlementScorer:
-    def __init__(self, units, expansion_vp=0):
+    def __init__(self, units, expansion_vp=0, *, location_weights=None):
         self.units = units
         self.expansion_vp = expansion_vp
+        self.location_weights = location_weights
 
     @staticmethod
     def closing_positions(rules, settled, deadline):
@@ -177,7 +179,7 @@ class SettlementScorer:
         still_on_board = {t.token_id for t in board_units(rules, state)}
         pieces, supplies, closing_income = self.surviving_board(rules, state, deadline, recruited)
         survivors = tuple((t.token_id, t.owner_country) for t in pieces)
-        stock = self.units.action_score(sum(sign(owner) for _, owner in survivors))
+        stock = 0 if self.location_weights else self.units.action_score(sum(sign(owner) for _, owner in survivors))
         removal = 0.0
         if initial_units is not None:
             surviving_ids = {key for key, _ in survivors}
@@ -187,8 +189,9 @@ class SettlementScorer:
             tactical = self.units.action_score(-sum(sign(state.tokens[key].owner_country) for key in direct_removals
                                                      if key not in initial_units and key not in still_on_board))
             removal += tactical
-            stock += tactical
-        site_values = {}
+            stock += removal if self.location_weights else tactical
+        site_values = defaultdict(float)
+        next_income = defaultdict(float)
         temporary_vp = 0
         scorer = ScoreResolver(rules)
         listeners = self.scoring_listeners(rules, state)
@@ -205,7 +208,33 @@ class SettlementScorer:
                 temporary_vp *= sign(seat)
             rates.update(self.status_points(rules, snapshot, seat, listeners.get(seat)))
             for site, amount in rates.items():
-                site_values[site] = site_values.get(site, 0) + sign(seat) * self.units.vp_score(amount)
+                if self.location_weights and site in rules.sites:
+                    next_income[site, rules.team(seat)] += self.units.vp_score(amount)
+                else:
+                    site_values[site] += sign(seat) * self.units.vp_score(amount)
+        air_support = 0
+        if self.location_weights and not state.winner:
+            from .map_influence import ScoringRoutes
+            position = ScoringRoutes(rules, state, pieces, self.location_weights).position
+            held_per_unit = defaultdict(float)
+            # A regular site contributes the best durable surface position or next income once per side.
+            for piece in pieces:
+                force = piece.owner_country
+                if rules.units[piece.definition_id]["kind"] == "AIR":
+                    # Air support uses its position even when the basing unit already holds the site.
+                    air_support += sign(force) * position.value(force, piece.position_id, excluded=piece.token_id)
+                    continue
+                for site, (distance, value) in position.site_values(force, piece.position_id, excluded=piece.token_id).items():
+                    if site in rules.sites:
+                        key = site, rules.team(force)
+                        if distance == 0 and rules.sites[site].get("scoring") == PER_UNIT_SITE:
+                            held_per_unit[key] += value
+                        else:
+                            next_income[key] = max(next_income[key], value)
+            for key, value in held_per_unit.items():
+                next_income[key] = max(next_income[key], value)
+        for (site, team), value in next_income.items():
+            site_values[site] += value if team == own else -value
         points = tuple({"site": site, "value": value} for site, value in site_values.items())
         expansion = ()
         if self.expansion_vp and constructed and not state.winner:
@@ -213,7 +242,7 @@ class SettlementScorer:
             if origins:
                 expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
         expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
-        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp)
+        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp) + air_support
         return PositionValue(float(actual), map_value, cards, 0.0, self.units.vp_score(actual) + map_value + cards,
                              terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score,
                              temporary_vp)

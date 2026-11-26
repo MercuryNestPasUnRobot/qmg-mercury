@@ -19,7 +19,7 @@ from .reallocation_scoring import payment_plans, price
 from .response_scoring import is_delayed
 from .status_scoring import is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
-from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
+from .score_units import ACTION_SUPPORT_EFFECTS, PLAY_OPPORTUNITY_COMMANDS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 from .settlement_scoring import PositionValue, SettlementScorer
 
 
@@ -29,6 +29,10 @@ class ScoreEvaluator:
         self.weights = deepcopy(weights)
         self.units = ScoreUnits.from_weights(weights)
         self.action_distance = weights.get("action_distance_scoring", False)
+        opportunity = weights.get("action_opportunity_scoring", False)
+        if type(opportunity) is not bool:
+            raise CoreError("Invalid action opportunity scoring setting")
+        self.action_opportunity = opportunity and self.action_distance
         if type(weights.get("response_timing_scoring", False)) is not bool:
             raise CoreError("Invalid response timing scoring setting")
         if type(weights.get("stacked_site_scoring", False)) is not bool:
@@ -42,7 +46,8 @@ class ScoreEvaluator:
         expansion = weights.get("expansion_preference", 0)
         if type(expansion) not in (int, float) or not isfinite(expansion) or expansion < 0:
             raise CoreError("Invalid expansion preference")
-        self.settlement = SettlementScorer(self.units, expansion) if settlement_scoring else None
+        self.settlement = (SettlementScorer(self.units, expansion, location_weights=self.weights if self.action_opportunity else None)
+                           if settlement_scoring else None)
         self.seat_forecast = self.units.enabled or weights.get("seat_forecast", False)
         numbers = [*weights["distance_weights"], *weights["supply_weights"].values(),
                    *weights["military_weights"].values(), *weights["card_value_weights"].values(),
@@ -137,13 +142,14 @@ class ScoreEvaluator:
             return None
 
         @cache
-        def visible_state():
-            return observed_position(self.rules, view)[1]
+        def position():
+            return observed_position(self.rules, view)
 
         return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
                                 lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
-                                visible_state, view["winner"], status_weights=self.status_weights, map_weights=self.map_weights,
-                                units=self.units)
+                                lambda: position()[1], view["winner"], status_weights=self.status_weights, map_weights=self.map_weights,
+                                units=self.units, hand_average=(lambda economy, seat: self.hand_average(*position(), seat, economy))
+                                if self.action_opportunity else None)
 
     def economic_from_state(self, rules, state):
         settings = self.weights.get("economic_forecast")
@@ -152,46 +158,61 @@ class ScoreEvaluator:
         return EconomicForecast(rules, settings, vars(state.turn), state.scores,
                                 lambda seat, kind: len(state.positions[zone(seat, kind)]),
                                 lambda: state, state.winner, status_weights=self.status_weights, map_weights=self.map_weights,
-                                units=self.units)
+                                units=self.units, hand_average=(lambda economy, seat: self.hand_average(rules, state, seat, economy))
+                                if self.action_opportunity else None)
 
-    def hand_value(self, rules, state, country, card, legal, economy=None, *, include_card=True):
+    def hand_value(self, rules, state, country, card, legal, economy=None, *, include_card=True, estimate_draw=True):
         w = self.weights
         weights = w["card_value_weights"]
         card_stock = self.units.card if self.units.enabled and include_card else 0
         if card.get("simulation_unknown"):
             return card_stock + weights["unknown"]
         if economy and is_delayed(card) and economy.responses:
-            estimate = economy.responses.staging(country, card["id"])
+            estimate = economy.responses.staging(country, card["id"], estimate_draw=estimate_draw)
             return card_stock + (max(0, estimate["net"]) if estimate["window_remaining"] else 0)
         if economy and economy.status_weights and is_status(card):
             return (card_stock + economy.statuses.report(country, card["id"], held=True)["future"] +
-                    self.program_value(rules, state, country, card["effects"], economy))
+                    self.program_value(rules, state, country, card["effects"], economy, estimate_draw=estimate_draw))
         deployable = card["type"] == "RESPONSE" or (card["type"] == "STATUS" and not card.get("after"))
         abilities = [rules.abilities[a] for a in card.get("abilities", ())] if deployable else []
         airdrop = [a for a in abilities if self.action_distance and economy and economy.status_weights and is_airdrop(a)]
         copies = sum(a.get("copies", 1) for a in abilities if a not in airdrop)
         air_value = sum(max(0, economy.statuses.airdrop_value(country, a["id"])) for a in airdrop)
-        value = air_value + self.units.action_score(copies * weights["ability_ready"] / 2) + self.program_value(
-            rules, state, country, card["effects"], economy)
+        if self.action_opportunity and economy and card.get("play_as"):
+            program = max((economy.routes.tactical_effect(country, {"type": mode}) for mode in card["play_as"]), default=0)
+        else:
+            program = self.program_value(rules, state, country, card["effects"], economy, estimate_draw=estimate_draw)
+        value = air_value + self.units.action_score(copies * weights["ability_ready"] / 2) + program
         return card_stock + max(0.0, value) * (
             1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
 
-    def program_value(self, rules, state, country, steps, economy=None):
+    def program_value(self, rules, state, country, steps, economy=None, *, estimate_draw=True):
         w, value = self.weights, 0.0
         card_weights = w["card_value_weights"]
+        drawn = 0
         for instruction in steps:
             operation = instruction.get("operation", instruction)
             kind = operation["type"]
             multiplier = operation.get("amount", 1) if kind == "GAIN_VP" else operation.get("count", 1)
+            if self.action_opportunity and economy:
+                location = economy.routes.tactical_effect(country, operation)
+                if location is not None:
+                    value += location
+                    continue
             if kind == "GAIN_VP" and (economy or self.units.enabled):
                 recipient = operation.get("score_country") or country
                 delta = multiplier if rules.team(recipient) == rules.team(country) else -multiplier
                 value += (economy.points(country, delta, card_weights["GAIN_VP"]) if economy else self.units.vp_score(delta))
             elif kind == "CARD_EFFECT" and "effect_value_weights" in w:
                 value += effect_potential(rules, state, country, operation["effect"], w["effect_value_weights"], economy,
-                                          units=self.units, native_weights=card_weights)
+                                          units=self.units, native_weights=card_weights,
+                                          tactical=self.action_opportunity)
             elif kind == "DRAW" and self.units.enabled:
-                value += self.units.card_score(multiplier)
+                if not self.action_opportunity or not economy:
+                    value += self.units.card_score(multiplier)
+                elif estimate_draw:
+                    value += economy.draw_value(country, multiplier, drawn)
+                    drawn += multiplier
             else:
                 estimate = card_weights.get(kind, card_weights.get(instruction["type"], 0)) * multiplier
                 value += self.units.action_score(estimate / 2) if kind in VALUED_ACTIONS else estimate
@@ -207,45 +228,67 @@ class ScoreEvaluator:
             return 0
         return self.units.card if self.units.enabled else self.hand_slot_cost
 
+    def action_cost(self, kind, phase):
+        if self.action_opportunity and (kind == "USE_AIR" or (phase == "Play" and kind in PLAY_OPPORTUNITY_COMMANDS)):
+            return self.units.action
+        return 0
+
     def basic_discard_cost(self, view, seat, card):
         kind = card.get("legacy_kind")
         use = view.get("basic_card_use", {}).get(seat, {}).get(kind)
         weight = self.units.card_score(self.weights.get("basic_usage_cost", 0))
         return weight * use["played"] / use["total"] if use else 0.0
 
-    def retention(self, view, country, *, position=None):
+    def short_term(self, rules, state, country, card, legal, economy, *, estimate_draw=True):
         from .air import air_options
         from .content_effects import condition_met
 
+        if card.get("implementation", {}).get("status") == "blocked":
+            return 0.0
+        kind = card.get("legacy_kind")
+        if kind == "air-power":
+            if not rules.settings.get("air_phase"):
+                return 0.0
+            actions = ("deploy", "marshal", "superiority")
+            effects = [{"type": "air-action", "force": force, "actions": actions} for force in rules.controlled_forces(country)]
+            if self.action_opportunity and economy:
+                return max((economy.routes.tactical_effect(country, {"type": "CARD_EFFECT", "effect": effect})
+                            for effect in effects), default=0)
+            useful = any(air_options(rules, state, country, effect) for effect in effects)
+            return self.units.action_score(0.325 if useful else 0.10)
+        raw = self.hand_value(rules, state, country, card, legal, economy, include_card=False, estimate_draw=estimate_draw)
+        if self.status_weights and is_status(card):
+            return raw
+        if economy and is_delayed(card) and economy.responses:
+            return raw
+        if (kind == "bolster" or card["type"] in ("RESPONSE", "STATUS")) and condition_met(
+                rules, state, country, card.get("content_condition")):
+            attached = max((self.program_value(rules, state, country, rules.abilities[key]["effects"], economy,
+                                               estimate_draw=estimate_draw) for key in card.get("abilities", ())), default=0)
+            raw += 0.5 * max(0, attached) + (0.35 if card.get("modifiers") else 0)
+            if kind == "bolster":
+                raw += 0.20
+        return raw
+
+    def hand_average(self, rules, state, country, economy):
+        hand = state.positions[zone(country, "HAND")]
+        legal = LegalActionGenerator(rules)
+        # Draw effects cannot estimate the value of a draw by recursively valuing themselves.
+        return sum(self.short_term(rules, state, country, rules.cards[state.tokens[key].definition_id], legal,
+                                   economy, estimate_draw=False) for key in hand) / len(hand) if hand else 0
+
+    def cycle_value(self, economy, seat, count, retention):
+        if economy and self.action_opportunity:
+            return economy.cycle_value(seat, count)
+        return cycling_ev(retention, self.units.card, count)
+
+    def retention(self, view, country, *, position=None):
         rules, state = position if position is not None else observed_position(self.rules, view)
         legal = LegalActionGenerator(rules)
         economy = self.economic_from_state(rules, state)
 
         def short_term(card):
-            if card.get("implementation", {}).get("status") == "blocked":
-                return 0.0
-            kind = card.get("legacy_kind")
-            if kind == "air-power":
-                if not rules.settings.get("air_phase"):
-                    return 0.0
-                actions = ("deploy", "marshal", "superiority")
-                useful = any(air_options(rules, state, country, {"force": force, "actions": actions})
-                             for force in rules.controlled_forces(country))
-                return self.units.action_score(0.325 if useful else 0.10)
-            raw = self.hand_value(rules, state, country, card, legal, economy, include_card=False)
-            if self.status_weights and is_status(card):
-                return raw
-            if economy and is_delayed(card) and economy.responses:
-                return raw
-            if kind == "bolster" or card["type"] in ("RESPONSE", "STATUS"):
-                ready = condition_met(rules, state, country, card.get("content_condition"))
-                if ready:
-                    attached = max((self.program_value(rules, state, country, rules.abilities[k]["effects"], economy)
-                                    for k in card.get("abilities", ())), default=0)
-                    raw += 0.5 * max(0, attached) + (0.35 if card.get("modifiers") else 0)
-                    if kind == "bolster":
-                        raw += 0.20
-            return raw
+            return self.short_term(rules, state, country, card, legal, economy)
 
         retention = {key: self.units.card_score(v) for key, v in self.weights["hand_retention"].items()}
         return score_retention(rules, state, country, retention, short_term,
@@ -459,19 +502,24 @@ def forecast_site(site, site_id, rates, opportunities, sign, advantage, weights,
     ]}
 
 
-def effect_potential(rules, state, seat, effect, weights, economy=None, *, units=ScoreUnits(), native_weights=None):
+def effect_potential(rules, state, seat, effect, weights, economy=None, *, units=ScoreUnits(), native_weights=None,
+                     tactical=False):
     from .content_effects import condition_met, point_award
     from .economic_scoring import POINT_EFFECTS
     if economy:
         dynamic = economy.effect(seat, effect, weights["points"])
         if dynamic is not None:
             return dynamic
+        if tactical:
+            location = economy.routes.tactical_effect(seat, {"type": "CARD_EFFECT", "effect": effect})
+            if location is not None:
+                return location
     if not condition_met(rules, state, seat, effect.get("when")):
         return 0.0
     kind = effect["type"]
     if kind == "choose-one":
         return max((sum(effect_potential(rules, state, seat, child, weights, economy,
-                                        units=units, native_weights=native_weights) for child in option["effects"])
+                                        units=units, native_weights=native_weights, tactical=tactical) for child in option["effects"])
                     for option in effect["options"]), default=0.0)
     if units.enabled and kind in POINT_EFFECTS:
         recipient, amount = point_award(rules, state, seat, effect)
@@ -502,9 +550,10 @@ def candidate_key(row):
 
 
 def acceptable_play(row, *, mandatory=False):
-    paid_card = row.get("initial_card_score") or row.get("consumes_card")
-    return row["complete"] and (not paid_card or row["q"] > 0 or row["terminal_rank"] == 2
-                                or (mandatory and row["command"]["type"] == "PLAY_CARD"))
+    paid = row.get("initial_card_score") or row.get("consumes_card") or row.get("action_cost")
+    kind = row.get("exchange_followup", {}).get("play", row["command"])["type"]
+    return row["complete"] and (not paid or row["q"] > 0 or row["terminal_rank"] == 2
+                                or (mandatory and kind in PLAY_OPPORTUNITY_COMMANDS))
 
 
 class OneStepPlanner:
@@ -524,6 +573,7 @@ class OneStepPlanner:
         root = simulation_from_observation(self.evaluator.rules, view, search_projection=True)
         root_state = root.state
         before = self.end_score(root, country, deadline)
+        economy = (self.evaluator.economic_from_state(root.rules, root_state) if self.evaluator.action_opportunity else None)
         if self.evaluator.settlement:
             initial_units = dict(before.surviving_units)
             original_board = frozenset(t.token_id for t in board_units(root.rules, root_state))
@@ -549,9 +599,11 @@ class OneStepPlanner:
                 played = command["card"] if consumes_card and self.evaluator.action_distance else None
                 source = root_state.tokens.get(command.get("card"))
                 recruitment_path = source and recruitment_play(root.rules, root.rules.cards[source.definition_id], command)
+                cost = self.evaluator.action_cost(command["type"], root_state.turn.phase)
                 value, choices = self._finish(candidate, country, nodes, deadline,
                                               initial_units=initial_units, played_card=played,
-                                              original_board=original_board, recruitment_path=recruitment_path)
+                                              original_board=original_board, recruitment_path=recruitment_path,
+                                              draw_economy=economy if cost or command["type"] == "ACTIVATE_CARD" else None)
                 initial = -self.evaluator.hand_slot_cost if consumes_card and not self.evaluator.units.enabled else 0.0
                 vp_delta = value.actual_vp - before.actual_vp
                 yield {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
@@ -560,7 +612,8 @@ class OneStepPlanner:
                        "map_delta": value.map_value - before.map_value,
                        "card_delta": value.card_value - before.card_value + initial,
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
-                       "q": value.total - before.total + initial, "terminal_rank": value.terminal_rank,
+                       "q": value.total - before.total + initial - cost, "terminal_rank": value.terminal_rank,
+                       **({"action_cost": -cost} if cost else {}),
                        **({"unit_removal_score": value.unit_removal_score} if value.unit_removal_score else {}),
                        **({"temporary_vp": value.temporary_vp} if value.temporary_vp else {}),
                        **({"card_event_score": value.card_event_value} if value.card_event_value else {}),
@@ -621,7 +674,7 @@ class OneStepPlanner:
             stock = simulation_from_observation(self.evaluator.rules, projected, search_projection=True)
         stock_state = stock.state
         original_board = frozenset(t.token_id for t in board_units(rules, state)) if self.evaluator.settlement else frozenset()
-        cycling = cycling_ev(retention, self.evaluator.units.card, view["reallocation"]["cost"])
+        cycling = self.evaluator.cycle_value(economy, country, view["reallocation"]["cost"], retention)
         for index, plan in enumerate(plans):
             nodes = [0]
             try:
@@ -673,6 +726,7 @@ class OneStepPlanner:
             initial_units = ({piece.token_id: piece.owner_country for piece in board_units(ordinary.rules, post_payment)}
                              if self.evaluator.action_distance else None)
         outcomes = []
+        economy = (self.evaluator.economic_from_state(ordinary.rules, post_payment) if self.evaluator.action_opportunity else None)
         for play in plays:
             self._check_deadline(deadline)
             branch = ordinary if len(plays) == 1 else CommandProcessor(ordinary.rules, post_payment, search_projection=True)
@@ -681,20 +735,22 @@ class OneStepPlanner:
             source = post_payment.tokens.get(play.get("card"))
             recruitment_path = source and recruitment_play(ordinary.rules, ordinary.rules.cards[source.definition_id], play)
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
-                                        played_card=played, original_board=original_board, recruitment_path=recruitment_path)
+                                        played_card=played, original_board=original_board, recruitment_path=recruitment_path,
+                                        draw_economy=economy if play["type"] != "END_PHASE" else None)
             self._check_deadline(deadline)
             outcomes.append((value, play, trail))
         after, play, choices = max(outcomes, key=lambda row: (row[0].terminal_rank, row[0].total),
                                    default=(before, None, []))
+        cost = self.evaluator.action_cost(play["type"], post_payment.turn.phase) if play else 0
         initial = -self.evaluator.hand_slot_cost if outcomes and not self.evaluator.units.enabled else 0.0
         plan = {**plan, **cycling}
         if self.evaluator.settlement:
             # The final stock already contains the acquisition and has paid the real expense.
             fees = -self.evaluator.units.card_score(len(plan["payment"]))
-            plan = price({**plan, "discard_score": fees}, after.total - before.total - fees)
+            plan = price({**plan, "discard_score": fees}, after.total - before.total - fees - cost)
             card_adjustment = 0
         else:
-            plan = price(plan, after.total - before.total + initial)
+            plan = price(plan, after.total - before.total + initial - cost)
             card_adjustment = plan["discard_score"]
         return {"command": deepcopy(command), "complete": True, "nodes": nodes[0],
                 "weights_digest": digest(self.evaluator.weights),
@@ -705,6 +761,7 @@ class OneStepPlanner:
                 "resource_delta": after.resource_adjustment - before.resource_adjustment,
                 **({"cycle_score": cycling["cycle_score"]} if cycling else {}),
                 "q": plan["total"], "terminal_rank": after.terminal_rank,
+                **({"action_cost": -cost} if cost else {}),
                 **({"unit_removal_score": after.unit_removal_score} if after.unit_removal_score else {}),
                 **({"card_event_score": after.card_event_value} if after.card_event_value else {}),
                 **({"expansion_score": after.expansion_score, "expansion_sites": after.expansion_sites}
@@ -720,7 +777,7 @@ class OneStepPlanner:
         if deadline is not None and perf_counter() >= deadline:
             raise TimeoutError("Projected search exceeded its deadline")
 
-    def _card_events(self, processor, state, country, played_card):
+    def _card_events(self, processor, state, country, played_card, draw_economy=None):
         if not self.evaluator.action_distance:
             return 0
         rules = processor.rules
@@ -731,6 +788,14 @@ class OneStepPlanner:
             outcome = record["outcome"]
             if not outcome["success"]:
                 continue
+            if draw_economy and outcome["event"] == "DRAW":
+                actor = record["actor"]
+                count = sum(move["from"] == zone(actor, "DECK") and move["to"] == zone(actor, "HAND")
+                            for move in outcome["changes"])
+                if count:
+                    adjustment = count * draw_economy.cycle_value(actor, count)["hand_average"]
+                    # The settled card stock already includes the full value of every drawn card.
+                    result -= (1 if rules.team(actor) == team else -1) * adjustment
             if outcome["event"] == "ORDER_DECK":
                 actor = record["actor"]
                 seen = len(outcome["changes"])
@@ -758,13 +823,13 @@ class OneStepPlanner:
 
     def _finish(self, processor, country, nodes, deadline=None, *, initial_units=None, played_card=None,
                 card_events=0, original_board=frozenset(), direct_removals=frozenset(), constructed=frozenset(),
-                recruited=frozenset(), recruitment_path=False):
+                recruited=frozenset(), recruitment_path=False, draw_economy=None):
         self._check_deadline(deadline)
         nodes[0] += 1
         if nodes[0] > self.evaluator.weights["max_simulation_nodes"]:
             raise SimulationIncomplete("Within-card choice budget exceeded; no partial score assigned")
         state = processor.state
-        card_events += self._card_events(processor, state, country, played_card)
+        card_events += self._card_events(processor, state, country, played_card, draw_economy)
         if original_board:
             direct_removals = direct_removals.union(
                 move["token_id"] for record in processor.records
@@ -778,6 +843,7 @@ class OneStepPlanner:
             effects["direct_removals"] = direct_removals
             new_units = [(record["operation_type"], move["token_id"]) for record in processor.records
                          if record["operation_type"] in CONSTRUCTION
+                         and not (self.evaluator.action_opportunity and record["outcome"]["context"].get("redeployed"))
                          for move in record["outcome"]["changes"] if move["to"] in processor.rules.regions
                          and state.tokens[move["token_id"]].token_type == "UNIT"]
             recruited = recruited.union(key for action, key in new_units if action == "RECRUIT")
@@ -807,7 +873,9 @@ class OneStepPlanner:
         # A port or route may first look unsupplied and then make a later action legal.
         if width and len(commands) > width and not (recruitment_path or recruited):
             view = client.observe(include_history=False)
-            if view["decision"].get("map_force") and not view["decision"]["map_battle"]:
+            if ((view["decision"].get("map_force") and not view["decision"]["map_battle"]) or
+                    (self.evaluator.action_opportunity and decision.continuation["type"] in (
+                        "REDEPLOY_SELECTED", "REBUILD_UNIT", "AIR_ACTION_SELECTED"))):
                 from .ai_match_policy import RulePolicy
                 ranked = RulePolicy(processor.rules, self.evaluator).rank(view, commands)
                 commands = [row["command"] for row in ranked[:width]]
@@ -819,7 +887,7 @@ class OneStepPlanner:
             value, trail = self._finish(branch, country, nodes, deadline, initial_units=initial_units,
                                         played_card=played_card, card_events=card_events, original_board=original_board,
                                         direct_removals=direct_removals, constructed=constructed, recruited=recruited,
-                                        recruitment_path=recruitment_path)
+                                        recruitment_path=recruitment_path, draw_economy=draw_economy)
             branches.append((value, [(command, signature), *trail]))
         if not branches:
             raise SimulationIncomplete("No legal continuation")

@@ -1,7 +1,8 @@
 """Value the nearest scoring sites using current, visible board routes."""
 from collections import Counter, defaultdict, deque
+import json
 
-from .content_effects import action_for, condition_met, target_regions
+from .content_effects import action_for, available_options, condition_met, target_regions
 from .definitions import BATTLES, CONSTRUCTION
 from .expansion_scoring import BUILD_CARDS, ConstructionNetwork, project_placement
 from .model import Token, canonical, zone
@@ -47,6 +48,7 @@ class ScoringRoutes:
         self.cache = {}
         self.target_scores = {}
         self.action_scores = {}
+        self.redeploy_scores = {}
         self.near_site_distances = {}
         self.attack_victims = {}
         self.removal_routes = {}
@@ -304,6 +306,73 @@ class ScoringRoutes:
         future = min(self.units.vp_score(self.frontier["paper_cap"]), self.frontier["paper_fraction"] * value)
         fixed = self.capture_value(force, region) if not battle and self.units.enabled else 0
         return fixed + future
+
+    def move_value(self, force, region, token_id=None):
+        old = self.state.tokens.get(token_id)
+        previous = self.position.value(force, old.position_id, excluded=token_id) if old else 0
+        return self.position.value(force, region, excluded=token_id) - previous
+
+    def redeploy_values(self, seat, token_id):
+        if token_id not in self.redeploy_scores:
+            force = self.state.tokens[token_id].owner_country
+            targets = LegalActionGenerator(self.rules).redeploy_targets(self.state, seat, token_id)
+            self.redeploy_scores[token_id] = {region: self.move_value(force, region, token_id) for region in targets}
+        return self.redeploy_scores[token_id]
+
+    def air_value(self, force, option):
+        action, token, region, victim = json.loads(option)
+        if action == "superiority":
+            return self.removal_value(victim) if victim else 0
+        return self.move_value(force, region, token)
+
+    def transfer_value(self, seat, op):
+        token = self.state.tokens.get(op["token"])
+        if token is None:
+            return None
+        destination = op["destination"]
+        if token.token_type == "SCORE_SOURCE":
+            targets = op.get("destinations", self.rules.regions) if destination == "$choice" else (destination,)
+            return max((self.position.source_move(seat, token, target) for target in targets), default=0)
+        if token.token_type == "CARD":
+            owner = token.owner_country
+            hand, discard = zone(owner, "HAND"), zone(owner, "DISCARD")
+            returned = (destination == zone(owner, "DECK") and token.position_id in (discard, hand) or
+                        token.position_id == discard and destination in (hand, zone(owner, "RESPONSE")))
+            if returned:
+                return self.units.card_score(1 if self.rules.team(owner) == self.rules.team(seat) else -1)
+        return None
+
+    def tactical_effect(self, seat, op, *, spent_card=None):
+        """Return the immediate map value for effects with concrete legal locations."""
+        from .air import air_options
+
+        effect = op.get("effect", {})
+        kind = effect.get("type", op["type"])
+        force = effect.get("force", op.get("force", seat))
+        force = seat if force == "self" else force
+        if kind == "TRANSFER":
+            return self.transfer_value(seat, op)
+        if kind == "choose-unit":
+            if not condition_met(self.rules, self.state, seat, effect.get("when")):
+                return 0
+            targets = available_options(self.rules, self.state, seat, effect)
+            return max((self.removal_value(key) * (1 if self.rules.team(self.state.tokens[key].owner_country)
+                        != self.rules.team(seat) else -1) for key in targets), default=0)
+        if kind == "air-action":
+            if not condition_met(self.rules, self.state, seat, effect.get("when")):
+                return 0
+            return max((self.air_value(force, option) for option in air_options(self.rules, self.state, seat, effect)),
+                       default=0)
+        if kind in ("REDEPLOY", "redeploy-armies"):
+            if (self.rules.force_controllers.get(force) != seat or
+                    not condition_met(self.rules, self.state, seat, effect.get("when"))):
+                return 0
+            return max((max(self.redeploy_values(seat, token.token_id).values(), default=0)
+                        for token in self.pieces if token.owner_country == force and
+                        self.rules.units[token.definition_id]["kind"] == "ARMY"), default=0)
+        if kind in CONSTRUCTION | BATTLES or kind in ("choose-space", "build", "recruit", "battle"):
+            return self.best_action_bonus(seat, op, spent_card=spent_card)
+        return None
 
     def best_action_bonus(self, seat, op, *, attack_premium=0, placement_base=0, spent_card=None):
         """Price a concrete, immediately available placement or battle from the observed board."""

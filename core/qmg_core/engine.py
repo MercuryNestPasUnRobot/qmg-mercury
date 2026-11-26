@@ -1107,9 +1107,7 @@ class CommandProcessor:
             force = s.tokens[token_id].owner_country
             force_args = {"force": force} if force != country else {}
             restart = {"type": "REDEPLOY", **force_args}
-            virtual = deepcopy(s)
-            self.executor.transfer(virtual, token_id, zone(force, "RESERVE_ARMY"), outcome("INTERNAL"))
-            targets = self.legal.targets(virtual, country, {"type": "BUILD_ARMY", **force_args})
+            targets = self.legal.redeploy_targets(s, country, token_id)
             if kind == "REDEPLOY_SELECTED":
                 if not targets:
                     f.processed_token_ids.append(token_id)

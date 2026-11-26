@@ -32,6 +32,8 @@ class ResponseForecast:
     def __init__(self, economy):
         self.economy, self.rules = economy, economy.rules
         self.units = economy.units
+        self.location_scoring = economy.map_weights.get("action_opportunity_scoring", False)
+        self.placement_base = 0 if self.location_scoring else self.units.action
         self.state = economy.visible_state()
         self.turn = self.state.turn
         self.active = TURN_ORDER[self.turn.country_index]
@@ -79,12 +81,12 @@ class ResponseForecast:
         distance = max(0, turns - 1) + (int(wraps) if self.active != owner else turns)
         return self.turn.round_id + distance <= self.rules.settings["max_rounds"]
 
-    def staging(self, owner, card_id):
+    def staging(self, owner, card_id, *, estimate_draw=True):
         card = self.rules.cards[card_id]
         rows = []
         for key in card.get("abilities", ()):
             ability = self.rules.abilities[key]
-            base = self.program(owner, ability, baseline=True)
+            base = self.program(owner, ability, baseline=True, estimate_draw=estimate_draw)
             turns = self.delay(owner, trigger_of(ability), card.get("legacy_kind"))
             cost = self.time_cost(turns)
             rows.append({"base": base, "wait_turns": turns, "time_cost": cost, "net": base - cost,
@@ -98,9 +100,10 @@ class ResponseForecast:
         return EconomicForecast(self.rules, self.economy.settings, vars(state.turn), state.scores,
                                 lambda seat, area: len(state.positions[zone(seat, area)]), lambda: state,
                                 state.winner, status_weights=self.economy.status_weights,
-                                map_weights=self.economy.map_weights, units=self.units)
+                                map_weights=self.economy.map_weights, units=self.units,
+                                hand_average=self.economy.hand_average)
 
-    def program(self, owner, ability, *, source=None, event=None, moves=(), baseline=False, economy=None):
+    def program(self, owner, ability, *, source=None, event=None, moves=(), baseline=False, economy=None, estimate_draw=True):
         economy = self.economy if economy is None else economy
         state = economy.visible_state()
         event = event or {}
@@ -115,6 +118,7 @@ class ResponseForecast:
         def effects_value(steps, current_economy):
             net = -self.units.card_score(cost)
             paid = set()
+            drawn = 0
             for index, step in enumerate(steps):
                 current_state = current_economy.visible_state()
                 op = step.get("operation", step)
@@ -124,7 +128,11 @@ class ResponseForecast:
                         net += self.units.vp_score(sign * op["amount"])
                     elif op["type"] in BATTLES | CONSTRUCTION:
                         net += current_economy.routes.best_action_bonus(owner, op,
-                            placement_base=self.units.action if op["type"] in CONSTRUCTION else 0)
+                            placement_base=self.placement_base if op["type"] in CONSTRUCTION else 0)
+                    elif op["type"] == "DRAW" and estimate_draw and current_economy.hand_average:
+                        count = op.get("count", 1)
+                        net += current_economy.draw_value(owner, count, drawn)
+                        drawn += count
                     elif op["type"] == "CANCEL":
                         net += self.defense_value(owner, ability, current_economy, event, baseline)
                     continue
@@ -196,7 +204,7 @@ class ResponseForecast:
                         if value > best:
                             best, placement = value, (victim.token_id, dest, False)
                 elif economy.routes.placement_supplied(force, region):
-                    value = self.units.action + economy.routes.target_value(force, region, construction=True)
+                    value = self.placement_base + economy.routes.target_value(force, region, construction=True)
                     if value > best:
                         key = state.positions[zone(force, "RESERVE_" + variant.upper())][0]
                         best, placement = value, (key, region, True)
@@ -223,7 +231,7 @@ class ResponseForecast:
             if effect.get("kind") == "same":
                 effect = {**effect, "kind": trigger_of(ability).get("kind", "either")}
             return economy.routes.best_action_bonus(owner, {"type": "CARD_EFFECT", "effect": effect},
-                                                    placement_base=0 if kind == "battle" else self.units.action)
+                                                    placement_base=0 if kind == "battle" else self.placement_base)
         if kind in ("prevent-removal", "protect-unit-this-turn"):
             return self.defense_value(owner, ability, economy, event, baseline)
         if kind in ("eliminate-built-unit", "eliminate-air-superiority-attacker"):
@@ -239,6 +247,8 @@ class ResponseForecast:
                         state.tokens[key].position_id in rules.regions and
                         rules.team(state.tokens[key].owner_country) != rules.team(owner)), default=0)
         if kind == "air-action":
+            if self.location_scoring:
+                return economy.routes.tactical_effect(owner, {"type": "CARD_EFFECT", "effect": effect})
             options = [json.loads(command) for command in air_options(rules, state, effect.get("chooser", owner), effect)]
             return max((economy.routes.removal_value(victim) if victim else
                        (self.units.action if action in ("deploy", "marshal") else 0)
