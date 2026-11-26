@@ -7,9 +7,7 @@ from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, zone
 from .regional_sites import active_hidden_sites
 from .rules import MapGraph, RuleModifierResolver
-
-
-STANDARD_SITE_VP = 2
+from .score_units import STANDARD_SITE_VP
 
 
 class ActionDistanceScoring:
@@ -69,17 +67,17 @@ class ActionDistanceScoring:
         if key not in self.bases:
             seat = self.rules.force_controllers[force]
             team = self.rules.team(force)
-            cap = self.units.vp_score(vp * self.scoring_rounds(seat))
+            cap = self.units.site_score(vp * self.scoring_rounds(seat))
             # The occupying move has already cleared hostile units on the site itself.
             nearest = min((self.distances(t.owner_country, t.position_id).get(region, inf) + distance_offset
                            for t in self.pieces if t.position_id != region and self.rules.team(t.owner_country) != team),
                           default=inf)
-            initial = self.units.vp_score(vp * self.units.capture_rounds)
-            self.bases[key] = max(0, min(cap, initial + self.units.action_score(nearest - 1)))
+            initial = self.units.site_score(vp * self.units.capture_rounds)
+            self.bases[key] = cap if nearest == inf else max(0, min(cap, initial + self.units.distance_score(nearest - 1)))
         return self.bases[key]
 
     def distance_value(self, base, distance):
-        return max(0, base - self.units.action_score(distance))
+        return 0 if distance == inf else max(0, base - self.units.distance_score(distance))
 
     def proportional_base(self, force, region, vp, *, distance_offset=0):
         return self.capture(force, region, STANDARD_SITE_VP, distance_offset=distance_offset) * vp / STANDARD_SITE_VP
@@ -137,7 +135,7 @@ class ActionDistanceScoring:
                 base = self.site_base(force, end, site, distance_offset=distance_offset)
                 if base <= 0:
                     continue
-                value = base - self.units.action_score(penalty * distance)
+                value = base - self.units.distance_score(penalty * distance)
                 if value >= 0:
                     routes.append((distance, site, end, value))
         # Multiple physical copies of the same score source still represent one site.

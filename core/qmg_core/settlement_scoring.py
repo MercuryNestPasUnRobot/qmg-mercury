@@ -37,7 +37,7 @@ class PositionValue:
 class SettlementScorer:
     def __init__(self, units, expansion_vp=0, *, location_weights=None, economy_factory=None):
         self.units = units
-        self.expansion_vp = expansion_vp
+        self.expansion_value = units.linked("expansion", units.vp_score(expansion_vp))
         self.location_weights = location_weights
         self.economy_factory = economy_factory
 
@@ -191,11 +191,11 @@ class SettlementScorer:
         removal = 0.0
         if initial_units is not None:
             surviving_ids = {key for key, _ in survivors}
-            removal = self.units.action_score(-sum(sign(owner) for key, owner in initial_units.items()
-                                                   if key not in surviving_ids))
+            removal_unit = self.units.linked("unit_removal", self.units.action)
+            removal = -removal_unit * sum(sign(owner) for key, owner in initial_units.items() if key not in surviving_ids)
             # A resolved attack still removed a unit even if that unit had no durable value.
-            tactical = self.units.action_score(-sum(sign(state.tokens[key].owner_country) for key in direct_removals
-                                                     if key not in initial_units and key not in still_on_board))
+            tactical = -removal_unit * sum(sign(state.tokens[key].owner_country) for key in direct_removals
+                                           if key not in initial_units and key not in still_on_board)
             removal += tactical
             stock += removal if self.location_weights else tactical
         site_values = defaultdict(float)
@@ -217,9 +217,10 @@ class SettlementScorer:
             rates.update(self.status_points(rules, snapshot, seat, listeners.get(seat)))
             for site, amount in rates.items():
                 if self.location_weights and site in rules.sites:
-                    next_income[site, rules.team(seat)] += self.units.vp_score(amount)
+                    next_income[site, rules.team(seat)] += self.units.site_score(amount)
                 else:
-                    site_values[site] += sign(seat) * self.units.vp_score(amount)
+                    value = self.units.site_score(amount) if site.startswith("hidden:") else self.units.vp_score(amount)
+                    site_values[site] += sign(seat) * value
         air_support = 0
         if self.location_weights and not state.winner:
             from .map_influence import ScoringRoutes
@@ -250,11 +251,11 @@ class SettlementScorer:
             site_values[site] += value if team == own else -value
         points = tuple({"site": site, "value": value} for site, value in site_values.items())
         expansion = ()
-        if self.expansion_vp and constructed and not state.winner:
+        if self.expansion_value and constructed and not state.winner:
             origins = {t.position_id for t in pieces if t.token_id in constructed and t.owner_country == country}
             if origins:
                 expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
-        expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
+        expansion_score = len(expansion) * self.expansion_value
         settled_ids = {t.token_id for t in pieces}
         vanished_placements = (set(constructed) | set(recruited)) - settled_ids - landed.keys()
         if self.units.supply_stability:
@@ -263,7 +264,7 @@ class SettlementScorer:
         stability_pieces = [t for t in board if t.token_id not in vanished_placements]
         stability = (SupplyStability(rules, stability_state, self.units.supply_stability, pieces=stability_pieces).value(country)
                      if not state.winner else 0)
-        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp) + air_support + stability
+        map_value = stock + sum(site_values.values()) + expansion_score + self.units.site_score(temporary_vp) + air_support + stability
         resources = 0
         if self.economy_factory and not state.winner:
             economy = self.economy_factory(rules, state)

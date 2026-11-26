@@ -3,9 +3,11 @@ import pytest
 from conftest import card, make, move_initial
 from qmg_core import CoreAPI, ScoreEvaluator
 from qmg_core.ai_match_policy import CandidateView, RulePolicy
+from qmg_core.api import simulation_from_observation
 from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER, zone
+from qmg_core.operations import ScoreResolver
 from test_ai_match import forecast_search_profile, profile
 from test_hand_retention import hand_only, reach_discard
 from test_status_scoring import scoring_status
@@ -51,6 +53,30 @@ def test_configurable_action_value_changes_the_reach(data):
     assert position.site_values("germany", "T")["C"] == (4, 0)
 
 
+def test_full_site_override_drives_half_sites_a_b_and_response_wait_without_changing_vp(data):
+    map_with_sites(data, [("A", "E")], ("A",))
+    data["score_sites"][0]["countries"] = ["germany"]
+    data["score_sites"].append({**data["score_sites"][0], "id": "half", "vp": 1, "scoring": "per-unit"})
+    data["settings"]["supply_revision"] = 2
+    move_initial(data, "united-kingdom-army-0", "E")
+    game = make(data)
+    weights = profile()
+    weights["scoring_units"].update(vp=3, action=7)
+    weights["scoring_overrides"] = {"full_site_round": 5, "distance_step": 0}
+    scorer = ScoreEvaluator(game.rules, weights)
+    view = CoreAPI(game, ("germany",)).observe()
+    economy = scorer.economic_from_view(view)
+    position = economy.routes.position
+    assert position.site_base("germany", "A", "A") == 10
+    assert position.site_base("germany", "A", "half") == 5
+    assert position.distance_value(10, 2) == 10
+    assert economy.responses.time_cost(2) == 10
+    projected = simulation_from_observation(game.rules, view, search_projection=True)
+    income = {row["site"]: row["value"] for row in scorer.settlement.value(projected, "germany").score_points}
+    assert income == {"A": 10, "half": 5}
+    assert ScoreResolver(game.rules).sites(game.state, "germany") == {"A": 2, "half": 1}
+
+
 def test_allied_unit_on_site_or_closer_along_path_is_charged_once(data):
     map_with_sites(data, [("A", "B"), ("B", "C"), ("B", "D"), ("C", "E"), ("C", "F"), ("F", "D")],
                    ("C", "D"))
@@ -87,6 +113,13 @@ def test_both_a_and_b_credit_one_action_for_a_certain_removal(data):
     assert row["complete"] and row["map_delta"] == row["unit_removal_score"] == 2
     assert row["q"] == 0 and row["action_cost"] == -2
     assert row["continuations"][0]["option"] == "B"
+    weights = profile()
+    weights["scoring_overrides"] = {"unit_removal": 4, "play_opportunity": 1}
+    row_a, = RulePolicy(game.rules, ScoreEvaluator(game.rules, weights)).rank(view, [battle])
+    row_b, = OneStepPlanner(game.rules, weights).rank(CandidateView(view, [battle]), "germany")
+    assert row_a["rule_score"] == row_b["q"] == 3
+    assert row_a["action_cost"] == row_b["action_cost"] == -1
+    assert row_b["unit_removal_score"] == 4
 
 
 def test_status_uses_visible_attacks_with_a_floor_of_one_times_gain_less_payment(data):

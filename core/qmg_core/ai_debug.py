@@ -19,6 +19,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from .ai_debug_worker import read_json, timestamp, write_json
+from .score_units import LINKED_SCORES
 
 
 CORE = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.25": ("v1.25 · 持续规则与补给", "9aeaa3f3de6b50576415eee7513fecbcf3541b3f", DISCARD_CATALOG),
     "v1.24": ("v1.24 · 就绪能力时机", "872d7720e5dd3391a63ae5061baef690465051e3", DISCARD_CATALOG),
     "v1.23": ("v1.23 · 弃牌与过牌", "173dd0ebe51561fed8a4b5dd70a1fb3e581025e8", DISCARD_CATALOG),
     "v1.22": ("v1.22 · 行动机会与落点", "7f748bb278e3eb0bc292576f98cd317a001c9a07", DISCARD_CATALOG),
@@ -77,12 +79,47 @@ LABELS = {
     "arrival_nearby": "邻近地区的进驻比例", "request_discard_card_value": "要求每弃一张的估值",
     "filter_card_value": "每张滤牌估值", "rule_option_multiplier": "规则增加落点的折算",
     "rule_option_decay": "次优落点衰减", "rule_option_limit": "规则落点上限",
+    "exchange_discard_base": "调配从弃牌区取牌比例", "exchange_discard_deck_bonus": "调配从弃牌区取牌的牌库修正",
 }
 INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "horizon", "construction_search_width",
            "max_simulation_nodes", "status_forecast.extra_trigger_opportunities", "status_forecast.projected_distance_offset",
            "status_forecast.condition_horizon", "status_forecast.unknown_hand_scale", "status_forecast.rule_option_limit"}
 LEGACY_CARD_VALUES = {"REDEPLOY", "DRAW", "GAIN_VP", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE"}
 LEGACY_MAP_GROUPS = {"distance_weights", "frontier_scoring"}
+RETIRED_GROUPS = {"supply_weights", "military_weights", "resource_penalties", "hand_retention"}
+RETIRED_FIELDS = {
+    "expansion_weight", "threat_weight", "saturation", "horizon",
+    *(f"route_forecast.{key}" for key in ("distance_tail_decay", "friendly_unit", "enemy_unit")),
+    *(f"economic_forecast.{key}" for key in ("vp_pressure_bonus", "closeout_bonus", "deck_top_look")),
+    *(f"status_forecast.{key}" for key in (
+        "condition_safe", "condition_threatened", "condition_horizon", "arrival_accessible", "arrival_nearby",
+        "known_action_likelihood", "keyword_draw_likelihood", "action_draw_likelihood", "unknown_hand_likelihood_cap",
+        "unknown_hand_scale", "own_activity_likelihood", "enemy_activity_likelihood", "discard_activity_likelihood",
+        "rule_option_multiplier", "rule_option_decay", "rule_option_limit", "economic_target_share", "filter_card_value")),
+    *(f"card_value_weights.{key}" for key in LEGACY_CARD_VALUES | {"ability_ready", "CHOOSE", "TRANSFER"}),
+    *(f"effect_value_weights.{key}" for key in (
+        "points", "build", "recruit", "choose-space", "battle", "choose-unit", "air-action", "discard-status")),
+}
+LINK_LABELS = {
+    "full_site_round": "全分点每轮收益／响应每轮等待成本",
+    "distance_step": "地图每格距离的估值",
+    "unit_removal": "移除单位的基础收益",
+    "unknown_protection": "防移除估值（地点未知）",
+    "play_opportunity": "出牌和空军的行动成本",
+    "expansion": "每个可达分点的扩张偏好",
+    "basic_discard": "基础牌已用比例的弃置成本",
+    "extra_draw": "每张额外过牌的起值",
+    "card_return": "每张牌的回收估值",
+    "future_shortfall": "每 1 VP 未来缺牌损失的估值",
+    "requested_discard": "每张被要求弃牌的预估收益",
+    "forced_discard": "无可出牌时强制弃牌的预估成本",
+    "exchange_saved_payment": "调配少弃一张的预估收益",
+    "alternative_status_play": "状态牌替代常规出牌的估值",
+    "play_from_zone_rule": "从指定区域出牌（纸面兜底）",
+    "play_from_zone_hand": "从指定区域出牌（手牌兜底）",
+    "search_deck_rule": "搜索牌库（纸面兜底）",
+    "search_deck_hand": "搜索牌库（手牌兜底）",
+}
 TERMINAL = {"completed", "stopped", "failed", "interrupted"}
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
 
@@ -95,6 +132,7 @@ class RequestError(ValueError):
 
 def numeric_fields(weights, *, inactive=False):
     fields = []
+    modern = "scoring_overrides" in weights
 
     def visit(value, path):
         if isinstance(value, (dict, list)):
@@ -103,11 +141,17 @@ def numeric_fields(weights, *, inactive=False):
         elif type(value) in (int, float):
             key = ".".join(map(str, path))
             last = path[-1]
+            legacy_map = weights.get("action_distance_scoring") is True and path[0] in LEGACY_MAP_GROUPS
+            retired = legacy_map or (modern and (path[0] in RETIRED_GROUPS or key in RETIRED_FIELDS))
+            if retired != inactive:
+                return
             group = GROUPS.get(path[0], "搜索设置" if "width" in key or key == "max_simulation_nodes" else "通用估值")
             if weights.get("action_opportunity_scoring") and path[0] == "card_value_weights" and last in LEGACY_CARD_VALUES:
                 group = "旧版牌效估值（当前主线已替代）"
             if weights.get("marginal_opportunity_scoring") and (path[0] == "hand_retention" or key == "economic_forecast.deck_top_look"):
                 group = "旧版估值（当前主线已替代）"
+            if modern and path[0] in ("card_value_weights", "effect_value_weights"):
+                group = "独立牌效兜底"
             label = f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last)
             if weights.get("known_ability_scoring") and key == "status_forecast.extra_trigger_opportunities":
                 label = "基础牌相关能力的最低预计次数"
@@ -115,13 +159,20 @@ def numeric_fields(weights, *, inactive=False):
                 "label": label, "group": group})
 
     for group, value in weights.items():
-        legacy_map = weights.get("action_distance_scoring") is True and group in LEGACY_MAP_GROUPS
-        if legacy_map == inactive:
+        if group != "scoring_overrides":
             visit(value, (group,))
     return fields
 
 
-def edited_weights(weights, updates):
+def linked_fields(weights):
+    if "scoring_overrides" not in weights:
+        return []
+    return [{"key": key, "label": LINK_LABELS[key], "base": f"scoring_units.{base}", "unit_label": LABELS[base],
+             "multiplier": multiplier, "coefficient": coefficient}
+            for key, (base, multiplier, coefficient) in LINKED_SCORES.items()]
+
+
+def edited_weights(weights, updates, *, overrides=None):
     if not isinstance(updates, dict):
         raise RequestError("评分参数必须是一组数值。")
     permitted = {field["key"]: field for field in numeric_fields(weights)}
@@ -141,6 +192,17 @@ def edited_weights(weights, updates):
         for part in parents:
             node = node[part]
         node[leaf] = value
+    if overrides is not None:
+        if not isinstance(overrides, dict):
+            raise RequestError("覆盖值必须是一组数值。")
+        permitted_overrides = {field["key"]: field["label"] for field in linked_fields(weights)}
+        for key, value in overrides.items():
+            if key not in permitted_overrides:
+                raise RequestError("此版本没有该评分覆盖项。")
+            if type(value) not in (int, float) or not isfinite(value) or not 0 <= value <= 1e6:
+                raise RequestError(f"{permitted_overrides[key]}的数值无效。")
+        if "scoring_overrides" in edited:
+            edited["scoring_overrides"] = dict(overrides)
     return edited
 
 
@@ -203,7 +265,8 @@ class VersionRegistry:
         return [{k: row[k] for k in ("id", "label", "commit", "pinned")} | {
             "catalog": "本地六席卡库" if row["catalog"] else "合成测试场景",
             "inactive_fields": [field["key"] for field in numeric_fields(row["defaults"], inactive=True)],
-            "fields": numeric_fields(row["defaults"])} for row in self.options.values()]
+            "fields": numeric_fields(row["defaults"]), "linked_fields": linked_fields(row["defaults"])}
+            for row in self.options.values()]
 
 
 def complete_lines(path):
@@ -305,7 +368,8 @@ class DebugPanel:
             old = previous[team] if previous else None
             base = old["weights"] if old and old["version"] == version else option["defaults"]
             configs[team] = {"version": version, "label": option["label"], "commit": option["commit"],
-                             "policy": policy, "weights": edited_weights(base, config.get("values", {}))}
+                             "policy": policy, "weights": edited_weights(base, config.get("values", {}),
+                                                                          overrides=config.get("overrides"))}
         return configs
 
     def policy_paths(self, configs):

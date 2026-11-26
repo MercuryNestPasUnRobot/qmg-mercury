@@ -59,7 +59,7 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
                             for token in available_options(economy.rules, state, seat, effect)), default=0)
             if kind == "battle":
                 return (economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect})
-                        if frontier else units.action)
+                        if frontier else units.linked("unit_removal", units.action))
             if kind == "battle-series":
                 state = economy.visible_state()
                 targets = available_options(economy.rules, state, seat, effect)
@@ -67,7 +67,7 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
                                  if economy.rules.team(state.tokens[token].owner_country) != team), reverse=True)
                 return sum(values[:effect["max"]])
             if kind in ("eliminate-built-unit", "eliminate-air-superiority-attacker"):
-                return units.action
+                return units.linked("unit_removal", units.action)
     if kind == "points":
         return effect["amount"] * operation_priority("GAIN_VP", units) * (1 if effect["side"] in ("self", team) else -1)
     if kind == "choose-one":
@@ -85,10 +85,12 @@ def effect_priority(effect, team, economy=None, seat=None, *, closeout=False, fr
     value = EFFECT_PRIORITY.get(kind, 0.2)
     if action:
         value = operation_priority(action, units)
-    elif kind in ACTION_SUPPORT_EFFECTS or kind in ("air-action", "battle-series", "play-from-zone"):
+    elif kind == "play-from-zone":
+        value = units.linked("play_from_zone_rule", units.action_score(value / 2))
+    elif kind in ACTION_SUPPORT_EFFECTS or kind in ("air-action", "battle-series"):
         value = units.action_score(value / 2)
     elif kind == "search-deck":
-        value = units.card_score(value)
+        value = units.linked("search_deck_rule", units.card_score(value))
     if frontier and kind in ("choose-space", "recruit", "build", "battle"):
         if action in CONSTRUCTION and economy.routes.conservative_placement:
             return economy.routes.best_action_bonus(seat, {"type": "CARD_EFFECT", "effect": effect},
@@ -356,7 +358,8 @@ class RulePolicy:
         sources = decision.get("response_sources", {})
         if economy and self.evaluator.action_distance and "return_discard_cost" in decision:
             cost = decision["return_discard_cost"]
-            return self.units.card_score(1 - cost) if option == "return" else 0
+            returned = self.units.linked("card_return", self.units.card)
+            return returned - self.units.card_score(cost) if option == "return" else 0
         if sources and economy and economy.status_weights:
             key = decision.get("response_abilities", {}).get(option)
             source = view["tokens"].get(sources.get(option))
@@ -624,7 +627,7 @@ class RulePolicy:
                 if command["type"] == "ACTIVATE_CARD" and row["rule_score"] > 0:
                     row["immediate_response"] = True
             if (command["type"] == "CHOOSE" and key in region_scores and decision.get("map_force") and
-                    not decision["map_battle"] and economy and economy.routes.expansion_vp):
+                    not decision["map_battle"] and economy and economy.routes.expansion_value):
                 region = key.split("|", 1)[-1]
                 row["expansion"] = economy.routes.expansion(decision["map_force"], region)
         # Canonical tie-breaks also apply to own permitted choices out of the deck.

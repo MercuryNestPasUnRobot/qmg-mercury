@@ -251,13 +251,13 @@ class ScoreEvaluator:
 
     def action_cost(self, kind, phase):
         if self.action_opportunity and (kind == "USE_AIR" or (phase == "Play" and kind in PLAY_OPPORTUNITY_COMMANDS)):
-            return self.units.action
+            return self.units.linked("play_opportunity", self.units.action)
         return 0
 
     def basic_discard_cost(self, view, seat, card):
         kind = card.get("legacy_kind")
         use = view.get("basic_card_use", {}).get(seat, {}).get(kind)
-        weight = self.units.card_score(self.weights.get("basic_usage_cost", 0))
+        weight = self.units.linked("basic_discard", self.units.card_score(self.weights.get("basic_usage_cost", 0)))
         return weight * use["played"] / use["total"] if use else 0.0
 
     def short_term(self, rules, state, country, card, legal, economy, *, estimate_draw=True):
@@ -560,9 +560,13 @@ def effect_potential(rules, state, seat, effect, weights, economy=None, *, units
         action = equivalent_action(effect, seat)
         if action and native_weights and action in native_weights:
             return units.action_score(native_weights[action] / 2)
-        if kind in ACTION_SUPPORT_EFFECTS or kind in ("battle-series", "battle", "air-action", "play-from-zone"):
+        if kind == "play-from-zone":
+            return units.linked("play_from_zone_hand", units.action_score(estimate / 2))
+        if kind == "search-deck":
+            return units.linked("search_deck_hand", units.card_score(estimate))
+        if kind in ACTION_SUPPORT_EFFECTS or kind in ("battle-series", "battle", "air-action"):
             return units.action_score(estimate / 2)
-        if kind in ("search-deck", "recover-discard"):
+        if kind == "recover-discard":
             return units.card_score(estimate)
     return estimate
 
@@ -833,7 +837,8 @@ class OneStepPlanner:
                 count = sum(move["from"] == zone(actor, "DECK") and move["to"] == zone(actor, "HAND")
                             for move in outcome["changes"])
                 if count:
-                    adjustment = count * draw_economy.cycle_value(actor, count)["hand_average"]
+                    cycle = draw_economy.cycle_value(actor, count)
+                    adjustment = count * self.evaluator.units.card - cycle["cycle_score"]
                     # The settled card stock already includes the full value of every drawn card.
                     result -= (1 if rules.team(actor) == team else -1) * adjustment
             if outcome["event"] == "ORDER_DECK":
@@ -862,8 +867,14 @@ class OneStepPlanner:
                 rearms = origin == zone(owner, "DISCARD") and destination == zone(owner, "RESPONSE")
                 goes_back_to_hand = (token.token_id == played_card and origin == "RESOLUTION" and
                                      destination == zone(owner, "HAND"))
+                recovered = origin == zone(owner, "DISCARD") and destination == zone(owner, "HAND")
+                card_unit = self.evaluator.units.card
+                return_value = self.evaluator.units.linked("card_return", card_unit)
+                sign = 1 if rules.team(owner) == team else -1
                 if returns_to_deck or rearms or goes_back_to_hand:
-                    result += self.evaluator.units.card_score(1 if rules.team(owner) == team else -1)
+                    result += sign * return_value
+                elif recovered:
+                    result += sign * (return_value - card_unit)  # Recovered cards are already included in stock.
         return result
 
     @staticmethod
@@ -912,7 +923,7 @@ class OneStepPlanner:
             if self.evaluator.weights.get("known_ability_scoring"):
                 airdrops = {**(airdrops or {}), **self._settled_airdrops(processor, state)}
                 effects["airdrops"] = airdrops
-            if self.evaluator.settlement.expansion_vp or self.evaluator.units.supply_stability is not None:
+            if self.evaluator.settlement.expansion_value or self.evaluator.units.supply_stability is not None:
                 constructed = constructed.union(key for _, key in new_units)
                 effects["constructed"] = constructed
         if state.winner:
