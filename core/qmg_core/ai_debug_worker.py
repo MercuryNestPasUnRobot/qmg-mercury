@@ -55,6 +55,57 @@ def decision_names(rules, row):
     return names
 
 
+def token_label(rules, token):
+    definition = token["definition_id"]
+    if token["token_type"] == "UNIT":
+        return {"force": token["owner_country"], "unit": rules.units[definition]["kind"]}
+    return {"name": rules.cards[definition].get("title", definition)}
+
+
+def board_snapshot(rules, view, number, step):
+    from qmg_core.model import TURN_ORDER, zone
+
+    points = {}
+    for site in rules.sites.values():
+        if not site.get("dynamic"):
+            region = site["region"]
+            points[region] = points.get(region, 0) + site["vp"]
+
+    def tokens_at(position, kind):
+        for token_id in view["positions"].get(position, {}).get("tokens", ()):
+            token = view["tokens"][token_id]
+            if token["token_type"] == kind:
+                yield token_label(rules, token)
+
+    return {"game": number, "step": step, "scores": view["scores"],
+            "forces": {seat: force.get("name", seat) for seat, force in rules.auxiliary_forces.items()},
+            "regions": {key: {"name": region.get("name", key), "type": region["type"],
+                              "vp": points.get(key, 0), "units": list(tokens_at(key, "UNIT"))}
+                        for key, region in rules.regions.items()},
+            "seats": {seat: {kind: list(tokens_at(zone(seat, kind), "CARD"))
+                             for kind in ("HAND", "STATUS", "DISABLED_STATUS", "RESPONSE")}
+                      for seat in TURN_ORDER}}
+
+
+def settlement(rules, records, before, after):
+    events = []
+    for record in records:
+        outcome = record["outcome"]
+        moves = []
+        for change in outcome["changes"]:
+            token_id = change["token_id"]
+            token = after["tokens"].get(token_id) or before["tokens"].get(token_id)
+            if token and token["token_type"] in ("CARD", "UNIT"):
+                moves.append({"from": change["from"], "to": change["to"], **token_label(rules, token)})
+        events.append({"type": record["operation_type"], "actor": record["actor"], "moves": moves,
+                       "scores": outcome["score_changes"], "ok": outcome["success"],
+                       "reason": outcome["context"].get("reason")})
+    decision = after["decision"]
+    return {"events": events, "scores_before": before["scores"], "scores_after": after["scores"],
+            "awaiting": {key: decision[key] for key in ("required_country", "decision_type")} if decision else None,
+            "winner": after["winner"]}
+
+
 class DebugRun:
     def __init__(self, directory, rules):
         self.directory = directory
@@ -100,7 +151,7 @@ class DebugRun:
             if request["action"] == "stop":
                 self.publish(state="stopped", control_revision=request["revision"], ended_at=timestamp())
                 return False
-            if request["revision"] != self.progress["control_revision"] or (self.search is None and not self.error):
+            if request["revision"] != self.progress["control_revision"]:
                 if request["weights"] != self.weights or self.search is None:
                     try:
                         self.install_weights(request["weights"])
@@ -111,8 +162,11 @@ class DebugRun:
                 else:
                     self.error = None
                 self.publish(control_revision=request["revision"], error=self.error,
-                             state="paused" if request["action"] == "pause" or self.error else "running")
+                             state="paused" if request["action"] == "pause" or self.error else
+                             "stepping" if request["action"] == "step" else "running")
             if self.progress["state"] != "paused":
+                if self.search is None:
+                    self.install_weights(self.weights)
                 return True
             sleep(0.1)
 
@@ -123,13 +177,15 @@ class DebugRun:
 
         self.publish(match={"number": number, "seed": seed, "search_team": side}, step=0, round=1,
                      phase="Setup", country=None, scores={"axis": 0, "allies": 0})
-        if not self.before_decision():
-            return False
         started = perf_counter()
         game_id = f"{self.meta['id']}-{number}"
         processor = CommandProcessor.create(self.rules, seed=seed, game_id=game_id)
         clients = {seat: CoreAPI(processor, (seat,)) for seat in TURN_ORDER}
-        view = CoreAPI(processor, ()).observe(include_history=False)
+        # The local judge publishes a separate display. Policies only receive their own seats.
+        judge = CoreAPI(processor, TURN_ORDER)
+        view = judge.observe(include_history=False)
+        board_file = self.directory / f"board-{number}.json"
+        write_json(board_file, board_snapshot(self.rules, view, number, 0))
         with (self.directory / f"game-{number}.jsonl").open("x", encoding="utf-8", buffering=1) as stream:
             while not view["winner"]:
                 turn = view["turn"]
@@ -142,14 +198,24 @@ class DebugRun:
                     raise CoreError("本局超过 10000 步，已保留调试日志。")
                 client = clients[actor]
                 command, row = self.policies[actor].decide(client, actor)
-                view = client.submit(command, include_history=False)
+                before = view
+                cursor = len(processor.records)
+                client.apply(command)
+                view = judge.observe(include_history=False)
                 step = self.progress["step"] + 1
                 row.update(decision_index=step, policy="B" if self.rules.team(actor) == side else "A",
                            active_country=active, seed=seed, game_id=game_id, names=decision_names(self.rules, row),
                            weights_revision=self.progress["weights_revision"], weights_digest=digest(self.weights),
-                           scores=view["scores"])
+                           scores=view["scores"], settlement=settlement(self.rules, processor.records[cursor:], before, view))
                 log_row(stream, row)
-                self.publish(step=step, scores=view["scores"])
+                write_json(board_file, board_snapshot(self.rules, view, number, step))
+                result = {"step": step, "scores": view["scores"], "round": view["turn"]["round_id"],
+                          "phase": view["turn"]["phase"], "country": view["decision"]["required_country"] if
+                          view["decision"] else TURN_ORDER[view["turn"]["country_index"]]}
+                if self.progress["state"] == "stepping":
+                    result.update(state="paused", last_step={"game": number, "step": step,
+                                                               "revision": self.progress["control_revision"]})
+                self.publish(**result)
         with (self.directory / "games.jsonl").open("a", encoding="utf-8") as stream:
             log_row(stream, {**self.progress["match"], "winner": view["winner"], "scores": view["scores"],
                 "steps": self.progress["step"], "record_head": processor.record_head,
@@ -165,6 +231,8 @@ class DebugRun:
             while self.match(number, seed, side):
                 if self.meta["mode"] == "single" or (self.meta["mode"] == "paired" and number == 2):
                     self.publish(state="completed", ended_at=timestamp())
+                    break
+                if not self.before_decision():
                     break
                 # New games get fresh plans, even when the scoring weights are unchanged.
                 self.search.close()

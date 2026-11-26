@@ -155,8 +155,8 @@ def replay_game(rules, game, path):
 
 
 def page(title, body, payload=None):
-    style = (ASSETS / "replay.css").read_text(encoding="utf-8")
-    script = (ASSETS / "replay.js").read_text(encoding="utf-8")
+    style = (ASSETS / "board.css").read_text(encoding="utf-8") + (ASSETS / "replay.css").read_text(encoding="utf-8")
+    script = (ASSETS / "board.js").read_text(encoding="utf-8") + (ASSETS / "replay.js").read_text(encoding="utf-8")
     hash_source = lambda value: "'sha256-" + b64encode(sha256(value.encode("utf-8")).digest()).decode() + "'"
     data = ""
     if payload is not None:

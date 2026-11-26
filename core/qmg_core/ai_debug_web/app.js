@@ -6,12 +6,23 @@ const countries = {germany: "德国", "united-kingdom": "英国", japan: "日本
 const phases = {Setup: "开局", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "摸牌"};
 const teams = {axis: "轴心", allies: "同盟", draw: "平局"};
 const states = {idle: "待开始", starting: "准备中", running: "运行中", pause: "暂停中", paused: "已暂停",
+  step: "单步执行中", stepping: "单步执行中",
   stop: "停止中", run: "继续中", completed: "已完成", stopped: "已停止", failed: "出错", interrupted: "已中断"};
 const modes = {single: "单局", paired: "换边两局", continuous: "连续换边"};
 const actions = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "弃牌", FORFEIT_PLAY: "无牌可弃",
   CHOOSE: "选择", USE_STATUS: "发动状态牌", USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应"};
 const basic = {"build-army": "建设陆军", "build-navy": "建设海军", "land-battle": "发起陆战", "sea-battle": "发起海战"};
 const choices = {use: "发动", decline: "放弃", pass: "跳过", confirm: "确认", cancel: "取消", done: "完成"};
+const units = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};
+const zones = {HAND: "手牌", STATUS: "状态区", DISABLED_STATUS: "停用状态", RESPONSE: "响应区", DECK: "牌库",
+  DISCARD: "弃牌堆", RESOLUTION: "结算区", RESERVE_ARMY: "陆军预备区", RESERVE_NAVY: "海军预备区",
+  RESERVE_AIR: "空军预备区", OBJECT_POOL: "对象池", SET_ASIDE: "待命区"};
+const events = {...actions, TRANSFER: "移动对象", DRAW: "摸牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
+  DECISION_REQUESTED: "等待选择", DECISION_RESOLVED: "确认选择",
+  ABILITY_TRIGGERED: "触发响应", BEGIN_PHASE: "进入阶段", TURN_END: "回合结束", GAIN_VP: "获得 VP",
+  SCORE_COUNTRY: "据点计分", ELIMINATE: "移除单位", OBJECT_SETTLED: "对象结算完成", ACTIVATE_ABILITY: "发动能力",
+  CARD_EFFECT: "牌效果", BATTLE_DECLARED: "宣告战斗", COUNTRY_LOSS: "国家损失", RECRUIT: "征召",
+  LAND_BATTLE: "陆战", SEA_BATTLE: "海战", BUILD_ARMY: "建设陆军", BUILD_NAVY: "建设海军"};
 const reasons = {"hand-retention": "手牌保留", "deadline": "达到时限", "matched-exchange": "沿用调配方案",
   "matched-exchange-play": "沿用调配后的出牌", "matched-continuation": "沿用续步", "rules-only": "纸面评分",
   "response-timing": "响应时机", "only-legal-command": "唯一合法指令", "finished": "结算完成",
@@ -25,6 +36,7 @@ const app = {
   versions: new Map(), live: null, viewed: null, runId: "", game: 0, followGame: true,
   cursor: null, next: null, draft: new Map(), fields: new Map(), profile: null,
   pinnedRevision: "", pageKey: "", busy: false, refreshing: false,
+  board: null, boardKey: "", region: "", artReady: false, awaitingStep: null,
 };
 
 const number = n => typeof n === "number" ? n.toLocaleString("zh-CN", {maximumFractionDigits: 2}) : "—";
@@ -104,18 +116,20 @@ function renderControls() {
   const status = app.live?.status;
   const locked = Boolean(status);
   const paused = status?.state === "paused" && !status?.requested;
-  const pending = Boolean(status?.requested) || status?.state === "starting";
+  const pending = Boolean(status?.requested) || ["starting", "stepping"].includes(status?.state);
   $("primary").textContent = locked ? (paused ? "继续测试" : "暂停测试") : "开始测试";
   $("primary").disabled = app.busy || pending || !app.profile;
   $("stop").hidden = !locked;
   $("stop").disabled = app.busy || status?.requested === "stop";
+  $("step").hidden = !paused && ![status?.state, status?.requested].some(value => ["step", "stepping"].includes(value));
+  $("step").disabled = app.busy || !paused;
   for (const id of ["version", "seed", "mode", "team"]) $(id).disabled = locked || app.busy || !app.profile;
   const editable = (!locked || paused) && !app.busy && Boolean(app.profile);
   for (const input of app.fields.values()) input.disabled = !editable;
   $("reset").disabled = !editable;
   $("apply-area").hidden = !paused;
   $("apply").disabled = !paused || app.busy;
-  $("parameter-note").textContent = paused ? "应用后会保留当前局面。也可以修改后直接继续测试。" :
+  $("parameter-note").textContent = paused ? "修改后可直接单步执行或继续测试。" :
     "开跑前可以调整。对局中先暂停，再修改。";
   $("mode-note").textContent = {single: "本局结束后自动停止。", paired: "同一种子让 A、B 换边，两局后停止。",
     continuous: "同一种子换边两局，再用下一个种子继续，直到手动停止。"}[$("mode").value];
@@ -157,11 +171,135 @@ function setOptions(select, entries, value, empty) {
   select.disabled = !entries.length;
 }
 
+const forceName = key => countries[key] || app.board?.forces[key] || key;
+const tokenName = token => token.name || `${forceName(token.force)}${units[token.unit] || token.unit}`;
+
+function showCardZones() {
+  const cards = app.board?.seats[$("board-seat").value];
+  if (!cards) return;
+  const sections = [];
+  for (const [zone, heading] of [["HAND", "手牌"], ["STATUS", "状态牌"], ["RESPONSE", "响应牌"]]) {
+    const shown = zone === "STATUS" ? [...cards.STATUS, ...cards.DISABLED_STATUS.map(card => ({...card, disabled: true}))] : cards[zone];
+    const section = node("section", undefined, "card-zone");
+    section.append(node("h3", `${heading} · ${shown.length}`));
+    if (shown.length) {
+      const list = node("ul");
+      for (const card of shown) list.append(node("li", card.name + (card.disabled ? "（停用）" : "")));
+      section.append(list);
+    } else section.append(node("p", "空", "muted"));
+    sections.push(section);
+  }
+  $("card-zones").replaceChildren(...sections);
+}
+
+function showRegion() {
+  const region = app.board?.regions[app.region];
+  $("board-focus").textContent = region ? [region.name, region.vp ? `${region.vp} VP` : "",
+    region.units.length ? region.units.map(tokenName).join("、") : "空区"].filter(Boolean).join(" · ") :
+    "点击位置查看部队。";
+  for (const button of $("board-regions").querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.region === app.region));
+  }
+}
+
+function paintBoard() {
+  if (!app.board) return;
+  const regions = Object.entries(app.board.regions);
+  const anchored = regions.every(([key]) => Object.hasOwn(boardAnchors, key));
+  const printed = app.artReady && anchored;
+  const columns = Math.max(1, Math.ceil(Math.sqrt(regions.length * 2)));
+  const rows = Math.ceil(regions.length / columns);
+  $("board-art").hidden = !printed;
+  $("board-stage").classList.toggle("printed", printed);
+  $("board-regions").replaceChildren(...regions.map(([key, region], index) => {
+    const [x, y] = printed ? boardAnchors[key] : anchored ? [4 + world[key][0] * 6.55, 6 + world[key][1] * 11] :
+      [(index % columns + .5) * 100 / columns, (Math.floor(index / columns) + .5) * 100 / rows];
+    const button = node("button", undefined, `board-place ${region.type.toLowerCase()}`);
+    button.type = "button";
+    button.dataset.region = key;
+    button.style.left = `${x}%`;
+    button.style.top = `${y}%`;
+    button.title = [region.name, ...region.units.map(tokenName)].join(" · ");
+    button.setAttribute("aria-label", button.title);
+    button.addEventListener("click", () => { app.region = key; showRegion(); });
+    if (!printed) button.append(node("span", region.name, "board-place-name"));
+    if (region.units.length) {
+      const groups = new Map();
+      for (const token of region.units) {
+        const group = token.force + "/" + token.unit;
+        if (!groups.has(group)) groups.set(group, {token, count: 0});
+        groups.get(group).count++;
+      }
+      const pieces = node("span", undefined, "board-pieces");
+      for (const {token, count} of groups.values()) {
+        pieces.append(pieceIcon(token.unit, forceColors[token.force] || "#647769", tokenName(token) + " ×" + count, count));
+      }
+      button.append(pieces);
+    } else if (printed) button.append(node("span", undefined, "board-dot"));
+    return button;
+  }));
+  showRegion();
+}
+
+async function loadBoard() {
+  const detail = app.live || app.viewed;
+  const game = app.live?.status.match?.number || app.game;
+  const key = detail && game ? [detail.run.id, game, detail.status.step, Boolean(app.live)].join("/") : "";
+  if (key && key === app.boardKey) return;
+  const board = key ? await api(`/api/runs/${detail.run.id}/board?game=${game}`) : null;
+  if (app.busy || detail !== (app.live || app.viewed)) return;
+  app.board = board;
+  app.boardKey = board ? key : "";
+  $("board-detail").hidden = $("board-fit").hidden = !board;
+  $("board-wait").hidden = Boolean(board);
+  $("board-position").textContent = board ? `${app.live ? "实时局面" : "保留局面"} · 第 ${board.game} 局 · 第 ${board.step} 步` : "";
+  if (!board) {
+    $("board-wait").textContent = game ? "这一局暂无棋盘快照。" : "开始测试后显示地图和各国牌区。";
+    return;
+  }
+  const seats = Object.keys(board.seats);
+  const picker = $("board-seat");
+  setOptions(picker, seats.map(seat => [seat, forceName(seat)]), seats.includes(picker.value) ? picker.value : seats[0], "");
+  $("board-legend").replaceChildren(...Object.entries(forceColors).filter(([force]) => countries[force] || board.forces[force])
+    .map(([force, color]) => {
+      const label = node("span", forceName(force));
+      const swatch = node("i");
+      swatch.style.backgroundColor = color;
+      label.prepend(swatch);
+      return label;
+    }));
+  paintBoard();
+  showCardZones();
+}
+
 function commandName(command, row, plan) {
   const main = actions[command.type] || command.type;
   const key = command.card || command.option;
   const target = plan ? basic[plan.kind] || plan.kind : (row.names?.[key] || choices[key] || key);
   return target ? main + " · " + target : main;
+}
+
+function showSettlement(result) {
+  $("settlement").hidden = !result;
+  if (!result) return;
+  const position = key => {
+    if (!key) return "—";
+    const [seat, kind] = key.split(":");
+    return app.board?.regions[key]?.name || (kind ? `${forceName(seat)}${zones[kind] || kind}` : zones[key] || key);
+  };
+  const score = Object.entries(teams).filter(([team]) => team !== "draw")
+    .map(([team, name]) => `${name} ${result.scores_before[team]} → ${result.scores_after[team]} VP`);
+  if (result.awaiting) score.push(`等待${forceName(result.awaiting.required_country)}选择`);
+  if (result.winner) score.push(result.winner === "draw" ? "平局" : `${teams[result.winner]}获胜`);
+  $("settlement-meta").textContent = score.join(" · ");
+  $("settlement-events").replaceChildren(...result.events.map(event => {
+    const item = node("li");
+    const name = [forceName(event.actor), events[event.type] || event.type, event.ok ? "" : "未结算", event.reason].filter(Boolean);
+    item.append(node("strong", name.join(" · ")));
+    for (const move of event.moves) item.append(node("small", `${tokenName(move)} · ${position(move.from)} → ${position(move.to)}`));
+    for (const {team, amount} of event.scores) item.append(node("small", `${teams[team]} ${amount > 0 ? "+" : ""}${amount} VP`));
+    return item;
+  }));
 }
 
 function showDecision(row, button) {
@@ -190,7 +328,8 @@ function showDecision(row, button) {
       list.push(item);
     }
   }
-  $("decision-scores").replaceChildren(...list);
+  $("decision-scores").replaceChildren(...(list.length ? list : [node("li", "本步没有可比较的候选评分。", "muted")]));
+  showSettlement(row.settlement);
   $("decision-raw").textContent = JSON.stringify(row, null, 2);
 }
 
@@ -249,6 +388,7 @@ async function loadLog() {
     const cell = node("td");
     const button = node("button", String(row.decision_index), "step-link");
     button.type = "button";
+    button.dataset.step = row.decision_index;
     button.addEventListener("click", () => showDecision(row, button));
     cell.append(button);
     tr.append(cell, node("td", countries[row.country] || row.country), node("td", phases[row.phase] || row.phase),
@@ -256,6 +396,14 @@ async function loadLog() {
       node("td", number(row.elapsed_ms) + " ms", "timing"));
     return tr;
   }));
+  const step = app.awaitingStep?.target;
+  const row = step?.game === game && page.rows.find(row => row.decision_index === step.step);
+  if (row && app.awaitingStep.id === id) {
+    showDecision(row, $("steps").querySelector(`[data-step="${step.step}"]`));
+    app.awaitingStep = null;
+    $("decision-title").focus({preventScroll: true});
+    $("decision").scrollIntoView({block: "start"});
+  }
 }
 
 function acceptLive(detail) {
@@ -296,7 +444,17 @@ async function refresh() {
     }
     if (browsing === app.runId) {
       app.viewed = viewed || live;
+      const step = app.viewed?.status.last_step;
+      if (app.awaitingStep?.id === browsing && step?.revision > app.awaitingStep.previous && !app.awaitingStep.target) {
+        app.awaitingStep.target = step;
+        app.followGame = false;
+        app.game = step.game;
+        clearLog();
+      } else if (app.awaitingStep?.id === browsing && app.viewed?.status.error) {
+        app.awaitingStep = null;
+      }
       renderGameSelect();
+      await loadBoard();
       await loadLog();
     }
     renderControls();
@@ -324,7 +482,7 @@ function values() {
 async function act(action) {
   if (app.busy) return;
   const payload = {};
-  if (["start", "weights", "resume"].includes(action)) {
+  if (["start", "weights", "resume", "step"].includes(action)) {
     payload.values = values();
     if (!payload.values) return;
   }
@@ -340,13 +498,16 @@ async function act(action) {
   renderControls();
   message("");
   try {
+    const previous = app.live?.status.last_step?.revision || 0;
     const result = await api(url, payload);
-    if (action === "start") {
+    if (action === "start" || action === "step") {
       app.runId = result.run.id;
       app.followGame = true;
       app.game = 0;
       clearLog();
     }
+    if (action === "step") app.awaitingStep = {id: result.run.id, previous};
+    if (action === "resume") app.followGame = true;
     acceptLive(result);
     renderOverview();
   } catch (error) {
@@ -360,6 +521,15 @@ async function act(action) {
 
 $("primary").addEventListener("click", () => act(app.live ? (app.live.status.state === "paused" ? "resume" : "pause") : "start"));
 $("apply").addEventListener("click", () => act("weights"));
+$("step").addEventListener("click", () => act("step"));
+$("board-seat").addEventListener("change", showCardZones);
+$("board-fit").addEventListener("click", event => {
+  const fit = $("board-scroll").classList.toggle("fit");
+  event.target.setAttribute("aria-pressed", String(fit));
+  event.target.textContent = fit ? "恢复原尺寸" : "适应宽度";
+});
+$("board-art").addEventListener("load", () => { app.artReady = true; paintBoard(); });
+$("board-art").src = "/board-map.png";
 $("stop").addEventListener("click", () => act("stop"));
 $("reset").addEventListener("click", () => { syncFields($("version").value); renderControls(); });
 $("version").addEventListener("change", () => { syncFields($("version").value); renderControls(); });

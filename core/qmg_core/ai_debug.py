@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from copy import deepcopy
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
 from math import isfinite
@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+from threading import Lock
 from time import monotonic, sleep
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -23,6 +24,8 @@ from .ai_debug_worker import read_json, timestamp, write_json
 CORE = Path(__file__).resolve().parents[1]
 ROOT = CORE.parent
 ASSETS = Path(__file__).with_name("ai_debug_web")
+BOARD_ASSETS = Path(__file__).with_name("replay_web")
+BOARD_ART = ROOT / "local-content" / "replays" / "board" / "map.png"
 OUTPUT = ROOT / "local-content" / "ai-debug"
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
@@ -252,6 +255,12 @@ class DebugPanel:
         return {"run": read_json(directory / "run.json"), "status": self.status(directory),
                 "games": complete_lines(directory / "games.jsonl")}
 
+    def board(self, run_id, game):
+        try:
+            return read_json(self.directory(run_id) / f"board-{game}.json")
+        except FileNotFoundError:
+            return None
+
     def start(self, data):
         if self.active and self.active[1].poll() is None:
             raise RequestError("已有测试正在运行。请先结束它。", HTTPStatus.CONFLICT)
@@ -298,12 +307,12 @@ class DebugPanel:
             raise RequestError("请等当前测试停止。", HTTPStatus.CONFLICT)
         if request["action"] == "pause" and action == "pause":
             return self.detail(run_id)
-        if action in ("resume", "weights"):
+        if action in ("resume", "weights", "step"):
             if status["state"] != "paused" or "requested" in status:
-                raise RequestError("请等测试暂停后再修改参数。", HTTPStatus.CONFLICT)
+                raise RequestError("请等测试暂停后再修改参数或单步执行。", HTTPStatus.CONFLICT)
             default = self.versions.options[read_json(directory / "run.json")["version"]]["defaults"]
             request["weights"] = edited_weights(status.get("weights") or default, data.get("values", {}))
-        request.update(action={"pause": "pause", "resume": "run", "weights": "pause", "stop": "stop"}[action],
+        request.update(action={"pause": "pause", "resume": "run", "weights": "pause", "stop": "stop", "step": "step"}[action],
                        revision=request["revision"] + 1)
         write_json(directory / "control.json", request)
         return self.detail(run_id)
@@ -321,7 +330,11 @@ class DebugPanel:
 
 
 def handler_for(panel):
+    writes = Lock()
+
     class Handler(BaseHTTPRequestHandler):
+        timeout = 8
+
         def log_message(self, _format, *_args):
             return
 
@@ -361,20 +374,27 @@ def handler_for(panel):
                     if not isinstance(data, dict):
                         raise RequestError("请求格式有误。")
                     if parts == ["api", "runs"]:
-                        return self.send_json(panel.start(data), HTTPStatus.CREATED)
-                    if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("pause", "resume", "weights", "stop"):
-                        return self.send_json(panel.control(parts[2], parts[3], data))
-                elif url.path in ("/", "/app.js", "/app.css"):
+                        with writes:
+                            started = panel.start(data)
+                        return self.send_json(started, HTTPStatus.CREATED)
+                    if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("pause", "resume", "weights", "step", "stop"):
+                        with writes:
+                            detail = panel.control(parts[2], parts[3], data)
+                        return self.send_json(detail)
+                elif url.path in ("/", "/app.js", "/app.css", "/board.js", "/board.css"):
                     name = "index.html" if url.path == "/" else url.path[1:]
-                    mime = {"index.html": "text/html", "app.js": "text/javascript", "app.css": "text/css"}[name]
-                    return self.send_content((ASSETS / name).read_bytes(), mime + "; charset=utf-8")
+                    mime = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}[Path(name).suffix]
+                    folder = BOARD_ASSETS if name.startswith("board.") else ASSETS
+                    return self.send_content((folder / name).read_bytes(), mime + "; charset=utf-8")
+                elif url.path == "/board-map.png" and BOARD_ART.is_file():
+                    return self.send_content(BOARD_ART.read_bytes(), "image/png")
                 elif parts == ["api", "versions"]:
                     return self.send_json(panel.versions.public())
                 elif parts == ["api", "runs"]:
                     return self.send_json(panel.list_runs())
                 elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
                     return self.send_json(panel.detail(parts[2]))
-                elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("log", "download", "parameters"):
+                elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("log", "download", "parameters", "board"):
                     directory = panel.directory(parts[2])
                     if parts[3] == "parameters":
                         name = "parameters.jsonl"
@@ -384,6 +404,8 @@ def handler_for(panel):
                         if game < 1:
                             raise RequestError("请选择有效的对局。")
                         name = f"game-{game}.jsonl"
+                    if parts[3] == "board":
+                        return self.send_json(panel.board(parts[2], game))
                     file = directory / name
                     if parts[3] == "log":
                         before = int(query["before"][0]) if "before" in query else None
@@ -397,6 +419,8 @@ def handler_for(panel):
                 self.send_json({"error": str(error)}, error.status)
             except (ValueError, OverflowError):
                 self.send_json({"error": "请求中的数值或格式有误。"}, HTTPStatus.BAD_REQUEST)
+            except (ConnectionError, TimeoutError):
+                return
             except (OSError, subprocess.SubprocessError):
                 self.send_json({"error": "无法读取本机数据或启动所选版本。"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -415,7 +439,7 @@ def main():
     parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
     panel = DebugPanel(args.output.resolve())
-    with HTTPServer(("127.0.0.1", args.port), handler_for(panel)) as server:
+    with ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(panel)) as server:
         print(f"AI 调试台 http://127.0.0.1:{server.server_port}", flush=True)
         try:
             server.serve_forever()
