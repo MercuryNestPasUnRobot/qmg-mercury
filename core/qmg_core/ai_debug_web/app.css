@@ -95,6 +95,11 @@ h3 { font-size: 1rem; }
 .group .two { padding: 2px 0 14px; }
 .number-label { align-content: end; }
 .number-label input { height: 36px; }
+.number-label:has(.score-link) { align-content: start; }
+.number-label input[readonly] { background: #f1f3f7; color: #526073; }
+.score-link { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; }
+.score-link small { color: var(--muted); }
+.score-link .text-button { padding-block: 0; }
 .parameter-footer { margin-top: 13px; display: flex; justify-content: flex-end; }
 .overview-head { padding: 19px 22px 15px; }
 .state { min-width: max-content; border-radius: 20px; padding: 5px 11px; background: #eef1f6; color: #526073; font-size: .875rem; font-weight: 650; }

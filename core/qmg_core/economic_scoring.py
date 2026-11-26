@@ -154,18 +154,23 @@ class EconomicForecast:
     def future_loss(self, seat):
         if self.continuous_rules and self.final_round:
             return 0
-        return self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat))
+        return self.shortfall_score(self.shortfall(seat))
+
+    def shortfall_score(self, count):
+        value = self.units.linked("future_shortfall", self.units.vp_score(self.settings["future_shortfall_value"]))
+        return value * self.penalty * count
 
     def cycle_value(self, seat, count):
+        draw_value = self.units.linked("extra_draw", self.units.card)
         if seat in self.averaging:
-            return cycling_ev(None, self.units.card, count, hand_average=self.units.card)
+            return cycling_ev(None, draw_value, count, hand_average=draw_value)
         if seat not in self.hand_averages:
             self.averaging.add(seat)
             try:
                 self.hand_averages[seat] = self.hand_average(self, seat)
             finally:
                 self.averaging.remove(seat)
-        return cycling_ev(None, self.units.card, count, hand_average=self.hand_averages[seat])
+        return cycling_ev(None, draw_value, count, hand_average=self.hand_averages[seat])
 
     def draw_value(self, seat, count, already_drawn=0):
         draws = min(count, max(0, self.count(seat, "DECK") - already_drawn))
@@ -178,7 +183,7 @@ class EconomicForecast:
         future = 0 if self.closes_game(seat, immediate) or (self.continuous_rules and self.final_round) else (
             self.shortfall(target, max(0, deck - count)) - self.shortfall(target, deck))
         return (self.points(seat, immediate, base, closeout=closeout)
-                + sign * self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * future))
+                + sign * self.shortfall_score(future))
 
     def economic_amount(self, seat, target, base, modifiers):
         return max(0, base + sum(m["amount"] for m in modifiers if m["kind"] == "economic_adjustment" and
@@ -254,18 +259,19 @@ class EconomicForecast:
     def return_value(self, seat, effect):
         target = force_id(effect.get("target"), seat)
         kind = effect["type"]
+        value = self.units.linked("card_return", self.units.card)
         if kind == "put-hand-on-deck-bottom":
             count = min(effect["max"], self.count(seat, "HAND"))
-            return self.units.card_score(count) if count >= effect["min"] else 0
+            return value * count if count >= effect["min"] else 0
         if kind == "recover-discard":
             available = available_options(self.rules, self.visible_state(), seat, effect)
             count = min(effect.get("count", 1), len(available))
-            return self.units.card_score(count if self.rules.team(target) == self.rules.team(seat) else -count)
+            return value * (count if self.rules.team(target) == self.rules.team(seat) else -count)
         if kind == "return-played-card":
-            return self.units.card_score(max(0, 1 - effect["discardHandCount"]))
+            return value * max(0, 1 - effect["discardHandCount"])
         if kind == "return-revealed-discard":
             return 0  # Recipient and number are known only from the reveal's actual settlement.
-        return self.units.card_score(1)
+        return value
 
     def effect(self, seat, effect, base, *, closeout=False):
         kind = effect["type"]

@@ -42,7 +42,7 @@ const app = {
   board: null, boardKey: "", region: "", artReady: false, awaitingStep: null,
 };
 
-const number = n => typeof n === "number" ? n.toLocaleString("zh-CN", {maximumFractionDigits: 2}) : "—";
+const number = (n, precision = 2) => Number.isFinite(n) ? n.toLocaleString("zh-CN", {maximumFractionDigits: precision}) : "—";
 const date = value => value ? new Date(value).toLocaleString("zh-CN", {hour12: false}) : "";
 const node = (tag, text, className) => {
   const element = document.createElement(tag);
@@ -74,13 +74,31 @@ const caption = draft => draft ? `${draft.version === "current" ? "当前工作�
 function preset(version, policy, weights) {
   const fields = app.versions.get(version).fields;
   return {version, policy, values: Object.fromEntries(fields.map(field => [field.key,
-    weights ? field.path.reduce((part, key) => part[key], weights) : field.value]))};
+    field.path.reduce((part, key) => part?.[key], weights) ?? field.value])), overrides: {...weights?.scoring_overrides}};
 }
 
 function renderTeamLabels() {
   for (const team of sides) {
     $("edit-" + team).setAttribute("aria-pressed", String(app.editTeam === team));
     $(team + "-profile").textContent = caption(draftFor(team));
+  }
+}
+
+function refreshFieldValues(draft, changedKey) {
+  for (const [key, control] of app.fields) {
+    const {input, link, toggle, hint} = control;
+    let value = draft.values[key];
+    if (link) {
+      const overridden = Object.hasOwn(draft.overrides, key);
+      const multiplier = link.multiplier * (link.coefficient ? draft.values[link.coefficient] : 1);
+      const derived = multiplier * draft.values[link.base];
+      value = overridden ? draft.overrides[key] : derived;
+      input.readOnly = !overridden;
+      toggle.textContent = overridden ? "恢复联动" : "单独覆盖";
+      toggle.setAttribute("aria-label", `${link.label} · ${toggle.textContent}`);
+      hint.textContent = overridden ? `覆盖中 · 联动值 ${number(derived, 6)}` : `联动 · ${number(multiplier, 6)} × ${link.unit_label}`;
+    }
+    if (key !== changedKey) input.value = Number.isFinite(value) ? value : "";
   }
 }
 
@@ -91,15 +109,20 @@ function renderEditor() {
   renderTeamLabels();
   $("version").value = draft.version;
   $("policy").value = draft.policy;
-  if (app.fields.size && [...app.fields.keys()].join() === profile.fields.map(f => f.key).join()) {
-    for (const [key, input] of app.fields) input.value = Number.isFinite(draft.values[key]) ? draft.values[key] : "";
+  if (app.editorVersion === draft.version) {
+    refreshFieldValues(draft);
     return;
   }
+  app.editorVersion = draft.version;
   const groups = new Map();
+  const links = profile.linked_fields || [];
+  const coefficients = new Set(links.map(link => link.coefficient));
   for (const field of profile.fields) {
+    if (coefficients.has(field.key)) continue;
     if (!groups.has(field.group)) groups.set(field.group, []);
     groups.get(field.group).push(field);
   }
+  if (links.length) groups.set("基础值联动", links.map(link => ({...link, link})));
   app.fields.clear();
   const elements = [];
   const advanced = node("details", undefined, "advanced");
@@ -109,26 +132,51 @@ function renderEditor() {
     detail.open = title === "基础得分";
     const controls = node("div", undefined, "two");
     for (const field of fields) {
-      const label = node("label", field.label, "field number-label");
+      const control = node("div", undefined, "field number-label");
+      const label = node("label", field.label);
       const input = node("input");
+      label.htmlFor = input.id = `score-${field.key}`;
       input.type = "number";
       input.step = field.integer ? "1" : "any";
       input.min = "0";
       input.max = "1000000";
       input.required = true;
-      input.value = Number.isFinite(draft.values[field.key]) ? draft.values[field.key] : "";
       input.title = field.key;
-      input.addEventListener("input", () => { draftFor(app.editTeam).values[field.key] = input.valueAsNumber; });
-      app.fields.set(field.key, input);
-      label.append(input);
-      controls.append(label);
+      const link = field.link;
+      input.addEventListener("input", () => {
+        const active = draftFor(app.editTeam);
+        (link ? active.overrides : active.values)[field.key] = input.valueAsNumber;
+        refreshFieldValues(active, field.key);
+      });
+      control.append(label, input);
+      const entry = {input, link};
+      if (link) {
+        const row = node("div", undefined, "score-link");
+        entry.hint = node("small");
+        entry.hint.id = `${input.id}-link`;
+        input.setAttribute("aria-describedby", entry.hint.id);
+        entry.toggle = node("button", undefined, "text-button");
+        entry.toggle.type = "button";
+        entry.toggle.addEventListener("click", () => {
+          const active = draftFor(app.editTeam);
+          if (Object.hasOwn(active.overrides, field.key)) delete active.overrides[field.key];
+          else active.overrides[field.key] = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0;
+          refreshFieldValues(active);
+          if (!input.readOnly) input.focus();
+        });
+        row.append(entry.hint, entry.toggle);
+        control.append(row);
+      }
+      app.fields.set(field.key, entry);
+      controls.append(control);
     }
     detail.append(node("summary", title), controls);
-    if (detail.open) elements.push(detail);
+    if (detail.open || title === "基础值联动") elements.push(detail);
     else advanced.append(detail);
   }
   if (advanced.childElementCount > 1) elements.push(advanced);
   $("fields").replaceChildren(...elements);
+  refreshFieldValues(draft);
 }
 
 function renderControls() {
@@ -146,7 +194,10 @@ function renderControls() {
   const editable = (!locked || paused) && !app.busy && Boolean(app.drafts);
   for (const id of ["version", "policy", "reset", "paste-profile"]) $(id).disabled = !editable;
   for (const id of ["edit-axis", "edit-allies", "copy-side", "copy-both"]) $(id).disabled = !app.drafts;
-  for (const input of app.fields.values()) input.disabled = !editable;
+  for (const {input, toggle} of app.fields.values()) {
+    input.disabled = !editable;
+    if (toggle) toggle.disabled = !editable;
+  }
   $("apply-area").hidden = !paused;
   $("apply").disabled = !paused || app.busy;
   $("parameter-note").textContent = paused ? "两方改动会在应用、单步或续跑时一并生效。" :
@@ -515,6 +566,15 @@ function checkedProfile(raw) {
       throw new Error(`${field.label}的数值无效。`);
     }
     result.values[key] = value;
+  }
+  const overrides = Object.hasOwn(raw, "overrides") ? raw.overrides : {};
+  if (!record(overrides)) throw new Error("评分覆盖值无效。");
+  const links = new Map((version.linked_fields || []).map(field => [field.key, field]));
+  for (const [key, value] of Object.entries(overrides)) {
+    const field = links.get(key);
+    if (!field) throw new Error(`此版本没有评分覆盖项 ${key}。`);
+    if (!Number.isFinite(value) || value < 0 || value > 1e6) throw new Error(`${field.label}的数值无效。`);
+    result.overrides[key] = value;
   }
   return result;
 }

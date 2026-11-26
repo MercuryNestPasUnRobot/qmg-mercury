@@ -429,7 +429,8 @@ class StatusForecast:
 
     def baseline_play(self, owner):
         # Opportunity cost of spending the regular play; the fallback is one forced discard.
-        best = -self.economy.units.card_score(self.config["forced_discard_card_value"])
+        units = self.economy.units
+        best = -units.linked("forced_discard", units.card_score(self.config["forced_discard_card_value"]))
         for card in self.hand(owner):
             kind = card.get("legacy_kind")
             for unit, (build, battle) in BASIC.items():
@@ -439,7 +440,8 @@ class StatusForecast:
                     best = max([best] + [self.location_value(p, True, force=owner) for p in self.targets(owner, owner, unit, "battle")
                                           if self.enemies(owner, p, unit)])
             if kind and kind not in ("status", "response", "bolster", "air-power") and kind not in BASIC_KINDS:
-                best = max(best, self.economy.units.action_score(self.config["alternative_play_action_value"]))
+                alternative = units.linked("alternative_status_play", units.action_score(self.config["alternative_play_action_value"]))
+                best = max(best, alternative)
         return best
 
     def trigger_card_kinds(self, owner, actor, trigger):
@@ -664,8 +666,9 @@ class StatusForecast:
                     target = actor
                 if target in TURN_ORDER:
                     sign = -1 if self.marginal and self.rules.team(target) == self.rules.team(owner) else 1
-                    net += self.economy.units.card_score(sign * self.config["request_discard_card_value"] *
-                                                        min(self.economy.count(target, "HAND"), effect["min"]))
+                    units = self.economy.units
+                    value = units.linked("requested_discard", units.card_score(self.config["request_discard_card_value"]))
+                    net += sign * value * min(self.economy.count(target, "HAND"), effect["min"])
             elif kind == "play-from-zone":
                 if not any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind") in effect["kinds"]
                            for k in self.state.positions[zone(owner, effect["zone"].upper())]) and not any(
@@ -768,6 +771,8 @@ class StatusForecast:
 
     def modifier(self, owner, actor, card_id, source, later, board):
         mods = self.rules.cards[card_id].get("modifiers", ())
+        units = self.economy.units
+        saved = units.linked("exchange_saved_payment", units.card_score(self.config["exchange_saved_payment_value"]))
         value = 0
         if actor == owner and any(m["kind"] in MAP_MODS or m["kind"] == "ignore_enemy_statuses" for m in mods):
             supply, options = self.board_changes(owner, card_id, source)
@@ -776,15 +781,13 @@ class StatusForecast:
             kind = m["kind"]
             if kind == "reallocate_cost" and actor == owner:
                 if len(self.hand(owner)) >= m["count"] and self.economy.count(owner, "DECK"):
-                    units = self.economy.units
-                    value += units.card_score(self.config["exchange_saved_payment_value"] * (1 if units.enabled else 0.55) *
-                                             max(0, self.rules.settings.get("reallocation_cost", 3) - m["count"]))
+                    value += saved * (1 if units.enabled else 0.55) * max(0, self.rules.settings.get("reallocation_cost", 3) - m["count"])
             elif kind == "reallocate_discard" and actor == owner:
                 if any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind")
                        in BASIC_KINDS for k in self.state.positions[zone(owner, "DISCARD")]):
-                    value += self.economy.units.card_score(self.config["exchange_saved_payment_value"] * (
+                    value += saved * (
                         self.config["exchange_discard_base"] + self.config["exchange_discard_deck_bonus"] /
-                        (1 + self.economy.count(owner, "DECK"))))
+                        (1 + self.economy.count(owner, "DECK")))
             elif kind == "economic_adjustment":
                 if m["role"] == "actor" and actor == owner:
                     loss = max(self.economy.mill(owner, s, m["amount"], 0.75) for s in TURN_ORDER

@@ -10,6 +10,85 @@
 | `capture_rounds` | 2 | 占点时全额计入的回合数 |
 | `supply_stability` | 1 | 补给稳定比率每增加 1 对应的局势分 |
 
+## v1.26 调试台联动与覆盖
+
+当前工作区的调试台隐藏 69 个退役或仅供兼容的数值。五项基础设置直接修改。另有 18 项评分默认随基础值更新，在「基础值联动」中显示当前计算值。点「单独覆盖」后按输入的绝对局势分计算，点「恢复联动」即用当前基础值重算。补给稳定有自己的基础值。距离、回合和搜索上限等计数及折算比例独立可调。
+
+| 基础值 | 可单独覆盖的派生评分 |
+| --- | --- |
+| VP | 全分点每轮收益、每个可达分点的扩张偏好、每 1 VP 未来缺牌损失的估值 |
+| 每次行动 | 每格距离、单位移除、防移除的未知地点估值、出牌与空军的行动成本、状态牌替代常规出牌、从指定区域出牌的纸面和手牌兜底 |
+| 每张牌 | 基础牌弃置成本的满比例值、过牌起值、回收、要求弃牌和强制弃牌的预估、调配少弃一张、搜索牌库的纸面和手牌兜底 |
+
+全分点每轮收益默认等于 `2 × 每 1 VP`。延迟响应每晚一轮扣一份全分点每轮收益，半分点、隐分点以及其他点面分数按相应比例计入位置估值。全分点每轮收益覆盖为 `5` 时，响应延迟一轮扣 `5`，一个印刷为 1 VP 的分点单轮估值为 `2.5`。占点评估回合数仍单独决定占点的持续价值。实际对局 VP 由 Core 结算。
+
+复制和粘贴会保留两方各自的基础值、旧预设系数以及每项的联动或覆盖状态。导入以前的「当前工作区」预设时，已退役字段会被忽略，仍有作用的自定义系数继续乘基础值。从版本列表可单独选用固定的 v1.25 或更早版本，使用对应评分行为。暂停后应用、单步和续跑都会记录实际使用的配置。
+
+### 待决定的固定评分
+
+| 当前数值 | 生效范围 |
+| --- | --- |
+| 未知牌额外潜力 `0.20` | 模拟中的未知牌在进入短期手牌估值时，按固定局势分追加。 |
+| 通用手牌牌效 `0.20`，弃手牌兜底 `0` | 无专用公式的效果使用。支持类效果中部分会先乘行动基准。 |
+| A 的通用效果 `0.20`、普通指令 `0.25` | A 纸面评分在没有专用效果或指令估值时使用。 |
+| 通用地区选择有单位时 `+0.25` | A 抵达通用地区选择兜底时，按该地是否有单位追加。 |
+| 通用能力选择 `+1` | A 在能力或响应顺序选择落入通用分支时，给候选加分。有来源牌时另算其收益。 |
+
+选择流程另外使用固定优先级，例如确认或跳过的 `±100`、无法激活时的 `−101`，以及延迟响应零收益时用于打破平分的 `−0.001`。常规阶段结束、无弃牌估值、无有效调配方案或无取牌来源估值也各有兜底排序分。已写成牌值或行动比例的系数和搜索预算属于各自的模型与运行设置。
+
+## v1.25 调试台参数审计
+
+本节记录更新前的 v1.25 审计，卡库为本地六席版。v1.25 配置有 97 个数值项，其中 11 个已从面板隐藏，面板列出 86 个。版本、A／B 策略、运行模式及种子属于运行配置。评分路径由版本配置中的布尔开关选择。
+
+调试台提交的是具体数值。数值是否联动，取决于计分公式有没有实时读取基础值。例如「基础牌已用比例成本」填 `1.2`，实际按 `1.2 × 每张牌基础值 × 已用比例` 计算。将它改为 `2` 之后，公式仍会读取「每张牌」。另一些参数直接作为独立数值或计数使用，例如补给稳定基础分、最近分点数和搜索节点上限。面板没有留空继承或在首次修改后脱离基础值的机制。
+
+### 分点、部队和行动
+
+| 评分项 | v1.25 的来源和联动关系 |
+| --- | --- |
+| 全分点和半分点的实际 VP | 由 Core 卡库的 `score_sites[].vp`、占领者、共享和补给规则结算。当前六席卡库有 11 个 2 VP 全分点和 3 个 1 VP 半分点。调试台不负责修改印刷分值。 [Core 计分](../../core/qmg_core/operations.py) |
+| 全分点的 AI 估值 | 占点起值为 `点面 VP × 每 1 VP 基础值 × 占点评估回合数`。再加 `（最近敌军距离 − 1）× 每次行动基础值`，受剩余计分轮数上限约束。前往每格再扣一次行动基础值。友军沿途扣减，每个分点最低为零。「最近分点数」是独立的筛选上限。 [地图评分](../../core/qmg_core/positional_scoring.py) |
+| 半分点、隐分点和动态点 | 使用标准全分点评估乘 `该分点 VP ÷ 2`，再走各自的距离与占领规则。距离扣分仍以完整行动为单位，所以半分点的最终落点评分未必恰好是全分点的一半。隐分点的实际 VP 来自卡牌效果。没有每个分点独立的评分覆盖值。 [分点比例](../../core/qmg_core/positional_scoring.py) · [隐分点](../../core/qmg_core/regional_sites.py) |
+| B 的分点分 | 按结算后的留存局面，对每侧取下一次收入与位置估值的较大值。可叠加的半分点计算多单位价值。位置部分沿用 VP、行动和占点评估回合数。下一次收入与已结算 VP 直接乘 VP 基础值。 [B 的结算分](../../core/qmg_core/settlement_scoring.py) |
+| 建造、征召与空降 | 主分来自位置与分点，建造和征召还计补给稳定变化。建造落点用手中剩余基础牌能继续抵达的每个分点，另外给 `扩张偏好 × VP 基础值`。空降额外距离默认加一，敌占落点为零。仆从军建设的距离扣分为两倍，系数写在代码里。 [建造估值](../../core/qmg_core/map_influence.py) · [空降估值](../../core/qmg_core/status_scoring.py) |
+| 攻击、重部署与空军 | 攻击的移除基础奖励为一次行动，另计被剥夺的位置、分点和补给稳定。重部署与空军按位置前后差值，制空战按移除的目标计分。截图里的陆军 `1`、海军 `0.8`、空军 `0.5` 属于旧模型。 [移动与移除](../../core/qmg_core/map_influence.py) |
+| 补给与防移除 | 补给稳定直接乘自己的基础分，独立于 VP、牌值和行动。临时无视补给看供给前后差值。防移除看对应区域建设价值，地点未知时取一次行动。永久免补给按稳定公式计入受影响单位。 [补给稳定](../../core/qmg_core/supply_stability.py) · [防护](../../core/qmg_core/map_influence.py) |
+| 持续地图修正 | 补给源和本土变化按全分点的距离收益，路径变化用前后分差，开放远程建设按空降位置。补给源和本土的假想分点使用代码内的 `2 VP` 参考值，仍乘 VP 基础值。 [持续规则估值](../../core/qmg_core/status_scoring.py) |
+
+实测同一局面中，最近敌军距分点一格，且远离终盘上限和友军扣减。全分点落点为 `4`，半分点落点为 `2`。VP 基础值调到 `2` 时，两者变为 `8` 和 `4`，实际结算仍为 `2 VP` 和 `1 VP`。行动基础值从 `2` 调到 `3` 时，全分点一格之外从 `2` 降到 `1`。占点评估从两轮调到三轮时，全分点落点从 `4` 变 `6`，半分点从 `2` 变 `3`。
+
+### 全量参数核对
+
+| 参数组 | 当前实际影响决策的设置 | 已退出主线、未命中或仅用于兼容的设置 |
+| --- | --- | --- |
+| `scoring_units`（5） | `vp`、`card`、`action` 为实时换算基准。`capture_rounds` 是独立回合数，参与分点公式。`supply_stability` 是独立基础分。 | — |
+| 顶层数值（11） | `expansion_preference` 乘 VP 基准。`basic_usage_cost` 乘牌基准。`status_held_factor` 是手中状态牌的折算比例。`time_discount` 仍用于主动状态与部分调配状态的展望。`unusable_card_weight` 是当下无法打出的普通牌的牌效折算。`construction_search_width` 和 `max_simulation_nodes` 控制搜索规模，调试台节点默认值为 `16`。 | `expansion_weight`、`threat_weight`、`saturation`、`horizon` 只用于旧地图预测。顶层 `horizon=3` 不控制当前经济战或状态牌展望。 |
+| `distance_weights`（4）、`frontier_scoring`（7） | — | 两组全部退出当前计分，也已从面板隐藏。包括距离 1–4，以及 `near_enemy` 邻近敌军加权、`held_forecast` 占区预估、`friendly_target` 盟友占区价值、`battle_target` 战斗目标、`paper_fraction` 纸面地图折算、`paper_cap` 纸面地图上限、`build_friendly_neighbor` 友军建设系数。 |
+| `route_forecast`（4） | `nearest_sites=4` 保留，限定考虑的最近分点位置数。 | `distance_tail_decay`、`friendly_unit`、`enemy_unit` 属于旧路线影响公式。 |
+| `supply_weights`（3）、`military_weights`（3） | — | `supplied`、`unsupplied`、`no_reserve_expansion` 和 `ARMY`、`NAVY`、`AIR` 都是旧地图权重。实际兵种和补给仍会影响合法操作、留存和位置价值。 |
+| `resource_penalties`（1） | — | `empty_deck=0.3` 是旧估值。现行缺牌按 Core 的实际 VP 罚则计算。 |
+| `hand_retention`（4） | — | `slot_cost`、`basic_floor`、`duplicate_penalty`、`basic_congestion` 已退出当前弃牌公式。配置兼容和输入校验仍可读到这些字段。 |
+| `economic_forecast`（5） | `lead_vp_per_round=4` 用原始 VP 分差推算展望长度，是独立设置。`future_shortfall_value=1` 是实际缺牌罚则的比例，结果再乘 VP 基础值。 | `vp_pressure_bonus`、`closeout_bonus` 只在旧 VP 模型使用。`deck_top_look=0.3` 已被过牌收益取代。 |
+| `status_forecast`（26） | **计数与距离**有 `extra_trigger_opportunities=1`、`projected_distance_offset=1`。**乘牌基准**有 `request_discard_card_value=1`、`exchange_saved_payment_value=0.35`、`exchange_discard_base=0.55`、`exchange_discard_deck_bonus=0.35`、`forced_discard_card_value=0.45`。三项 `exchange_*` 组合出调配支付或弃牌区来源价值。**乘行动基准**有 `alternative_play_action_value=0.375`，用于估计主动状态放弃了什么普通出牌。 | **旧概率与进驻**有 `condition_safe`、`condition_threatened`、`condition_horizon`、`arrival_accessible`、`arrival_nearby`、`known_action_likelihood`、`keyword_draw_likelihood`、`action_draw_likelihood`、`unknown_hand_likelihood_cap`、`unknown_hand_scale`、`own_activity_likelihood`、`enemy_activity_likelihood`、`discard_activity_likelihood`。当前卡库的条件式和固定时点按已知局面计数。保留分支仍可能读取其中数值。**旧持续规则**有 `rule_option_multiplier`、`rule_option_decay`、`rule_option_limit`、`economic_target_share`。`filter_card_value=0.28` 被更早命中的牌张价值公式覆盖。 |
+| `card_value_weights`（12） | `unknown=0.2` 是模拟中未知牌的固定额外潜力，在进入手牌估值的路径上生效。它是绝对局势分。 | `ability_ready` 留在通用诊断和无专用预测的兼容入口，现有状态、响应和增援有专用估值。`CHOOSE`、`TRANSFER` 是手牌模型的指令兜底，当前卡库的常规出牌指令未命中。`REDEPLOY`、`DRAW`、`GAIN_VP`、`BUILD_ARMY`、`BUILD_NAVY`、`RECRUIT`、`LAND_BATTLE`、`SEA_BATTLE` 的旧值被位置、牌值或 VP 公式替代。 |
+| `effect_value_weights`（12） | `default=0.2` 是手牌估值的通用兜底，普通效果可直接取固定分。`discard-hand=0` 是手牌兜底的固定分。`play-from-zone=0.45` 按 `行动基准 × 0.45 ÷ 2` 影响手牌潜力。`search-deck=0.35` 按 `牌基准 × 0.35` 影响手牌潜力。 | `points`、`build`、`recruit`、`choose-space`、`battle`、`choose-unit`、`air-action` 在主线被专用公式接管。`discard-status` 是通用手牌兜底，当前卡库的常规出牌未命中，相关响应走专用逻辑。 |
+
+`time_discount`、状态持有折算和手牌兜底通过纸面排序、弃牌或过牌等入口起作用。B 的结算分直接读 Core 产生的效果和剩余局面，只有在复用这些入口或估算剩余状态时才受到相应参数影响。过程路径与读取参数的实现可见 [纸面排序](../../core/qmg_core/ai_match_policy.py)、[手牌估值](../../core/qmg_core/evaluation.py)、[状态预测](../../core/qmg_core/status_scoring.py) 和 [调试台参数](../../core/qmg_core/ai_debug.py)。
+
+版本的九个布尔设置均为 `true`。`action_opportunity_scoring` 启用行动与牌效的换算，`marginal_opportunity_scoring` 启用边际过牌与弃牌估值，`known_ability_scoring` 启用已知能力预测。`action_distance_scoring` 启用按行动机会折算的距离模型，`stacked_site_scoring` 启用叠加分层，`mirrored_attacks` 启用攻击中的位置价值，`settlement_scoring` 启用结算局面评分与保守留存估值，`response_timing_scoring` 启用响应时机评分。`seat_forecast` 是较早模型的逐席预测开关，存在 `scoring_units` 时逐席预测本身就已启用。调试台通过版本选择加载这些设置。`profile` 是版本名，`terminal_priority` 是胜负优先策略的标注，实际优先级由代码执行。 [模型初始化](../../core/qmg_core/evaluation.py)
+
+### 仍有独立数值的评分和流程
+
+| 评分或流程 | 当前关系 |
+| --- | --- |
+| 摸牌、弃牌和调配 | 每张额外补牌为 `牌基础值 − 平均短期手牌收益`。弃牌保留成本还包含已用基础牌比例和损失的可达分点。弃三找一按实际新增补牌位和牌差计价。实际弃牌、牌库耗尽的 VP 罚则由 Core 规则决定。 [过牌](../../core/qmg_core/economic_scoring.py) · [弃牌](../../core/qmg_core/ai_match_policy.py) |
+| 看顶、排序和滤牌 | 看顶按张数乘过牌收益，排序按已揭示的牌及已知消耗。送手牌到底的专用估值按可送张数乘牌基准。实测把旧滤牌参数 `0.28` 改为 `10`，一张牌仍值 `1`。把牌基准改成 `2`，同一效果变为 `2`。 [牌库顶和回收](../../core/qmg_core/economic_scoring.py) |
+| 响应等待 | 每晚一回合扣 `固定 2 VP × VP 基准`。占点评估回合数、行动基础值或某点的实际 VP 改变时，这个原始 `2` 仍由代码常量决定。 [响应等待](../../core/qmg_core/response_scoring.py) |
+| 同名牌效的两条入口 | 实测「从指定区域出牌」的 A 当场兜底为 `行动基准 × 0.6 ÷ 2`，手牌估值默认 `行动基准 × 0.45 ÷ 2`。「搜索牌库」在两处默认同为 `牌基准 × 0.35`，A 的 `0.35` 写在代码里。把面板同名项改为 `2`，两个例子的手牌估值都变为 `2`，A 当场评分分别仍为 `0.6` 和 `0.35`。 [A 的牌效优先级](../../core/qmg_core/ai_match_policy.py) · [手牌估值](../../core/qmg_core/evaluation.py) |
+| 其他代码内分值 | A 的无专用效果兜底 `0.2`、普通指令兜底 `0.25`、通用地区选择有单位时追加 `0.25` 直接计局势分。另有已挂钩的代码内系数，例如还原已宣告陆军牌按 `(0.8 或 0.3) × 牌基准`。 [A 的兜底](../../core/qmg_core/ai_match_policy.py) · [状态效果](../../core/qmg_core/status_scoring.py) |
+| 经济战、状态抑制与终局 | 经济战修正用超过一次行动成本的可见经济牌，再估一次额外机会。末轮牌库削减只计当场可兑现的收益。霍巴特按敌方可发动状态逐张计一次，收益取各自公式。胜负优先于启发式分数。 [经济结算](../../core/qmg_core/economic_scoring.py) · [规则修正与抑制](../../core/qmg_core/status_scoring.py) |
+| 搜索和选择优先级 | B 的总决策预算 `3 秒` 与初筛宽度 `3` 写在调试台工作进程中。每候选节点数和建设候选宽度可调。确认或跳过流程的 `±100` 是选择顺序，独立于 VP、牌值和行动。 [搜索配置](../../core/qmg_core/ai_debug_worker.py) · [选择排序](../../core/qmg_core/ai_match_policy.py) |
+
 ## v1.25 持续规则与补给稳定
 
 各国独立计算补给稳定分。分子为所有单位所在地区及相邻地区的可用补给点数之和，加上海军相邻的同阵营港口数之和，再加永久免补给规则覆盖的在场单位数。分母为在场单位数加海军数。按地区去重，无单位时为零。共享补给扩大可用来源，临时免补给沿用当回合的补给差值。建造、征召和攻击计入稳定分的前后变化。

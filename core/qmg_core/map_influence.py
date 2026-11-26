@@ -28,7 +28,7 @@ class ScoringRoutes:
         self.placement_projections = {}
         self.expansions = {}
         self.hand_networks = {}
-        self.expansion_vp = weights.get("expansion_preference", 0)
+        self.expansion_value = self.units.linked("expansion", self.units.vp_score(weights.get("expansion_preference", 0)))
         self.pieces = pieces
         self.seat_rates = None
         self.direct_income = {}
@@ -208,7 +208,7 @@ class ScoringRoutes:
             reserve = zone(force, "RESERVE_" + self.rules.units[victim.definition_id]["kind"])
             anchors = self.source_anchor_delta(force, token_id, lambda: self.move_projection(token_id, reserve))
             position = self.position.value(force, victim.position_id, excluded=token_id)
-            return self.units.action + status_value + self.removal_stability(token_id) + position - anchors
+            return self.units.linked("unit_removal", self.units.action) + status_value + self.removal_stability(token_id) + position - anchors
         return self._without_unit(token_id).target_value(
             victim.owner_country, victim.position_id, construction=True, local_only=local_only)
 
@@ -304,14 +304,14 @@ class ScoringRoutes:
         key = force, region, spent_kind if spent_kind in BUILD_CARDS else None
         if key not in self.expansions:
             sites = ()
-            if self.expansion_vp and force not in self.rules.auxiliary_forces and self.placement_supplied(force, region):
+            if self.expansion_value and force not in self.rules.auxiliary_forces and self.placement_supplied(force, region):
                 state, _ = self.placement(force, region)
                 sites = ConstructionNetwork(self.rules, state, force).score_sites((region,), spent=spent_card)
-            self.expansions[key] = {"sites": sites, "score": self.units.vp_score(len(sites) * self.expansion_vp)}
+            self.expansions[key] = {"sites": sites, "score": len(sites) * self.expansion_value}
         return self.expansions[key]
 
     def expansion_discard_cost(self, seat, discarded):
-        if not self.expansion_vp or not any(
+        if not self.expansion_value or not any(
                 self.rules.cards.get(self.state.tokens[key].definition_id, {}).get("legacy_kind") in BUILD_CARDS
                 for key in discarded if key in self.state.tokens):
             return 0
@@ -319,7 +319,7 @@ class ScoringRoutes:
             self.hand_networks[seat] = ConstructionNetwork(self.rules, self.state, seat)
         network = self.hand_networks[seat]
         lost = network.hand_score_sites() - network.hand_score_sites(discarded)
-        return self.units.vp_score(len(lost) * self.expansion_vp)
+        return len(lost) * self.expansion_value
 
     def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True,
                      spent_card=None):
@@ -334,7 +334,7 @@ class ScoringRoutes:
                      if battle else self.position.value(force, region, construction=construction))
             if construction and self.status_forecast:
                 value += self.status_forecast().regional_placement(force, region)
-            if construction and self.expansion_vp:
+            if construction and self.expansion_value:
                 value += self.expansion(force, region, spent_card=spent_card)["score"]
             if construction:
                 value += self.placement_stability(force, region)
@@ -414,7 +414,7 @@ class ScoringRoutes:
 
     def protection_value(self, force, region=None, *, token=None):
         return (self.position.value(force, region, construction=True, excluded=token)
-                if region in self.rules.regions else self.units.action)
+                if region in self.rules.regions else self.units.linked("unknown_protection", self.units.action))
 
     def temporary_supply_value(self, seat, effect):
         selected = (filtered_units(self.rules, self.state, seat, effect["filter"]) if "filter" in effect else
@@ -448,7 +448,8 @@ class ScoringRoutes:
             returned = (destination == zone(owner, "DECK") and token.position_id in (discard, hand) or
                         token.position_id == discard and destination in (hand, zone(owner, "RESPONSE")))
             if returned:
-                return self.units.card_score(1 if self.rules.team(owner) == self.rules.team(seat) else -1)
+                value = self.units.linked("card_return", self.units.card)
+                return value if self.rules.team(owner) == self.rules.team(seat) else -value
         return None
 
     def tactical_effect(self, seat, op, *, spent_card=None):
@@ -479,7 +480,8 @@ class ScoringRoutes:
                 target = effect["target"]
                 rate = self.weights.get("status_forecast", {}).get("request_discard_card_value", 1)
                 amount = min(effect["min"], len(self.state.positions[zone(target, "HAND")]))
-                return self.units.card_score(rate * amount * (1 if self.rules.team(target) != self.rules.team(seat) else -1))
+                value = self.units.linked("requested_discard", self.units.card_score(rate))
+                return value * amount * (1 if self.rules.team(target) != self.rules.team(seat) else -1)
         if kind == "air-action":
             if not condition_met(self.rules, self.state, seat, effect.get("when")):
                 return 0

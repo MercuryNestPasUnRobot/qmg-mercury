@@ -144,7 +144,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--replay-library", type=Path, default=LIBRARY)
     parser.add_argument("--name", help="Readable batch name in the replay library")
-    parser.add_argument("--ai-version", default="AI 试验版 v1.25")
+    parser.add_argument("--ai-version", default="AI 试验版 v1.26")
     parser.add_argument("--ai-note", default="补给稳定计入建造、征召和攻击，持续规则按局面变化计价。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:

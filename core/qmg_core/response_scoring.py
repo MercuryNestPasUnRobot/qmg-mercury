@@ -10,8 +10,8 @@ from .content_triggers import matches_trigger
 from .definitions import BATTLES, CONSTRUCTION
 from .model import CoreError, ResolutionFrame, TURN_ORDER, Token, ZoneRegistry, zone
 from .operations import OperationExecutor, outcome
-from .positional_scoring import STANDARD_SITE_VP
 from .rules import LegalActionGenerator, SupplyResolver, board_units, status_enabled, unit_rule_matches
+from .score_units import STANDARD_SITE_VP
 from .status_scoring import BASIC_WINDOWS, FIXED_WINDOWS, air_placement, placement_value, trigger_of
 
 
@@ -40,7 +40,7 @@ class ResponseForecast:
         self.hand_actions = lru_cache(maxsize=None)(self.hand_actions)
 
     def time_cost(self, turns):
-        return self.units.vp_score(STANDARD_SITE_VP * turns)
+        return turns * self.units.site_score(STANDARD_SITE_VP)
 
     def turns_to(self, owner, phase, *, remaining_play=False, next_window=False):
         if self.active != owner:
@@ -373,7 +373,7 @@ class ResponseForecast:
         region = event.get("target")
         if economy.marginal:
             if region not in self.rules.regions or baseline:
-                return self.units.action
+                return economy.routes.protection_value(owner)
             victims = [t for t in board_units(self.rules, state) if self.rules.team(t.owner_country) == friendly
                        and (not terrain or self.rules.units[t.definition_id]["kind"].lower() == terrain)
                        and t.position_id == region and event.get("target_token", t.token_id) == t.token_id]

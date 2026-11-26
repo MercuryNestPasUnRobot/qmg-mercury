@@ -18,6 +18,7 @@ from qmg_core.api import CoreAPI
 from qmg_core.definitions import RuleSet
 from qmg_core.engine import CommandProcessor
 from qmg_core.model import zone
+from qmg_core.score_units import ScoreUnits
 
 
 def eventually(predicate):
@@ -222,28 +223,59 @@ def test_numeric_settings_and_loopback_panel_routes(tmp_path, data):
 
 def test_map_parameters_follow_the_selected_scoring_model(tmp_path, data):
     weights = SyntheticVersion(tmp_path, data).defaults
-    legacy = {**weights, "action_distance_scoring": False}
+    previous = {key: value for key, value in weights.items() if key != "scoring_overrides"}
+    legacy = {**previous, "action_distance_scoring": False}
     registry = VersionRegistry.__new__(VersionRegistry)
     registry.options = {name: {"id": name, "label": name, "commit": name, "pinned": False,
                                "catalog": None, "defaults": defaults}
-                        for name, defaults in (("current", weights), ("legacy", legacy))}
-    current, previous = registry.public()
+                        for name, defaults in (("current", weights), ("v1.25", previous), ("legacy", legacy))}
+    current, previous, legacy_version = registry.public()
     obsolete = {f"distance_weights.{index}" for index in range(len(weights["distance_weights"]))}
     obsolete.update(f"frontier_scoring.{key}" for key in weights["frontier_scoring"])
     visible = {field["key"] for field in current["fields"]}
-    assert set(current["inactive_fields"]) == obsolete and visible.isdisjoint(obsolete)
+    retired = obsolete | {"military_weights.NAVY", "supply_weights.supplied", "hand_retention.slot_cost",
+                          "route_forecast.friendly_unit", "status_forecast.filter_card_value", "card_value_weights.BUILD_ARMY"}
+    assert retired <= set(current["inactive_fields"]) and visible.isdisjoint(retired)
     assert {"scoring_units.action", "scoring_units.supply_stability", "route_forecast.nearest_sites"} <= visible
-    assert not previous["inactive_fields"] and obsolete <= {field["key"] for field in previous["fields"]}
+    assert set(previous["inactive_fields"]) == obsolete and not previous["linked_fields"]
+    assert not legacy_version["inactive_fields"] and obsolete <= {field["key"] for field in legacy_version["fields"]}
 
-    updates = {"distance_weights.0": 2.5, "frontier_scoring.near_enemy": 1.8, "scoring_units.action": 3}
+    updates = {"distance_weights.0": 2.5, "frontier_scoring.near_enemy": 1.8, "scoring_units.action": 3,
+               "military_weights.NAVY": 8}
     edited = edited_weights(weights, updates)
     assert edited["distance_weights"] == weights["distance_weights"]
     assert edited["frontier_scoring"] == weights["frontier_scoring"]
+    assert edited["military_weights"] == weights["military_weights"]
     assert edited["scoring_units"]["action"] == 3
     edited = edited_weights(legacy, updates)
     assert edited["distance_weights"][0] == 2.5 and edited["frontier_scoring"]["near_enemy"] == 1.8
+    assert edited["military_weights"]["NAVY"] == 8
     with pytest.raises(RequestError, match="没有该评分参数"):
         edited_weights(weights, {"distance_weights.999": 2.5})
+
+
+def test_paused_config_restores_linkage_and_keeps_old_preset_coefficients(tmp_path, data):
+    panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
+    draft = configs({"scoring_units.vp": 2, "expansion_preference": 0.75, "military_weights.NAVY": 8})
+    initial = panel.configurations(draft)
+    units = ScoreUnits.from_weights(initial["axis"]["weights"])
+    assert units.site_score(2) == 4 and units.linked("expansion", None) == 1.5
+
+    draft["axis"].update(values={"scoring_units.vp": 3}, overrides={"full_site_round": 5, "expansion": 0})
+    edited = panel.configurations(draft, initial)
+    units = ScoreUnits.from_weights(edited["axis"]["weights"])
+    assert units.site_score(2) == 5 and units.linked("expansion", None) == 0
+    assert edited["allies"] == initial["allies"]
+
+    del draft["axis"]["overrides"]  # An old preset/API request can still update its numeric fields.
+    assert panel.configurations(draft, edited) == edited
+    draft["axis"]["overrides"] = {}  # The current editor sends its entire set of overrides.
+    reset = panel.configurations(draft, edited)
+    units = ScoreUnits.from_weights(reset["axis"]["weights"])
+    assert units.site_score(2) == 6 and units.linked("expansion", None) == 2.25
+    assert reset["axis"]["weights"]["scoring_overrides"] == {}
+    with pytest.raises(RequestError, match="没有该评分覆盖项"):
+        panel.configurations(configs() | {"axis": {**draft["axis"], "overrides": {"obsolete": 1}}})
 
 
 def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):
