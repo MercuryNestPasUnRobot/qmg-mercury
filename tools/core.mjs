@@ -24,5 +24,6 @@ else if (mode === 'verify-content') run(existsSync(local) ? local : base, ['-m',
 else if (mode === 'audit-content') run(existsSync(local) ? local : base, ['-m', 'qmg_core.content_audit', ...process.argv.slice(3)]);
 else if (mode === 'ai-trial') run(existsSync(local) ? local : base, ['-m', 'qmg_core.ai_trial', ...process.argv.slice(3)]);
 else if (mode === 'ai-match') run(existsSync(local) ? local : base, ['-m', 'qmg_core.ai_match', ...process.argv.slice(3)]);
+else if (mode === 'ai-debug') run(existsSync(local) ? local : base, ['-m', 'qmg_core.ai_debug', ...process.argv.slice(3)]);
 else if (mode === 'replay') run(existsSync(local) ? local : base, ['-m', 'qmg_core.replay', ...process.argv.slice(3)]);
 else throw new Error('Unknown core action');

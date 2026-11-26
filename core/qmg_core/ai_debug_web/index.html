@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="本机 AI 对局测试、评分调试与决策日志">
+  <title>AI 调试台 · QMG Mercury</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>QMG <strong>Mercury</strong></div>
+      <span class="local-label">本机调试</span>
+    </div>
+  </header>
+  <main class="workspace">
+    <div class="page-head">
+      <div>
+        <h1>AI 调试台</h1>
+        <p>配置评分参数，运行六席对局，查看每一步的决策分数。</p>
+      </div>
+      <div class="controls" aria-label="测试控制">
+        <button id="stop" type="button" class="button quiet" hidden>停止测试</button>
+        <button id="primary" type="button" class="button primary" disabled>开始测试</button>
+      </div>
+    </div>
+    <p class="message" id="message" role="status" hidden></p>
+    <div class="layout">
+      <aside class="sidebar" aria-label="测试和评分设置">
+        <section class="panel settings">
+          <h2>测试设置</h2>
+          <div class="setting-body">
+            <label class="field">AI 版本
+              <select id="version" aria-describedby="version-meta" disabled></select>
+            </label>
+            <p class="muted meta" id="version-meta"></p>
+            <div class="two">
+              <label class="field">种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="31" required></label>
+              <label class="field">B 首局执方
+                <select id="team"><option value="axis">轴心</option><option value="allies">同盟</option></select>
+              </label>
+            </div>
+            <label class="field">运行方式
+              <select id="mode">
+                <option value="single">单局测试</option>
+                <option value="paired">同种子换边两局</option>
+                <option value="continuous">连续换边测试</option>
+              </select>
+            </label>
+            <p class="muted meta" id="mode-note">本局结束后自动停止。</p>
+          </div>
+        </section>
+        <section class="panel parameters">
+          <div class="section-head">
+            <h2>评分参数</h2>
+            <button class="text-button" id="reset" type="button" disabled>恢复版本默认</button>
+          </div>
+          <p class="muted parameter-note" id="parameter-note">开跑前可以调整。对局中先暂停，再修改。</p>
+          <div id="fields"></div>
+          <div class="parameter-footer" id="apply-area" hidden>
+            <button class="button secondary" id="apply" type="button" disabled>应用参数</button>
+          </div>
+        </section>
+      </aside>
+      <div class="main-column">
+        <section class="panel overview" aria-labelledby="overview-title">
+          <div class="section-head overview-head">
+            <div><h2 id="overview-title">运行概况</h2><p id="run-context" class="muted meta">选择版本与参数后，即可开始测试。</p></div>
+            <span class="state" id="state" data-state="idle">待开始</span>
+          </div>
+          <dl class="metrics">
+            <div><dt>已完成对局</dt><dd id="completed">0</dd></div>
+            <div><dt>当前回合</dt><dd id="round">—</dd></div>
+            <div><dt>轴心 VP</dt><dd class="axis" id="axis">—</dd></div>
+            <div><dt>同盟 VP</dt><dd class="allies" id="allies">—</dd></div>
+          </dl>
+          <div class="overview-foot">
+            <span id="position">等待启动</span>
+            <span id="revision">B 决策预算 3 秒</span>
+          </div>
+        </section>
+        <section class="panel logs" aria-labelledby="logs-title">
+          <div class="section-head logs-head">
+            <div><h2 id="logs-title">调试日志</h2><p class="muted meta">仅列出从本调试台发起的测试。</p></div>
+            <div class="downloads" id="downloads" hidden>
+              <a id="download-weights" class="text-button" download>参数记录</a>
+              <a id="download-log" class="text-button" download>下载对局日志</a>
+            </div>
+          </div>
+          <div class="log-selectors two">
+            <label class="field">测试批次<select id="runs" disabled><option>暂无测试</option></select></label>
+            <label class="field">对局<select id="games" disabled><option>暂无对局</option></select></label>
+          </div>
+          <div class="log-summary muted" id="log-summary"></div>
+          <div class="table-scroll" id="step-table" hidden>
+            <table>
+              <thead><tr><th scope="col">步数</th><th scope="col">国家</th><th scope="col">阶段</th><th scope="col">实际操作</th><th scope="col">参数</th><th scope="col">耗时</th></tr></thead>
+              <tbody id="steps"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="empty"><strong>暂无决策记录</strong><span>开始测试后，决策会显示在这里。</span></div>
+          <div class="pager" id="pager" hidden>
+            <button class="button quiet" id="newest" type="button" disabled>最新记录</button>
+            <button class="button quiet" id="older" type="button" disabled>更早记录</button>
+          </div>
+          <section class="decision" id="decision" aria-label="选中的决策详情" hidden>
+            <h3 id="decision-title"></h3>
+            <p id="decision-meta" class="muted"></p>
+            <ul id="decision-scores"></ul>
+            <details class="raw"><summary>原始评分记录</summary><pre id="decision-raw"></pre></details>
+          </section>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
