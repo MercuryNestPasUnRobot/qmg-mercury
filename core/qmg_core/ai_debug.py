@@ -1,0 +1,429 @@
+"""Local AI test controls and scoring logs, separate from the replay library."""
+
+from argparse import ArgumentParser
+from copy import deepcopy
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import BytesIO
+import json
+from math import isfinite
+from pathlib import Path, PurePosixPath
+import re
+import subprocess
+import sys
+from time import monotonic, sleep
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
+from zipfile import ZipFile
+
+from .ai_debug_worker import read_json, timestamp, write_json
+
+
+CORE = Path(__file__).resolve().parents[1]
+ROOT = CORE.parent
+ASSETS = Path(__file__).with_name("ai_debug_web")
+OUTPUT = ROOT / "local-content" / "ai-debug"
+DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
+VERSIONS = {
+    "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.21": ("v1.21 · 逐种结算调配", "90a084ed419528357d650f32ac80e38243c7d3b7", DISCARD_CATALOG),
+    "v1.20": ("v1.20 · 征召与留存", "0fa645af31cd879ef6773334ef86f394f59c233d", DISCARD_CATALOG),
+    "v1.19": ("v1.19 · 弃牌与过牌", "57843b3bcf97cb37e6e1b8bb5a3e4b0e2586d731", DISCARD_CATALOG),
+    "v1.18": ("v1.18 · 叠加与隐分点", "1f72825e769f19d1948ae8b983dd8786321ca83c",
+              "d8dbf328fce1b2888546f48e1179fc658c0510600c95e9a61e03734215a3ab39"),
+}
+GROUPS = {
+    "scoring_units": "基础得分", "hand_retention": "手牌保留", "economic_forecast": "VP 与牌库",
+    "route_forecast": "距离与路线", "frontier_scoring": "地图局势", "distance_weights": "距离权重",
+    "supply_weights": "补给权重", "military_weights": "部队权重", "card_value_weights": "牌效估值",
+    "effect_value_weights": "效果估值", "resource_penalties": "资源惩罚",
+}
+LABELS = {
+    "vp": "每 1 VP", "card": "每张牌", "action": "每次行动", "capture_rounds": "占点评估回合数",
+    "expansion_preference": "每个可达分点的扩张偏好", "basic_usage_cost": "基础牌已用比例成本",
+    "status_held_factor": "手中状态牌折算比例", "time_discount": "时间折扣",
+    "horizon": "展望回合数", "saturation": "收益饱和阈值", "expansion_weight": "扩张权重",
+    "threat_weight": "威胁权重", "construction_search_width": "建设候选宽度",
+    "max_simulation_nodes": "每个候选的结算节点上限", "unusable_card_weight": "暂不可用牌比例",
+    "slot_cost": "手牌槽位成本", "basic_floor": "基本牌储备下限", "duplicate_penalty": "重复牌扣分",
+    "basic_congestion": "基础牌拥挤扣分", "vp_pressure_bonus": "终局 VP 压力加权",
+    "closeout_bonus": "收官加权", "lead_vp_per_round": "每轮领先 VP 参考值",
+    "future_shortfall_value": "未来牌库短缺比例", "deck_top_look": "查看一张牌库顶",
+    "nearest_sites": "考虑的最近分点数", "distance_tail_decay": "远距离衰减",
+    "friendly_unit": "友方单位系数", "enemy_unit": "敌方单位系数", "near_enemy": "邻近敌军加权",
+    "held_forecast": "占区预估", "friendly_target": "盟友占区价值", "battle_target": "战斗目标",
+    "paper_fraction": "纸面地图折算", "paper_cap": "纸面地图上限", "build_friendly_neighbor": "友军建设系数",
+    "supplied": "有补给", "unsupplied": "无补给", "no_reserve_expansion": "无预备队的扩张",
+    "ARMY": "陆军", "NAVY": "海军", "AIR": "空军", "empty_deck": "牌库用尽",
+    "unknown": "未知牌", "ability_ready": "就绪能力", "CHOOSE": "选择", "REDEPLOY": "重新部署",
+    "DRAW": "摸牌", "GAIN_VP": "增加 VP", "TRANSFER": "移动对象", "BUILD_ARMY": "建设陆军",
+    "BUILD_NAVY": "建设海军", "RECRUIT": "征召", "LAND_BATTLE": "陆战", "SEA_BATTLE": "海战",
+    "default": "默认效果", "points": "计分", "build": "建设", "recruit": "征召", "choose-space": "选择地区",
+    "battle": "战斗", "choose-unit": "选择单位", "air-action": "空军行动", "play-from-zone": "从指定区域出牌",
+    "search-deck": "搜索牌库", "discard-hand": "弃手牌", "discard-status": "弃状态牌",
+}
+INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "horizon", "construction_search_width",
+           "max_simulation_nodes"}
+TERMINAL = {"completed", "stopped", "failed", "interrupted"}
+RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
+
+
+class RequestError(ValueError):
+    def __init__(self, message, status=HTTPStatus.BAD_REQUEST):
+        super().__init__(message)
+        self.status = status
+
+
+def numeric_fields(weights):
+    fields = []
+
+    def visit(value, path):
+        if isinstance(value, (dict, list)):
+            for key, child in value.items() if isinstance(value, dict) else enumerate(value):
+                visit(child, (*path, key))
+        elif type(value) in (int, float):
+            key = ".".join(map(str, path))
+            last = path[-1]
+            fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
+                "label": f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last),
+                "group": GROUPS.get(path[0], "搜索设置" if "width" in key or key == "max_simulation_nodes" else "通用估值")})
+
+    visit(weights, ())
+    return fields
+
+
+def edited_weights(weights, updates):
+    if not isinstance(updates, dict):
+        raise RequestError("评分参数必须是一组数值。")
+    permitted = {field["key"]: field for field in numeric_fields(weights)}
+    edited = deepcopy(weights)
+    for key, value in updates.items():
+        field = permitted.get(key)
+        if field is None:
+            raise RequestError("此版本没有该评分参数。")
+        if (type(value) not in (int, float) or not 0 <= value <= 1e6 or not isfinite(value) or
+                (field["integer"] and (type(value) is not int))):
+            raise RequestError(f'{field["label"]}的数值无效。')
+        node = edited
+        *parents, leaf = field["path"]
+        for part in parents:
+            node = node[part]
+        node[leaf] = value
+    return edited
+
+
+class VersionRegistry:
+    def __init__(self, workspace, cache):
+        self.workspace = workspace
+        self.cache = cache
+        self.options = {}
+        for key, (label, commit, identity) in VERSIONS.items():
+            core = self.workspace / "core"
+            try:
+                source = json.loads(self.git("show", f"{commit}:core/data/ai_test_weights.json")) if commit else read_json(
+                    core / "data" / "ai_test_weights.json")
+            except (OSError, subprocess.SubprocessError, ValueError):
+                continue
+            source["max_simulation_nodes"] = 16  # Same default as the six-seat batch runner.
+            try:
+                revision = commit or self.git("rev-parse", "HEAD").decode().strip()
+            except (OSError, subprocess.SubprocessError):
+                revision = None
+            catalog = self.workspace / "local-content" / "replays" / "rules" / (identity + ".json")
+            if not catalog.is_file():
+                catalog = self.workspace / "local-content" / "baselines" / (
+                    "board-reviewed-regional-sites/content.sqlite3" if key == "v1.18"
+                    else f"board-reviewed-discard-phase/{identity}.sqlite3")
+            self.options[key] = {"id": key, "label": label, "commit": revision, "pinned": bool(commit),
+                "defaults": source, "catalog": str(catalog) if catalog.is_file() else None,
+                "rules_digest": identity if catalog.is_file() else None}
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.workspace), *args], check=True, capture_output=True, timeout=15).stdout
+
+    def core(self, version):
+        option = self.options[version]
+        if not option["pinned"]:
+            return self.workspace / "core"
+        destination = self.cache / option["commit"]
+        ready = destination / ".ready"
+        if ready.is_file():
+            return destination / "core"
+        blob = self.git("archive", "--format=zip", option["commit"], "core/qmg_core", "core/data/architecture_fixture.json")
+        # Install individual files atomically. Moving a whole populated directory
+        # is unreliable on Windows checkout and antivirus configurations.
+        with ZipFile(BytesIO(blob)) as archive:
+            for name in archive.namelist():
+                path = PurePosixPath(name)
+                if path.is_absolute() or ".." in path.parts or name.endswith("/"):
+                    continue
+                if (not name.startswith("core/qmg_core/") or path.suffix != ".py") and name != "core/data/architecture_fixture.json":
+                    continue
+                target = destination.joinpath(*path.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temp = target.with_name(f".{target.name}.{uuid4().hex[:8]}.tmp")
+                temp.write_bytes(archive.read(name))
+                temp.replace(target)
+        ready.touch()
+        return destination / "core"
+
+    def public(self):
+        return [{k: row[k] for k in ("id", "label", "commit", "pinned")} | {
+            "catalog": "本地六席卡库" if row["catalog"] else "合成测试场景",
+            "fields": numeric_fields(row["defaults"])} for row in self.options.values()]
+
+
+def complete_lines(path):
+    if path.is_file():
+        with path.open(encoding="utf-8") as stream:
+            return [json.loads(line) for line in stream if line.endswith("\n")]
+    return []
+
+
+def log_window(path, before=None, limit=36):
+    if not path.is_file():
+        return {"rows": [], "before": None}
+    with path.open("rb") as stream:
+        end = stream.seek(0, 2)
+        if before is not None:
+            end = min(end, before)
+        start = end
+        chunks = []
+        lines = 0
+        while start and lines <= limit + 1:
+            boundary = max(0, start - 65536)
+            stream.seek(boundary)
+            chunk = stream.read(start - boundary)
+            chunks.append(chunk)
+            lines += chunk.count(b"\n")
+            start = boundary
+        data = b"".join(reversed(chunks))
+    if start:
+        skip = data.find(b"\n") + 1
+        start += skip
+        data = data[skip:]
+    parts = data.split(b"\n")[:-1]
+    trim = max(0, len(parts) - limit)
+    next_before = start + sum(len(line) + 1 for line in parts[:trim])
+    return {"rows": [json.loads(line) for line in parts[trim:][::-1]],
+            "before": next_before if next_before else None}
+
+
+class DebugPanel:
+    def __init__(self, output=OUTPUT, versions=None):
+        self.output = Path(output)
+        self.versions = versions or VersionRegistry(ROOT, ROOT / ".cache" / "ai-debug-versions")
+        self.active = None
+
+    def directory(self, run_id):
+        directory = self.output / run_id
+        if not RUN_ID.fullmatch(run_id) or not (directory / "run.json").is_file():
+            raise RequestError("找不到这次测试。", HTTPStatus.NOT_FOUND)
+        return directory
+
+    def status(self, directory):
+        state = read_json(directory / "status.json")
+        live = self.active and self.active[0] == directory
+        if state["state"] not in TERMINAL:
+            if not live or self.active[1].poll() is not None:
+                state.update(state="interrupted", error="调试进程已关闭。已写入的日志可继续查看。")
+            else:
+                control = read_json(directory / "control.json")
+                if control["revision"] > state["control_revision"]:
+                    state["requested"] = control["action"]
+        return state
+
+    def list_runs(self):
+        folders = sorted(self.output.glob("*"), reverse=True)
+        rows = []
+        active = None
+        for folder in folders:
+            if RUN_ID.fullmatch(folder.name) and (folder / "run.json").is_file():
+                meta = read_json(folder / "run.json")
+                status = self.status(folder)
+                rows.append({**meta, "state": status["state"], "completed": status["completed"]})
+                if self.active and self.active[0] == folder and status["state"] not in TERMINAL:
+                    active = folder.name
+        return {"runs": rows, "active": active}
+
+    def detail(self, run_id):
+        directory = self.directory(run_id)
+        return {"run": read_json(directory / "run.json"), "status": self.status(directory),
+                "games": complete_lines(directory / "games.jsonl")}
+
+    def start(self, data):
+        if self.active and self.active[1].poll() is None:
+            raise RequestError("已有测试正在运行。请先结束它。", HTTPStatus.CONFLICT)
+        version = data.get("version")
+        seed, mode, side = data.get("seed"), data.get("mode"), data.get("first_team")
+        if (not isinstance(version, str) or version not in self.versions.options or type(seed) is not int or
+                not 0 <= seed < 2 ** 32 or mode not in ("single", "paired", "continuous") or side not in ("axis", "allies")):
+            raise RequestError("请选择有效的版本、种子、运行方式和阵营。")
+        option = self.versions.options[version]
+        weights = edited_weights(option["defaults"], data.get("values", {}))
+        core = self.versions.core(version)
+        catalog = option["catalog"] or str(core / "data" / "architecture_fixture.json")
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:8]
+        directory = self.output / run_id
+        directory.mkdir(parents=True)
+        write_json(directory / "run.json", {"id": run_id, "version": version, "version_label": option["label"],
+            "commit": option["commit"], "seed": seed, "mode": mode, "first_team": side, "created_at": timestamp(),
+            "catalog": "本地六席卡库" if option["catalog"] else "合成测试场景", "rules_digest": option["rules_digest"]})
+        write_json(directory / "status.json", {"state": "starting", "control_revision": 0, "weights_revision": 0,
+            "step": 0, "completed": 0, "match": None, "weights": weights})
+        write_json(directory / "control.json", {"action": "run", "revision": 1, "weights": weights})
+        try:
+            with (directory / "worker.log").open("ab") as output:
+                worker = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ai_debug_worker.py")),
+                    str(directory), str(core), catalog], stdin=subprocess.DEVNULL, stdout=output, stderr=output, cwd=core)
+        except OSError:
+            status = read_json(directory / "status.json")
+            write_json(directory / "status.json", {**status, "state": "failed", "error": "无法启动本地调试进程。"})
+            raise
+        self.active = (directory, worker)
+        return self.detail(run_id)
+
+    def control(self, run_id, action, data):
+        directory = self.directory(run_id)
+        if not self.active or self.active[0] != directory or self.active[1].poll() is not None:
+            raise RequestError("这次测试已经结束。", HTTPStatus.CONFLICT)
+        status = self.status(directory)
+        if status["state"] in TERMINAL:
+            raise RequestError("这次测试已经结束。", HTTPStatus.CONFLICT)
+        request = read_json(directory / "control.json")
+        if request["action"] == "stop":
+            if action == "stop":
+                return self.detail(run_id)
+            raise RequestError("请等当前测试停止。", HTTPStatus.CONFLICT)
+        if request["action"] == "pause" and action == "pause":
+            return self.detail(run_id)
+        if action in ("resume", "weights"):
+            if status["state"] != "paused" or "requested" in status:
+                raise RequestError("请等测试暂停后再修改参数。", HTTPStatus.CONFLICT)
+            default = self.versions.options[read_json(directory / "run.json")["version"]]["defaults"]
+            request["weights"] = edited_weights(status.get("weights") or default, data.get("values", {}))
+        request.update(action={"pause": "pause", "resume": "run", "weights": "pause", "stop": "stop"}[action],
+                       revision=request["revision"] + 1)
+        write_json(directory / "control.json", request)
+        return self.detail(run_id)
+
+    def close(self):
+        if self.active and self.active[1].poll() is None:
+            directory, process = self.active
+            request = read_json(directory / "control.json")
+            write_json(directory / "control.json", {**request, "action": "stop", "revision": request["revision"] + 1})
+            end = monotonic() + 7
+            while process.poll() is None and monotonic() < end:
+                sleep(0.1)
+            if process.poll() is None:
+                process.terminate()
+
+
+def handler_for(panel):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _format, *_args):
+            return
+
+        def send_content(self, data, mime, status=HTTPStatus.OK, filename=None):
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+            if filename:
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_json(self, value, status=HTTPStatus.OK):
+            self.send_content(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+                              "application/json; charset=utf-8", status)
+
+        def dispatch(self, write=False):
+            try:
+                host = self.headers.get("Host")
+                port = self.server.server_port
+                if host not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+                    raise RequestError("请从本机打开调试台。", HTTPStatus.FORBIDDEN)
+                origin = self.headers.get("Origin")
+                if origin and origin != f"http://{host}":
+                    raise RequestError("请从调试台页面操作。", HTTPStatus.FORBIDDEN)
+                url = urlsplit(self.path)
+                parts = url.path.strip("/").split("/")
+                if write:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 32768 or self.headers.get_content_type() != "application/json":
+                        raise RequestError("请求格式有误。")
+                    data = json.loads(self.rfile.read(size))
+                    if not isinstance(data, dict):
+                        raise RequestError("请求格式有误。")
+                    if parts == ["api", "runs"]:
+                        return self.send_json(panel.start(data), HTTPStatus.CREATED)
+                    if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("pause", "resume", "weights", "stop"):
+                        return self.send_json(panel.control(parts[2], parts[3], data))
+                elif url.path in ("/", "/app.js", "/app.css"):
+                    name = "index.html" if url.path == "/" else url.path[1:]
+                    mime = {"index.html": "text/html", "app.js": "text/javascript", "app.css": "text/css"}[name]
+                    return self.send_content((ASSETS / name).read_bytes(), mime + "; charset=utf-8")
+                elif parts == ["api", "versions"]:
+                    return self.send_json(panel.versions.public())
+                elif parts == ["api", "runs"]:
+                    return self.send_json(panel.list_runs())
+                elif len(parts) == 3 and parts[:2] == ["api", "runs"]:
+                    return self.send_json(panel.detail(parts[2]))
+                elif len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] in ("log", "download", "parameters"):
+                    directory = panel.directory(parts[2])
+                    if parts[3] == "parameters":
+                        name = "parameters.jsonl"
+                    else:
+                        query = parse_qs(url.query)
+                        game = int(query.get("game", ["1"])[0])
+                        if game < 1:
+                            raise RequestError("请选择有效的对局。")
+                        name = f"game-{game}.jsonl"
+                    file = directory / name
+                    if parts[3] == "log":
+                        before = int(query["before"][0]) if "before" in query else None
+                        if before is not None and before < 1:
+                            raise RequestError("日志页码无效。")
+                        return self.send_json(log_window(file, before))
+                    if file.is_file():
+                        return self.send_content(file.read_bytes(), "application/x-ndjson; charset=utf-8", filename=name)
+                raise RequestError("找不到这个页面或日志。", HTTPStatus.NOT_FOUND)
+            except RequestError as error:
+                self.send_json({"error": str(error)}, error.status)
+            except (ValueError, OverflowError):
+                self.send_json({"error": "请求中的数值或格式有误。"}, HTTPStatus.BAD_REQUEST)
+            except (OSError, subprocess.SubprocessError):
+                self.send_json({"error": "无法读取本机数据或启动所选版本。"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def do_GET(self):
+            self.dispatch()
+
+        def do_POST(self):
+            self.dispatch(write=True)
+
+    return Handler
+
+
+def main():
+    parser = ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=5186)
+    parser.add_argument("--output", type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    panel = DebugPanel(args.output.resolve())
+    with HTTPServer(("127.0.0.1", args.port), handler_for(panel)) as server:
+        print(f"AI 调试台 http://127.0.0.1:{server.server_port}", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            panel.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,8 @@ description = "Headless token-position rules and deterministic simulation core"
 packages = ["qmg_core"]
 
 [tool.setuptools.package-data]
-qmg_core = ["replay_web/*.html", "replay_web/*.css", "replay_web/*.js"]
+qmg_core = ["replay_web/*.html", "replay_web/*.css", "replay_web/*.js",
+            "ai_debug_web/*.html", "ai_debug_web/*.css", "ai_debug_web/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
