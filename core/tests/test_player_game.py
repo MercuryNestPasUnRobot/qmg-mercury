@@ -5,7 +5,7 @@ import pytest
 
 from conftest import card, move_initial
 from qmg_core.ai_debug import DebugPanel
-from qmg_core.model import TURN_ORDER
+from qmg_core.model import TURN_ORDER, zone
 from qmg_core.player_game import PlayerError
 from qmg_core.replay import DATA_TAG, refresh_player_recordings, write_json
 from test_ai_debug import SyntheticVersion, eventually
