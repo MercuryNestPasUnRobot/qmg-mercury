@@ -121,9 +121,10 @@ def test_airdrop_and_deck_top_use_their_separate_bases(data):
     assert forecast(data).statuses.report("germany", "g-status")["future"] == 2
     ability["trigger"]["card_trigger"]["type"] = "play-phase-start"
     ability["effects"] = [instruction({"type": "order-deck-top", "count": 3})]
+    hand_only(data, "g-deck-2")
     assert forecast(data).statuses.report("germany", "g-status")["future"] == 3
     data["settings"]["max_rounds"] = 2
-    assert forecast(data).statuses.report("germany", "g-status")["future"] == 1
+    assert forecast(data).statuses.report("germany", "g-status")["future"] == 3
 
 
 def test_path_and_site_modifiers_count_a_single_nearest_piece_per_side(data):

@@ -46,6 +46,7 @@ const retentionDetails = value => [
   "保留分 " + signed(value.net), "短期 " + signed(value.short_term), "初始 " + signed(value.slot_cost),
   "基础储备 " + signed(value.basic_reserve), "重复 " + signed(value.redundancy),
   value.used_basic_cost ? "弃置成本 " + signed(-value.used_basic_cost) : "",
+  value.expansion_cost ? "损失可达分点 " + signed(-value.expansion_cost) : "",
   value.forced ? "无牌可出，必须弃牌" : value.replacement_available ? "" : "无额外补牌",
   value.extra_draws ? "过牌 " + signed(value.draw_cycle) + "（手牌平均 " + signed(value.hand_average) + "）" : "",
   value.penalty_saved ? "免扣分 " + signed(value.penalty_saved) : "",

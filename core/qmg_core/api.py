@@ -158,6 +158,16 @@ def observation(processor, controlled_countries, *, include_history=True):
                     decision["score_source"] = token["token_id"]
             if action["type"] == "RETURN_CARD_SELECTED":
                 decision["return_discard_cost"] = action["effect"]["discardHandCount"]
+            if action["type"] == "ORDER_DECK_SELECTED":
+                from .economic_scoring import self_deck_operations
+
+                owner = s.decision.required_country
+                legal = sorted(s.decision.legal_options)
+                frame = next(f for f in s.stack if f.resolution_id == s.decision.resolution_id)
+                decision["legal_options"] = legal
+                decision["deck_order"] = {"selected": len(action["selected"]),
+                    "options": {key: s.tokens[key].definition_id for key in legal},
+                    "known_operations": list(self_deck_operations(rules, s, owner, reversed(frame.remaining_operations)))}
             if s.decision.continuation["type"] == "RESPONSE_SELECTED":
                 candidates = s.decision.continuation["candidates"]
                 decision["response_sources"] = {

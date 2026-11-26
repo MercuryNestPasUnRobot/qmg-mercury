@@ -11,7 +11,7 @@ from .engine import AbilityScanner, CommandProcessor, ResolutionBudgetExceeded
 from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, ZoneRegistry, zone
 from .operations import OperationExecutor, ScoreResolver, outcome
-from .rules import SupplyResolver, board_units
+from .rules import SupplyResolver, board_units, status_enabled
 
 
 @dataclass(frozen=True)
@@ -33,10 +33,11 @@ class PositionValue:
 
 
 class SettlementScorer:
-    def __init__(self, units, expansion_vp=0, *, location_weights=None):
+    def __init__(self, units, expansion_vp=0, *, location_weights=None, economy_factory=None):
         self.units = units
         self.expansion_vp = expansion_vp
         self.location_weights = location_weights
+        self.economy_factory = economy_factory
 
     @staticmethod
     def closing_positions(rules, settled, deadline):
@@ -243,6 +244,22 @@ class SettlementScorer:
                 expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
         expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
         map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp) + air_support
-        return PositionValue(float(actual), map_value, cards, 0.0, self.units.vp_score(actual) + map_value + cards,
+        resources = 0
+        if self.economy_factory and not state.winner:
+            economy = self.economy_factory(rules, state)
+            resources = -sum(sign(seat) * economy.future_loss(seat) for seat in TURN_ORDER)
+            if economy.status_weights and any(state.positions[zone(seat, "STATUS")] for seat in TURN_ORDER):
+                status = economy.statuses
+                cards += sum(sign(seat) * sum(status.residual(seat).values()) for seat in TURN_ORDER)
+                # The settled map already contains the supply difference. Only add the durable waiver once.
+                for seat in TURN_ORDER:
+                    for key in state.positions[zone(seat, "STATUS")]:
+                        source = state.tokens[key]
+                        definition = rules.cards[source.definition_id]
+                        if (any(mod["kind"] == "always_supplied" for mod in definition.get("modifiers", ()))
+                                and status_enabled(rules, state, source)
+                                and condition_met(rules, state, seat, definition.get("content_condition"))):
+                            cards += sign(seat) * self.units.action
+        return PositionValue(float(actual), map_value, cards, resources, self.units.vp_score(actual) + map_value + cards + resources,
                              terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score,
                              temporary_vp)

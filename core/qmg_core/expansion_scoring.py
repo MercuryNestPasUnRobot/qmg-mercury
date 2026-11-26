@@ -25,12 +25,12 @@ def project_placement(rules, state, force, region):
     return projected, token
 
 
-def construction_cards(rules, state, force, *, spent=None):
+def construction_cards(rules, state, force, *, spent=None, discarded=()):
     # A uses its own observation and B uses its own projected hand. Opaque
     # placeholders carry no construction kind and cannot increase this budget.
     seat = rules.force_controllers[force]
     hand = Counter(rules.cards.get(state.tokens[key].definition_id, {}).get("legacy_kind")
-                   for key in state.positions[zone(seat, "HAND")] if key != spent)
+                   for key in state.positions[zone(seat, "HAND")] if key != spent and key not in discarded)
     return {kind: min(hand[card], len(state.positions[zone(force, "RESERVE_" + kind)]))
             for card, kind in BUILD_CARDS.items()}
 
@@ -60,6 +60,8 @@ class ConstructionNetwork:
                                    if t.token_type == "SCORE_SOURCE" and t.position_id in self.land)
         self.side_ports = None
         self.supplied_origins = None
+        self.hand_sites = {}
+        self.starting_placements = {}
 
     def available_side_ports(self):
         if self.side_ports is None:
@@ -106,7 +108,7 @@ class ConstructionNetwork:
                         heappush(queue, (distance + 2, target, coast))
         return result
 
-    def reachable(self, origin, armies, navies):
+    def reachable(self, origin, armies, navies, *, initial_ports=frozenset()):
         """Explore construction chains with separate land and sea card budgets."""
         if not (armies or navies):
             return set()
@@ -115,7 +117,7 @@ class ConstructionNetwork:
             self.supplied_origins = {self.surface[key] for key in supplied & self.surface.keys()}
         result = set()
         labels = defaultdict(list)
-        queue = deque([(origin, 0, 0, frozenset())])
+        queue = deque([(origin, 0, 0, initial_ports)])
         while queue:
             current, army_used, navy_used, ports = queue.popleft()
             key = current, ports
@@ -145,6 +147,42 @@ class ConstructionNetwork:
             return ()
         budget = construction_cards(self.rules, self.state, self.force, spent=spent)
         reachable = set().union(*(self.reachable(p, budget["ARMY"], budget["NAVY"]) for p in origins))
+        return self.sites_in(reachable)
+
+    def hand_score_sites(self, discarded=()):
+        budget = construction_cards(self.rules, self.state, self.force, discarded=discarded)
+        armies, navies = budget["ARMY"], budget["NAVY"]
+        key = armies, navies
+        if key not in self.hand_sites:
+            if not (armies or navies):
+                self.hand_sites[key] = frozenset()
+            else:
+                supply = SupplyResolver(self.rules)
+                supplied = supply.supplied(self.state, self.force)
+                reachable = set().union(*(self.reachable(self.surface[token], armies, navies)
+                                          for token in supplied & self.surface.keys()))
+                legal = LegalActionGenerator(self.rules)
+                # A legal first build can also start from a home or a rule-granted landing site.
+                for kind, available in budget.items():
+                    if not available:
+                        continue
+                    if kind not in self.starting_placements:
+                        positions = legal.targets(self.state, self.seat, {"type": "BUILD_" + kind, "force": self.force})
+                        placements = []
+                        for region in positions:
+                            projected, token = project_placement(self.rules, self.state, self.force, region)
+                            if token in supply.supplied(projected, self.force):
+                                placements.append(region)
+                        self.starting_placements[kind] = placements
+                    for region in self.starting_placements[kind]:
+                        reachable.add(region)
+                        reachable.update(self.reachable(region, armies - int(kind == "ARMY"),
+                                         navies - int(kind == "NAVY"),
+                                         initial_ports=frozenset({region}) if kind == "ARMY" and self.needs_port else frozenset()))
+                self.hand_sites[key] = frozenset(self.sites_in(reachable))
+        return self.hand_sites[key]
+
+    def sites_in(self, reachable):
         if not reachable:
             return ()
         modifiers = Counter()

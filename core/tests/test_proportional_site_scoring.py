@@ -76,20 +76,21 @@ def test_score_bonus_and_loss_use_proportion_and_only_affected_seats(data):
     assert forecast(data).routes.position.site_base("united-kingdom", "C", "C") == 9
 
 
-def test_free_look_values_each_remaining_window_and_reorder_keeps_its_floor(data):
+def test_free_look_prices_one_window_and_uses_the_standard_cycling_value(data):
     ability = scoring_status(data)
     line(data, rounds=5)
+    hand_only(data, "g-deck-2")
     move_initial(data, "g-status", zone("germany", "STATUS"))
     ability["effects"] = [instruction({"type": "order-deck-top", "count": 1})]
     clock = forecast(data).statuses
-    assert sum(clock.portfolio("germany", True).values()) == pytest.approx(5 * 0.3)
-    assert len(clock.portfolio("germany", True)) == 5
+    assert sum(clock.portfolio("germany", True).values()) == 1
+    assert len(clock.portfolio("germany", True)) == 1
     ability["effects"][0]["effect"]["count"] = 2
-    assert sum(forecast(data).statuses.portfolio("germany", True).values()) == 1.25
+    assert sum(forecast(data).statuses.portfolio("germany", True).values()) == 2
 
 
 @pytest.mark.parametrize("effect,expected", [
-    (instruction({"type": "order-deck-top", "count": 1}), 0.3),
+    (instruction({"type": "order-deck-top", "count": 1}), 1),
     ({"type": "TRANSFER", "token": "g-build", "destination": "germany:DECK"}, 1),
 ])
 def test_instant_look_and_card_return_score_in_b_simulation(data, effect, expected):

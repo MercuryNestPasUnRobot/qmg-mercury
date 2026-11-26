@@ -110,6 +110,7 @@ def test_discard_ranking_counts_one_penalty_waiver_and_one_score_per_extra_draw(
 
 def test_voluntary_discard_settles_a_listener_and_draw_replaces_the_card(data, profile):
     profile["action_distance_scoring"] = False
+    profile["hand_retention"]["slot_cost"] = 0.55
     hand_only(data, "g-build", "g-deck-2")
     data["settings"]["hand_limit"] = 2
     card(data, "g-build")["legacy_kind"] = "build-army"
@@ -163,7 +164,7 @@ def test_basics_use_the_same_floor_in_all_six_seats_and_redundancy_needs_crowdin
         for n in range(4):
             add_card(data, seat, f"retention-event-{n}", "HAND")
     p = make(data)
-    settings = profile["hand_retention"]
+    settings = {**profile["hand_retention"], "slot_cost": 0.55}
     by_seat = []
     for seat in TURN_ORDER:
         values = score_retention(p.rules, p.state, seat, settings, lambda _: 0.25)
@@ -192,7 +193,7 @@ def test_deck_slots_are_reserved_before_voluntary_discard(data, profile):
     ranked = policy.rank(client.observe(), client.legal_commands())
     assert ranked[0]["command"]["type"] == "END_PHASE"
     discard = next(row for row in ranked if row["command"]["type"] == "DISCARD_CARD")
-    assert discard["retention"]["net"] < 0
+    assert discard["retention"]["net"] == 0 and discard["retention"]["discard_cost"] == 1
     assert discard["retention"]["replacement_available"] is False
     assert discard["retention"]["extra_draws"] == 0
     assert discard["retention"]["draw_cycle"] == 0
@@ -217,7 +218,7 @@ def test_opening_forced_discard_can_keep_a_better_card_over_a_basic_for_a_later_
     view = britain.observe()
     assert is_hand_choice(view, "united-kingdom") and view["turn"]["country_index"] == 0
     command, log = SeatPolicy(p.rules, evaluator=ScoreEvaluator(p.rules, profile)).decide(britain, "united-kingdom")
-    assert log["rule_scores"][0]["retention"]["net"] > 0
+    assert log["rule_scores"][0]["retention"]["slot_cost"] == 0
     assert command["option"] == "united-kingdom-opening-basic"
     britain.submit(command)
     finish_choices(p)

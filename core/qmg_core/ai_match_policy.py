@@ -4,15 +4,19 @@ import multiprocessing
 from itertools import takewhile
 from time import perf_counter
 
+from .api import CoreAPI, observed_position
 from .content_effects import available_options, condition_met
+from .economic_scoring import self_deck_operations
+from .engine import CommandProcessor
 from .evaluation import OneStepPlanner, acceptable_play, candidate_key
 from .definitions import BATTLES, CONSTRUCTION
 from .hand_retention import is_hand_choice
-from .model import CoreError, zone
+from .model import CoreError, TURN_ORDER, zone
 from .recruitment import recruitment_play
 from .response_scoring import is_delayed
+from .rules import LegalActionGenerator
 from .status_scoring import is_airdrop, is_status
-from .reallocation_scoring import acquisitions, payment_plans, planned_options, price
+from .reallocation_scoring import acquisitions, extra_refill, payment_plans, planned_options, price
 from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 
 
@@ -193,8 +197,10 @@ class RulePolicy:
                 sum(max(0, economy.statuses.airdrop_value(seat, ability["id"])) for ability in airdrop) +
                 0.35 * sum(self.instructions(a["effects"], seat, economy) for a in abilities if a not in airdrop))
 
-    def discard_value(self, card, seat, economy, view):
+    def discard_value(self, card, seat, economy, view, *, key=None):
         cost = self.evaluator.basic_discard_cost(view, seat, card) if self.evaluator else 0
+        if key and economy and self.evaluator.marginal_opportunity:
+            cost += economy.routes.expansion_discard_cost(seat, (key,))
         if self.units.enabled:
             cost += self.units.card
         return -max(0, self.card_value(card, seat, economy)) - cost
@@ -203,18 +209,22 @@ class RulePolicy:
         if not retention:
             return {}
         penalty = self.rules.settings.get("discard_phase_penalty", 0)
-        saved = self.units.vp_score(penalty) if not view["turn"].get("discarded_in_phase") else 0
+        phase = view["turn"]["phase"]
+        saved = self.units.vp_score(penalty) if phase == "Discard" and not view["turn"].get("discarded_in_phase") else 0
         # Each choice is compared with stopping now, so only new draw slots count.
-        cycling = self.evaluator.cycle_value(economy, seat, int(bool(penalty and replacement)), retention)
+        marginal = self.evaluator.marginal_opportunity
+        cycling = self.evaluator.cycle_value(economy, seat, int(bool(replacement and (marginal or penalty))), retention)
         cycle = cycling["cycle_score"]
-        exhaustion = self.units.vp_score(self.rules.settings["deck_exhaustion_vp"]) if penalty and draw_slot and not replacement else 0
+        exhaustion = (self.units.vp_score(self.rules.settings["deck_exhaustion_vp"])
+                      if (marginal or penalty) and draw_slot and not replacement else 0)
         result = {}
         for key, terms in retention.items():
             card = self.rules.cards[view["tokens"][key]["definition_id"]]
-            gain = (economy.statuses.discard_gain(seat, card)
-                    if economy and self.evaluator.action_distance and economy.status_weights else 0)
+            gain = (economy.statuses.discard_gain(seat, card) if phase == "Discard" and economy and
+                    self.evaluator.action_distance and economy.status_weights else 0)
             cost = terms["net"] if replacement else (
-                max(0, terms["short_term"]) + terms["basic_reserve"] + terms.get("used_basic_cost", 0) + self.units.card)
+                max(0, terms["short_term"]) + terms["basic_reserve"] + terms.get("used_basic_cost", 0) +
+                terms.get("expansion_cost", 0) + self.units.card)
             score = saved + cycle + gain + exhaustion - cost
             result[key] = (score, {"hand_average": cycling["hand_average"], "extra_draws": int(replacement),
                                    "draw_cycle": cycle, "penalty_saved": saved, "discard_trigger": gain,
@@ -239,6 +249,12 @@ class RulePolicy:
         return (1 if delta > 0 else -1) if delta and economy.closes_game(seat, delta) else 0
 
     def reallocation_plan(self, view, seat, economy):
+        if economy and self.evaluator.marginal_opportunity:
+            plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view),
+                                  expansion_cost=economy.routes.expansion_discard_cost)
+            return max((price({**plan, **economy.cycle_value(seat, extra_refill(economy, seat, plan))},
+                              self.play_card_value(self.rules.cards[plan["definition"]], seat, economy)) for plan in plans),
+                       key=lambda plan: plan["total"], default=None)
         cycling = (self.evaluator.cycle_value(economy, seat, view["reallocation"]["cost"], self.evaluator.retention(view, seat))
                    if self.evaluator and self.evaluator.hand_slot_cost else {})
         plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view))
@@ -258,6 +274,74 @@ class RulePolicy:
                 rows[option] = economy.responses.activation(seat, source, decision["response_abilities"][option],
                     decision.get("response_event"), decision.get("response_unit_moves", ()))
         return rows
+
+    def projected_deck_operations(self, view, seat, key, kind):
+        rules, state = observed_position(self.evaluator.rules, view)
+        processor = CommandProcessor(rules, state, search_projection=True)
+        client = CoreAPI(processor, (seat,))
+        command = next((c for c in client.legal_commands() if c["type"] == kind and c.get("card") == key), None)
+        if command is None:
+            return None
+        deadline = perf_counter() + 0.25
+        try:
+            for _ in range(min(8, self.evaluator.weights["max_simulation_nodes"])):
+                client.apply(command)
+                projected = client.observe(include_history=False)
+                decision = projected["decision"]
+                if not decision:
+                    counts = []
+                    for record in processor.records:
+                        for move in record["outcome"]["changes"]:
+                            if move["from"] == zone(seat, "DECK") and move["to"] in (zone(seat, "HAND"), zone(seat, "DISCARD")):
+                                counts.append(("draw" if move["to"] == zone(seat, "HAND") else "discard", 1))
+                    return counts
+                if decision["required_country"] != seat or decision["decision_type"] == "ORDER_DECK" or perf_counter() >= deadline:
+                    return None
+                legal = [choice for choice in client.legal_commands() if choice["type"] == "CHOOSE"]
+                command = self.rank(projected, legal, verify_recruitment=False)[0]["command"] if legal else None
+                if command is None:
+                    return None
+        except CoreError:
+            return None
+        return None
+
+    def deck_order_scores(self, order, seat, economy, view=None):
+        state = economy.visible_state()
+        operations = list(order["known_operations"])
+        if TURN_ORDER[state.turn.country_index] == seat and state.turn.phase == "Play" and state.turn.plays_remaining:
+            legal = LegalActionGenerator(self.rules)
+            plays = []
+            for key in state.positions[zone(seat, "HAND")]:
+                token = state.tokens[key]
+                card = self.rules.cards.get(token.definition_id)
+                if card and legal.can_start_card(state, seat, card):
+                    plays.append((self.play_card_value(card, seat, economy, spent_card=key), key, "PLAY_CARD", card["effects"]))
+            for key in state.positions[zone(seat, "STATUS")]:
+                ability = self.rules.cards[state.tokens[key].definition_id].get("active_ability")
+                if ability and any(token.source_token_id == key and token.definition_id == ability
+                                   for token in (state.tokens[t] for t in state.positions[zone(seat, "ABILITY_READY")])):
+                    effects = self.rules.abilities[ability]["effects"]
+                    if legal.can_start_card(state, seat, {**self.rules.cards[state.tokens[key].definition_id],
+                                                        "effects": effects}, activating=True):
+                        plays.append((self.instructions(effects, seat, economy, closeout=True) - self.units.action, key, "USE_STATUS", effects))
+            if plays:
+                def choose_branch(options):
+                    return max(options, key=lambda option: self.instructions(option["effects"], seat, economy, closeout=True))
+                _, key, kind, effects = max(plays, key=lambda play: (play[0], play[1]))
+                projected = self.projected_deck_operations(view, seat, key, kind) if view else None
+                operations.extend(projected if projected is not None else self_deck_operations(
+                    self.rules, state, seat, effects, choose_branch=choose_branch))
+        slot = order["selected"]
+        discard = False
+        for kind, count in operations:
+            if slot < count:
+                discard = kind == "discard"
+                break
+            slot -= count
+        sign = -1 if discard else 1
+        return {key: sign * self.card_value(self.rules.cards[definition], seat, economy, closeout=True)
+                if definition in self.rules.cards and not self.rules.cards[definition].get("simulation_unknown") else 0
+                for key, definition in order["options"].items()}
 
     def choice_value(self, view, command, region_scores, economy):
         option = command["option"]
@@ -323,7 +407,7 @@ class RulePolicy:
                 value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)
                 cost = decision.get("hand_discard") or op in ("DISCARD", "COST_SELECTED") or any(
                     word in kind for word in ("COST", "DISCARD", "PAY", "REALLOCATE"))
-                return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy, view)
+                return (self.discard_value(self.rules.cards[token["definition_id"]], seat, economy, view, key=option)
                         if cost or view["turn"]["phase"] in ("Setup", "Discard") else value)
             if token["token_type"] == "UNIT":
                 if op == "ELIMINATE" and economy and self.evaluator.action_distance:
@@ -379,13 +463,15 @@ class RulePolicy:
         seat = commands[0]["actor"]
         phase = view["turn"]["phase"]
         economy = self.evaluator.economic_from_view(view) if self.evaluator else None
-        slot_cost = self.evaluator.hand_slot_cost if self.evaluator else 0
+        retain = self.evaluator and self.evaluator.uses_hand_retention
         card_cost = self.evaluator.card_play_cost if self.evaluator else 0
         forced_play_discard = phase == "Play" and any(c["type"] == "DISCARD_CARD" for c in commands)
         retention = (self.evaluator.retention(view, seat)
-                     if slot_cost and is_hand_choice(view, seat, forced_play_discard=forced_play_discard) else {})
+                     if retain and is_hand_choice(view, seat, forced_play_discard=forced_play_discard) else {})
         decision = view.get("decision") or {}
         responses = self.response_options(view, seat, economy)
+        deck_order = (self.deck_order_scores(decision["deck_order"], seat, economy, view)
+                      if economy and self.evaluator.marginal_opportunity and "deck_order" in decision else {})
         forecasts = {}
         options = [c["option"] for c in commands if c["type"] == "CHOOSE"]
         if economy and economy.map_weights and decision.get("map_force"):
@@ -402,7 +488,8 @@ class RulePolicy:
         replacement_available = draw_slot and view["positions"][zone(seat, "DECK")]["count"] > slots
         discards = (self.discard_phase_options(view, seat, economy, retention, draw_slot=draw_slot,
                                                replacement=replacement_available)
-                    if phase == "Discard" and any(c["type"] == "DISCARD_CARD" for c in commands) else {})
+                    if phase == "Discard" or (forced_play_discard and self.evaluator and self.evaluator.marginal_opportunity)
+                    else {})
         info = view.get("reallocation", {})
         plan = (self.reallocation_plan(view, seat, economy)
                 if "payment" in info or any(c["type"] == "REALLOCATE" for c in commands) else None)
@@ -416,6 +503,8 @@ class RulePolicy:
             kind = command["type"]
             if kind == "CHOOSE":
                 option = command["option"]
+                if option in deck_order:
+                    return deck_order[option]
                 if option in responses:
                     estimate = responses[option]
                     forecasts[option] = estimate
@@ -432,10 +521,12 @@ class RulePolicy:
                     return source_values.get(info["sources"][option], -10)
                 return self.choice_value(view, command, region_scores, economy)
             if kind == "END_PHASE":
-                if slot_cost and phase in ("Play", "Air", "Discard"):
+                if retain and phase in ("Play", "Air", "Discard"):
                     return 0
                 return -1
             if kind == "DISCARD_CARD":
+                if command["card"] in discards:
+                    return discards[command["card"]][0]
                 net = retention.get(command["card"], {}).get("net", 0)
                 if forced_play_discard:
                     return -net if retention else self.discard_value(
@@ -718,7 +809,7 @@ class SeatPolicy:
         if len(commands) == 1:
             mode, status = "forced", "only-legal-command"
         forced_play_discard = mandatory and any(c["type"] == "DISCARD_CARD" for c in commands)
-        if (not compare_exchange and self.rule.evaluator and self.rule.evaluator.hand_slot_cost and
+        if (not compare_exchange and self.rule.evaluator and self.rule.evaluator.uses_hand_retention and
                 is_hand_choice(view, country, forced_play_discard=forced_play_discard)):
             status = "hand-retention"
         elif response_choice:

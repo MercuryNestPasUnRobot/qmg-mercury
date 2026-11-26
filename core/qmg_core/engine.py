@@ -363,8 +363,9 @@ class CommandProcessor:
             d = s.decision
             if d.required_country not in controlled_countries:
                 return interrupts
+            options = sorted(d.legal_options) if d.decision_type == "ORDER_DECK" else d.legal_options
             return [{"type": "CHOOSE", "actor": d.required_country, "expected_version": s.version,
-                     "decision_id": d.decision_id, "option": option} for option in d.legal_options] + interrupts
+                     "decision_id": d.decision_id, "option": option} for option in options] + interrupts
         country = TURN_ORDER[s.turn.country_index]
         if s.stack or country not in controlled_countries or s.turn.phase == "Setup":
             return interrupts
