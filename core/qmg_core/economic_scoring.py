@@ -14,6 +14,26 @@ CARD_RETURN_EFFECTS = {"put-hand-on-deck-bottom", "recover-discard", "return-dec
                        "return-played-card", "return-revealed-discard", "shuffle-used-card"}
 
 
+def self_deck_operations(rules, state, seat, steps, *, choose_branch=None):
+    """Describe known consumption of the seat's deck without inspecting its cards."""
+    for step in steps:
+        op = step.get("operation", step)
+        if op["type"] == "DRAW":
+            yield "draw", op.get("count", 1)
+        elif op["type"] == "CARD_EFFECT":
+            effect = op["effect"]
+            kind = effect["type"]
+            if not condition_met(rules, state, seat, effect.get("when")):
+                continue
+            if kind == "choose-one" and choose_branch and effect.get("chooser", seat) in (seat, "self"):
+                branch = choose_branch(effect["options"])
+                yield from self_deck_operations(rules, state, seat, branch["effects"], choose_branch=choose_branch)
+            elif kind == "discard-top" and effect["target"] in (seat, "self"):
+                yield "discard", effect["count"]
+            elif kind == "discard-top-per-unit" and effect["target"] in (seat, "self"):
+                yield "discard", effect["countPer"] * len(filtered_units(rules, state, seat, effect["filter"]))
+
+
 class EconomicForecast:
     def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None, map_weights=None,
                  units=ScoreUnits(), hand_average=None):
@@ -36,6 +56,12 @@ class EconomicForecast:
         self.units = units
         self.hand_average = hand_average
         self.hand_averages = {}
+        self.averaging = set()
+
+    @property
+    def marginal(self):
+        return bool(self.map_weights and all(self.map_weights.get(key) for key in (
+            "action_distance_scoring", "action_opportunity_scoring", "marginal_opportunity_scoring")))
 
     @cached_property
     def routes(self):
@@ -110,8 +136,14 @@ class EconomicForecast:
         return self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat))
 
     def cycle_value(self, seat, count):
+        if seat in self.averaging:
+            return cycling_ev(None, self.units.card, count, hand_average=self.units.card)
         if seat not in self.hand_averages:
-            self.hand_averages[seat] = self.hand_average(self, seat)
+            self.averaging.add(seat)
+            try:
+                self.hand_averages[seat] = self.hand_average(self, seat)
+            finally:
+                self.averaging.remove(seat)
         return cycling_ev(None, self.units.card, count, hand_average=self.hand_averages[seat])
 
     def draw_value(self, seat, count, already_drawn=0):
@@ -127,7 +159,9 @@ class EconomicForecast:
         return (self.points(seat, immediate, base, closeout=closeout)
                 + sign * self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * future))
 
-    def top_value(self, seen, remaining_rounds):
+    def top_value(self, seen, remaining_rounds, *, seat=None):
+        if self.marginal and self.hand_average and seat is not None:
+            return self.cycle_value(seat, seen)["cycle_score"]
         if seen == 1:
             return self.units.card_score(self.settings.get("deck_top_look", 0.3))
         return self.units.card_score(max(1, remaining_rounds * 0.25)) if seen > 1 and remaining_rounds else 0
@@ -155,7 +189,7 @@ class EconomicForecast:
                 return self.return_value(seat, effect)
             if kind == "order-deck-top":
                 seen = min(effect["count"], self.count(seat, "DECK"))
-                return self.top_value(seen, self.routes.position.scoring_rounds(seat))
+                return self.top_value(seen, self.routes.position.scoring_rounds(seat), seat=seat)
         if kind not in POINT_EFFECTS and kind not in MILL_EFFECTS:
             return None
         if kind in POINT_EFFECTS:

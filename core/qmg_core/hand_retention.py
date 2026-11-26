@@ -22,22 +22,29 @@ def cycling_ev(retention, card_unit, count, *, hand_average=None):
     return {"hand_average": hand_average, "cycle_cards": count, "cycle_score": count * (card_unit - hand_average)}
 
 
-def score_retention(rules, state, seat, settings, short_term, basic_cost=None):
+def score_retention(rules, state, seat, settings, short_term, basic_cost=None, *, expansion_cost=None):
     hand = state.positions[zone(seat, "HAND")]
     limit = rules.settings["hand_limit"]
     crowded = len(hand) >= max(3, limit - 1)
+    slot_cost = 0.0 if expansion_cost is not None else -settings["slot_cost"]
     basic = defaultdict(list)
     values = {}
     for key in hand:
         card = rules.cards[state.tokens[key].definition_id]
         value = short_term(card)
         kind = card.get("legacy_kind")
-        values[key] = {"short_term": value, "slot_cost": -settings["slot_cost"],
+        values[key] = {"short_term": value, "slot_cost": slot_cost,
                        "basic_reserve": 0.0, "redundancy": 0.0}
         if kind in BASIC_KINDS:
             basic[kind].append(key)
             if basic_cost:
                 values[key]["used_basic_cost"] = basic_cost(card)
+            if expansion_cost is not None:
+                values[key]["expansion_cost"] = expansion_cost(seat, (key,))
+    if expansion_cost is not None:
+        for terms in values.values():
+            terms["net"] = sum(terms.values())
+        return values
     basic_count = sum(map(len, basic.values()))
     for copies in basic.values():
         copies.sort(key=lambda key: (-values[key]["short_term"], key))

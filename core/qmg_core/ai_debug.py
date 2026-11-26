@@ -31,6 +31,7 @@ TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.22": ("v1.22 · 行动机会与落点", "7f748bb278e3eb0bc292576f98cd317a001c9a07", DISCARD_CATALOG),
     "v1.21": ("v1.21 · 逐种结算调配", "90a084ed419528357d650f32ac80e38243c7d3b7", DISCARD_CATALOG),
     "v1.20": ("v1.20 · 征召与留存", "0fa645af31cd879ef6773334ef86f394f59c233d", DISCARD_CATALOG),
     "v1.19": ("v1.19 · 弃牌与过牌", "57843b3bcf97cb37e6e1b8bb5a3e4b0e2586d731", DISCARD_CATALOG),
@@ -42,6 +43,7 @@ GROUPS = {
     "route_forecast": "距离与路线", "frontier_scoring": "地图局势", "distance_weights": "距离权重",
     "supply_weights": "补给权重", "military_weights": "部队权重", "card_value_weights": "牌效估值",
     "effect_value_weights": "效果估值", "resource_penalties": "资源惩罚",
+    "status_forecast": "状态牌预测",
 }
 LABELS = {
     "vp": "每 1 VP", "card": "每张牌", "action": "每次行动", "capture_rounds": "占点评估回合数",
@@ -66,9 +68,16 @@ LABELS = {
     "default": "默认效果", "points": "计分", "build": "建设", "recruit": "征召", "choose-space": "选择地区",
     "battle": "战斗", "choose-unit": "选择单位", "air-action": "空军行动", "play-from-zone": "从指定区域出牌",
     "search-deck": "搜索牌库", "discard-hand": "弃手牌", "discard-status": "弃状态牌",
+    "extra_trigger_opportunities": "额外预计触发次数", "projected_distance_offset": "空降与路径的距离修正",
+    "condition_safe": "安全时条件维持比例", "condition_threatened": "受威胁时条件维持比例",
+    "condition_horizon": "条件维持折扣回合数", "arrival_accessible": "可直达地区的进驻比例",
+    "arrival_nearby": "邻近地区的进驻比例", "request_discard_card_value": "要求每弃一张的估值",
+    "filter_card_value": "每张滤牌估值", "rule_option_multiplier": "规则增加落点的折算",
+    "rule_option_decay": "次优落点衰减", "rule_option_limit": "规则落点上限",
 }
 INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "horizon", "construction_search_width",
-           "max_simulation_nodes"}
+           "max_simulation_nodes", "status_forecast.extra_trigger_opportunities", "status_forecast.projected_distance_offset",
+           "status_forecast.condition_horizon", "status_forecast.unknown_hand_scale", "status_forecast.rule_option_limit"}
 LEGACY_CARD_VALUES = {"REDEPLOY", "DRAW", "GAIN_VP", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE"}
 TERMINAL = {"completed", "stopped", "failed", "interrupted"}
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
@@ -93,6 +102,8 @@ def numeric_fields(weights):
             group = GROUPS.get(path[0], "搜索设置" if "width" in key or key == "max_simulation_nodes" else "通用估值")
             if weights.get("action_opportunity_scoring") and path[0] == "card_value_weights" and last in LEGACY_CARD_VALUES:
                 group = "旧版牌效估值（当前主线已替代）"
+            if weights.get("marginal_opportunity_scoring") and (path[0] == "hand_retention" or key == "economic_forecast.deck_top_look"):
+                group = "旧版估值（当前主线已替代）"
             fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
                 "label": f"距离 {last + 1}" if type(last) is int else LABELS.get(last, last),
                 "group": group})

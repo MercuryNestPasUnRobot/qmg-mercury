@@ -137,6 +137,9 @@ class ResponseForecast:
                         net += self.defense_value(owner, ability, current_economy, event, baseline)
                     continue
                 effect = op["effect"]
+                airdrop = current_economy.marginal and (effect.get("nearAirAction") or effect.get("atAirAction"))
+                offset = (current_economy.map_weights.get("status_forecast", {}).get("projected_distance_offset", 1)
+                          if airdrop else 0)
                 if baseline:
                     effect = {k: v for k, v in effect.items() if k not in
                               ("nearBuilt", "nearAirAction", "atAirAction", "battleRange", "battleDistance")}
@@ -165,7 +168,8 @@ class ResponseForecast:
                     net += max((effects_value(branch, current_economy) for branch in branches), default=0)
                     net += self.units.card_score(cost)
                 elif kind in MILITARY_EFFECTS and index < len(steps) - 1:
-                    value, placement, playable = self.first_military_step(owner, ability, effect, current_economy)
+                    value, placement, playable = self.first_military_step(owner, ability, effect, current_economy,
+                                                                          distance_offset=offset)
                     net += value
                     if placement:
                         token, target, is_build = placement
@@ -176,12 +180,12 @@ class ResponseForecast:
                     elif not playable and not effect.get("optional"):
                         break
                 else:
-                    net += self.effect_value(owner, ability, effect, current_economy, context, baseline)
+                    net += self.effect_value(owner, ability, effect, current_economy, context, baseline, distance_offset=offset)
             return net
 
         return effects_value(ability["effects"], economy)
 
-    def first_military_step(self, owner, ability, effect, economy):
+    def first_military_step(self, owner, ability, effect, economy, *, distance_offset=0):
         state = economy.visible_state()
         kind = effect.get("kind", "army")
         if kind == "same":
@@ -204,7 +208,8 @@ class ResponseForecast:
                         if value > best:
                             best, placement = value, (victim.token_id, dest, False)
                 elif economy.routes.placement_supplied(force, region):
-                    value = self.placement_base + economy.routes.target_value(force, region, construction=True)
+                    value = (economy.routes.position.value(force, region, construction=True, distance_offset=distance_offset)
+                             if distance_offset else self.placement_base + economy.routes.target_value(force, region, construction=True))
                     if value > best:
                         key = state.positions[zone(force, "RESERVE_" + variant.upper())][0]
                         best, placement = value, (key, region, True)
@@ -215,6 +220,15 @@ class ResponseForecast:
         trigger = trigger_of(ability)
         terrain = trigger.get("kind")
         friendly = self.rules.team(owner)
+        region = event.get("target")
+        if economy.marginal:
+            if region not in self.rules.regions or baseline:
+                return self.units.action
+            victims = [t for t in board_units(self.rules, state) if self.rules.team(t.owner_country) == friendly
+                       and (not terrain or self.rules.units[t.definition_id]["kind"].lower() == terrain)
+                       and t.position_id == region and event.get("target_token", t.token_id) == t.token_id]
+            return max((economy.routes.protection_value(t.owner_country, region, token=t.token_id) for t in victims),
+                       default=economy.routes.protection_value(owner, region))
         values = [economy.routes.removal_value(t.token_id) for t in board_units(self.rules, state)
                   if (self.rules.team(t.owner_country) == friendly
                       and (not terrain or self.rules.units[t.definition_id]["kind"].lower() == terrain)
@@ -222,7 +236,7 @@ class ResponseForecast:
                                          event.get("target_token", t.token_id) == t.token_id)))]
         return max(values, default=0)
 
-    def effect_value(self, owner, ability, effect, economy, context, baseline):
+    def effect_value(self, owner, ability, effect, economy, context, baseline, *, distance_offset=0):
         from .ai_match_policy import effect_priority
 
         rules, state = self.rules, economy.visible_state()
@@ -230,6 +244,8 @@ class ResponseForecast:
         if kind in MILITARY_EFFECTS:
             if effect.get("kind") == "same":
                 effect = {**effect, "kind": trigger_of(ability).get("kind", "either")}
+            if distance_offset:
+                return self.first_military_step(owner, ability, effect, economy, distance_offset=distance_offset)[0]
             return economy.routes.best_action_bonus(owner, {"type": "CARD_EFFECT", "effect": effect},
                                                     placement_base=0 if kind == "battle" else self.placement_base)
         if kind in ("prevent-removal", "protect-unit-this-turn"):
@@ -261,6 +277,8 @@ class ResponseForecast:
             if not baseline and (TURN_ORDER[state.turn.country_index] != owner or
                                  state.turn.phase in ("Victory", "Discard", "Draw")):
                 return 0
+            if economy.marginal:
+                return economy.routes.temporary_supply_value(owner, effect)
             supply = SupplyResolver(rules)
             return max((economy.routes.target_value(t.owner_country, t.position_id)
                         for t in pieces if t.token_id not in supply.supplied(state, t.owner_country)), default=0)
@@ -275,8 +293,13 @@ class ResponseForecast:
             options = available_options(rules, state, owner, effect, context)
             return self.units.card_score(1) if options else 0
         if kind == "request-hand-discard" and effect.get("target") == "battle-attacker":
+            if economy.marginal:
+                attacker = event.get("actor_country")
+                targets = (attacker,) if attacker in TURN_ORDER else (s for s in TURN_ORDER if rules.team(s) != rules.team(owner))
+                return max((economy.routes.tactical_effect(owner, {"type": "CARD_EFFECT", "effect": {**effect, "target": t}})
+                            for t in targets), default=0)
             return self.defense_value(owner, ability, economy, event, baseline)
-        return effect_priority(effect, rules.team(owner), economy, owner, units=self.units)
+        return effect_priority(effect, rules.team(owner), economy, owner, units=self.units, tactical=economy.marginal)
 
     def hand_actions(self, owner):
         """Only concrete first actions of present, individually playable cards."""

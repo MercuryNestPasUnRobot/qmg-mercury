@@ -162,7 +162,7 @@ class SupplyResolver:
     def __init__(self, rules):
         self.rules, self.graph = rules, MapGraph(rules)
 
-    def supplied(self, state, country, *, units=None):
+    def supplied(self, state, country, *, units=None, assume_supplied=()):
         if units is None:
             units = board_units(self.rules, state)
         modifiers = RuleModifierResolver(self.rules).resolve(state, country)
@@ -170,7 +170,7 @@ class SupplyResolver:
             m["kind"] == "always_supplied" and self.rules.units[t.definition_id]["kind"].lower()
             in m.get("kinds", ("army", "navy", "air")) for m in modifiers)}
         always.update(t.token_id for t in units if t.owner_country == country
-                      and unit_rule_matches(self.rules, state, t, "supply"))
+                      and (t.token_id in assume_supplied or unit_rule_matches(self.rules, state, t, "supply")))
         share = self.rules.settings["allied_supply"]
         groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
         revised = self.rules.settings.get("supply_revision", 1) == 2
@@ -203,7 +203,7 @@ class SupplyResolver:
                     continue
                 force = token.owner_country
                 token_modifiers = modifiers if force == country else RuleModifierResolver(self.rules).resolve(state, force)
-                automatic = unit_rule_matches(self.rules, state, token, "supply") or any(
+                automatic = token.token_id in assume_supplied or unit_rule_matches(self.rules, state, token, "supply") or any(
                     m["kind"] == "always_supplied" and self.rules.units[token.definition_id]["kind"].lower()
                     in m.get("kinds", ("army", "navy", "air")) for m in token_modifiers)
                 if automatic or has_port:

@@ -24,7 +24,8 @@ MAP_MODS = {"always_supplied", "supply_source", "deny_supply_source", "supply_sh
             "connection", "recruit_region", "home", "score_bonus"}
 OTHER_MODS = {"reallocate_cost", "reallocate_discard", "economic_adjustment", "ignore_enemy_statuses"}
 EFFECTS = POINT_EFFECTS | CARD_RETURN_EFFECTS | {
-    "discard-top", "prevent-removal", "battle", "build-at-battle-space", "choose-space", "recruit",
+    "discard-top", "prevent-removal", "protect-unit-this-turn", "protect-units-this-turn", "supply-this-turn",
+    "supply-units-this-turn", "battle", "build-at-battle-space", "choose-space", "recruit",
     "discard-hand", "play-from-zone", "request-hand-discard", "economic-discard-bonus",
     "order-deck-top", "put-hand-on-deck-bottom", "return-declared-army-card",
 }
@@ -32,6 +33,21 @@ BASIC = {"army": ("build-army", "land-battle"), "navy": ("build-navy", "sea-batt
 BASIC_KINDS = frozenset(kind for pair in BASIC.values() for kind in pair)
 EXTRA_ACTIONS = {"build", "choose-space", "recruit", "battle", "build-at-battle-space"}
 EXTRA_TRIGGERS = {"after-build", "battle-space", "turn-start"}
+CONDITIONAL_TRIGGERS = {"after-build", "battle-space", "before-battle-removal", "economic-play",
+                        "play-army-card", "unit-activity", "discard-stage-card", "after-air-action"}
+
+STATUS_FORECAST_DEFAULTS = {
+    "extra_trigger_opportunities": 1, "projected_distance_offset": 1,
+    "condition_safe": 0.95, "condition_threatened": 0.8, "condition_horizon": 4,
+    "arrival_accessible": 0.55, "arrival_nearby": 0.18,
+    "known_action_likelihood": 0.76, "keyword_draw_likelihood": 0.12, "action_draw_likelihood": 0.22,
+    "unknown_hand_likelihood_cap": 0.60, "unknown_hand_scale": 3,
+    "own_activity_likelihood": 0.38, "enemy_activity_likelihood": 0.32, "discard_activity_likelihood": 0.3,
+    "request_discard_card_value": 0.55, "filter_card_value": 0.28,
+    "rule_option_multiplier": 0.32, "rule_option_decay": 0.5, "rule_option_limit": 4,
+    "exchange_saved_payment_value": 0.35, "exchange_discard_base": 0.55, "exchange_discard_deck_bonus": 0.35,
+    "economic_target_share": 1 / 3, "alternative_play_action_value": 0.375, "forced_discard_card_value": 0.45,
+}
 
 
 def is_status(card):
@@ -65,10 +81,12 @@ def verify_status(rules, card):
 
 
 class StatusForecast:
-    def __init__(self, economy, discount, held_factor):
+    def __init__(self, economy, discount, held_factor, coefficients=None):
         self.economy, self.rules = economy, economy.rules
         self.state = economy.visible_state()
         self.discount, self.held_factor = discount, held_factor
+        self.config = STATUS_FORECAST_DEFAULTS | (coefficients or {})
+        self.marginal = economy.marginal
         self.turn = self.state.turn
         self.units = board_units(self.rules, self.state)
         self.legal = LegalActionGenerator(self.rules)
@@ -104,11 +122,12 @@ class StatusForecast:
         matches = sum((card.get("legacy_kind") in kinds or any(k in self.related_actions(card) for k in kinds)) and
                       (not keyword or keyword in card.get("text", "") + card.get("title", "")) for card in cards)
         unknown = sum(not card or card.get("simulation_unknown", False) for card in cards)
-        prior = 0.12 if keyword else 0.22
+        prior = self.config["keyword_draw_likelihood" if keyword else "action_draw_likelihood"]
         if matches:
-            return 0.76 if later < matches else prior if self.economy.count(seat, "DECK") else 0
+            return self.config["known_action_likelihood"] if later < matches else prior if self.economy.count(seat, "DECK") else 0
         if unknown:
-            return min(0.60, prior * (1 + min(3, unknown) / 3))
+            scale = self.config["unknown_hand_scale"]
+            return min(self.config["unknown_hand_likelihood_cap"], prior * (1 + min(scale, unknown) / scale))
         return prior if later and self.economy.count(seat, "DECK") else 0
 
     @staticmethod
@@ -158,13 +177,13 @@ class StatusForecast:
                 target = owner if effect["target"] == "self" else effect["target"]
                 if target in TURN_ORDER:
                     net += self.economy.mill(owner, target, effect["count"], 1)
-        return matching_cards + 1, net
+        return matching_cards + self.config["extra_trigger_opportunities"], net
 
     def deck_top(self, owner, count):
         seen = min(count, self.economy.count(owner, "DECK"))
         if self.action_distance:
             remaining = self.economy.routes.position.scoring_rounds(owner)
-            return self.economy.top_value(seen, remaining)
+            return self.economy.top_value(seen, remaining, seat=owner)
         return 0.22 * max(0, seen - 1)
 
     def airdrop_value(self, owner, key):
@@ -340,7 +359,7 @@ class StatusForecast:
             nearby = not accessible and any(self.adjacent(seat)[p].intersection(spaces) for p in options)
             chance = self.chance(seat, (BASIC[kind][0],), later - 1)
             if accessible or (nearby and later >= 2):
-                best = max(best, chance * (0.55 if accessible else 0.18))
+                best = max(best, chance * self.config["arrival_accessible" if accessible else "arrival_nearby"])
         return best
 
     def board_condition(self, owner, condition, later):
@@ -355,7 +374,7 @@ class StatusForecast:
                              u.position_id in self.adjacent(owner)[t.position_id] for u in self.units) for t in units)
             if not units and condition.get("max") == 0:
                 return 1 - self.possibility(owner, f["force"], f["kind"], tuple(f.get("spaces", ())), later)
-            return (0.80 if threatened else 0.95) ** min(later, 4)
+            return self.config["condition_threatened" if threatened else "condition_safe"] ** min(later, self.config["condition_horizon"])
         if len(units) < condition["min"] <= len(units) + later:
             return self.possibility(owner, f["force"], f["kind"], tuple(f.get("spaces", ())), later) ** (condition["min"] - len(units))
         return 0
@@ -367,7 +386,7 @@ class StatusForecast:
 
     def baseline_play(self, owner):
         # Opportunity cost of spending the regular play; the fallback is one forced discard.
-        best = self.economy.units.card_score(-0.45)
+        best = -self.economy.units.card_score(self.config["forced_discard_card_value"])
         for card in self.hand(owner):
             kind = card.get("legacy_kind")
             for unit, (build, battle) in BASIC.items():
@@ -377,10 +396,44 @@ class StatusForecast:
                     best = max([best] + [self.location_value(p, True, force=owner) for p in self.targets(owner, owner, unit, "battle")
                                           if self.enemies(owner, p, unit)])
             if kind and kind not in ("status", "response", "bolster", "air-power") and kind not in BASIC_KINDS:
-                best = max(best, self.economy.units.action_score(0.375))
+                best = max(best, self.economy.units.action_score(self.config["alternative_play_action_value"]))
         return best
 
-    def signals(self, owner, actor, key, later):
+    def trigger_card_kinds(self, owner, actor, trigger):
+        kind = trigger["type"]
+        relation = trigger.get("actor", trigger.get("builder", "any"))
+        if ((relation == "self" or trigger.get("ownTurnOnly")) and actor != owner or
+                relation == "enemy" and self.rules.team(actor) == self.rules.team(owner) or
+                relation == "team" and self.rules.team(actor) != self.rules.team(owner) or
+                relation in self.rules.countries and actor != relation):
+            return None
+        if kind == "economic-play":
+            return ("economic",)
+        if kind == "discard-stage-card":
+            return (trigger["kind"],) if actor == trigger["country"] else None
+        if kind == "unit-activity":
+            force, terrain = trigger["force"], trigger["kind"]
+            if actor == self.rules.force_controllers[force]:
+                return (BASIC[terrain][0],) if set(trigger["actions"]) & {"build", "recruit"} else None
+            if "attacked" in trigger["actions"] and self.rules.team(actor) != self.rules.team(force):
+                return (BASIC[terrain][1],)
+            return None
+        if kind == "before-battle-removal":
+            return (BASIC[trigger["kind"]][1],) if self.rules.team(actor) != self.rules.team(owner) else None
+        if actor != owner and (kind in ("play-army-card", "after-air-action") or relation == "any"):
+            return None
+        if kind == "after-air-action":
+            return ("air-power",)
+        if kind == "play-army-card":
+            return ("build-army",)
+        return (BASIC[trigger["kind"]][int(kind == "battle-space")],)
+
+    def known_triggers(self, actor, trigger, kinds):
+        keyword = trigger.get("keyword")
+        return sum((card.get("legacy_kind") in kinds or bool(self.related_actions(card).intersection(kinds))) and
+                   (not keyword or keyword in card.get("text", "") + card.get("title", "")) for card in self.hand(actor))
+
+    def signals(self, owner, actor, key, later, *, deterministic=False):
         """Mutually exclusive representative event locations with their probability."""
         trigger = trigger_of(self.rules.abilities[key])
         kind = trigger["type"]
@@ -390,23 +443,30 @@ class StatusForecast:
             force, unit = trigger["force"], trigger["kind"]
             controller = self.rules.force_controllers[force]
             if actor == controller:
-                return ((None, 0.38),) if self.targets(actor, force, unit, "recruit") else ()
+                return ((None, self.config["own_activity_likelihood"]),) if self.targets(actor, force, unit, "recruit") else ()
             if self.rules.team(actor) == self.rules.team(controller):
                 return ()
             reachable = self.targets(actor, actor, unit, "battle")
-            return tuple((p, 0.32 / len(reachable)) for p in reachable if any(
+            return tuple((p, self.config["enemy_activity_likelihood"] / len(reachable)) for p in reachable if any(
                 u.owner_country == force for u in self.enemies(actor, p, unit)))
         if kind == "economic-play":
-            return ((None, self.chance(actor, ("economic",), later, trigger.get("keyword"))),)
-        if kind == "before-battle-removal":
-            if self.rules.team(actor) == self.rules.team(owner):
+            return ((None, 1 if deterministic else self.chance(actor, ("economic",), later, trigger.get("keyword"))),)
+        if not deterministic:
+            if kind == "before-battle-removal":
+                if self.rules.team(actor) == self.rules.team(owner):
+                    return ()
+            elif actor != owner:
                 return ()
-        elif actor != owner:
-            return ()
         if kind == "discard-stage-card":
-            return ((None, 0.3 * self.chance(owner, (trigger["kind"],), later)),)
+            return ((None, 1 if deterministic else self.config["discard_activity_likelihood"] *
+                     self.chance(owner, (trigger["kind"],), later)),)
         if kind == "play-army-card":
-            return ((None, self.chance(owner, ("build-army",), later)),) if self.targets(owner, owner, "army", "build") else ()
+            return ((None, 1 if deterministic else self.chance(owner, ("build-army",), later)),) if self.targets(owner, owner, "army", "build") else ()
+        if kind == "after-air-action" and deterministic:
+            options = air_options(self.rules, self.state, owner, {"actions": ("deploy", "marshal")})
+            terrain = trigger.get("spaceKind")
+            return tuple((region, 1) for region in sorted({json.loads(option)[2] for option in options})
+                         if not terrain or self.rules.regions[region]["type"].lower() == terrain)
         if kind not in ("after-build", "battle-space", "before-battle-removal"):
             return ((None, 1.0),)
         unit = trigger["kind"]
@@ -415,7 +475,7 @@ class StatusForecast:
         if not build:
             targets = [p for p in targets if self.enemies(actor, p, unit)]
         chance = self.chance(actor, (BASIC[unit][0 if build else 1],), later)
-        weights = {p: self.location_value(p, not build, force=actor) for p in targets}
+        weights = {p: 1 if deterministic else self.location_value(p, not build, force=actor) for p in targets}
         total = sum(weights.values())
         if not total:
             return ()
@@ -433,7 +493,7 @@ class StatusForecast:
                     u.owner_country in trigger.get("victims", [owner]) and
                     (not trigger.get("suppliedOnly") or u.token_id in self.supplied(u.owner_country)) for u in victims):
                 continue
-            signals.append((p, chance * weight / total))
+            signals.append((p, 1 if deterministic else chance * weight / total))
         return tuple(signals)
 
     def military_effect(self, owner, effect, region, trigger, committed):
@@ -442,6 +502,8 @@ class StatusForecast:
         if force == "self":
             force = owner
         action = "build" if kind == "build-at-battle-space" else effect.get("action", kind)
+        if self.marginal and not committed and region is None and trigger["type"] in ("after-build", "battle-space"):
+            return self.economy.units.action
         projected = region and not committed and trigger["type"] in ("after-build", "battle-space")
         if projected:
             targets = set(self.after_event_targets(owner, force, unit, action, trigger["type"], trigger["kind"], region))
@@ -454,6 +516,11 @@ class StatusForecast:
             if not region:
                 return 0
             nearby = self.adjacent(force)[region]
+            if self.marginal:
+                position = self.economy.routes.position
+                return max((position.value(force, place, construction=True,
+                                           distance_offset=self.config["projected_distance_offset"])
+                            for place in targets & nearby), default=0)
             return self.economy.routes.position.best_adjacent_site(force, targets & nearby)
         if kind == "build-at-battle-space":
             if self.action_distance and trigger["type"] in EXTRA_TRIGGERS:
@@ -493,7 +560,7 @@ class StatusForecast:
                 if later and kind != "points":
                     f = effect.get("filter", {"force": "team", "kind": "army", "spaces": effect.get("spaces", ())})
                     potential = self.possibility(owner, f["force"], f["kind"], tuple(f.get("spaces", ())), later)
-                    value = value * 0.95 ** min(4, later) + effect["amountPer"] * potential
+                    value = value * self.config["condition_safe"] ** min(self.config["condition_horizon"], later) + effect["amountPer"] * potential
                 net += self.economy.units.vp_score(value if self.rules.team(recipient) == self.rules.team(owner) else -value)
             elif kind == "discard-top":
                 target = actor if effect["target"] == "battle-attacker" else effect["target"]
@@ -513,7 +580,20 @@ class StatusForecast:
             elif kind in EXTRA_ACTIONS:
                 net += self.military_effect(owner, effect, region, trigger, committed)
             elif kind == "prevent-removal":
-                net += self.support_value(owner, region) if region else self.economy.units.action_score(0.55)
+                if self.marginal:
+                    victims = [t for t in self.units if t.position_id == region and
+                               self.rules.team(t.owner_country) == self.rules.team(owner)]
+                    routes = self.economy.routes
+                    net += max((routes.protection_value(t.owner_country, region, token=t.token_id) for t in victims),
+                               default=routes.protection_value(owner, region))
+                else:
+                    net += self.support_value(owner, region) if region else self.economy.units.action_score(0.55)
+            elif self.marginal and kind in ("protect-unit-this-turn", "protect-units-this-turn", "supply-this-turn",
+                                           "supply-units-this-turn"):
+                if kind == "protect-unit-this-turn":
+                    net += self.economy.routes.protection_value(owner, region)
+                else:
+                    net += self.economy.routes.tactical_effect(owner, step)
             elif kind == "discard-hand":
                 n = effect["count"]
                 hand = self.hand(owner)
@@ -526,7 +606,13 @@ class StatusForecast:
                 units = self.economy.units
                 net -= units.card_score(n if units.enabled else n * (0.8 if effect.get("kinds") else 0.55))
             elif kind == "request-hand-discard":
-                net += self.economy.units.card_score(0.55 * min(self.economy.count(effect["target"], "HAND"), effect["min"]))
+                target = effect["target"]
+                if target == "battle-attacker":
+                    target = actor
+                if target in TURN_ORDER:
+                    sign = -1 if self.marginal and self.rules.team(target) == self.rules.team(owner) else 1
+                    net += self.economy.units.card_score(sign * self.config["request_discard_card_value"] *
+                                                        min(self.economy.count(target, "HAND"), effect["min"]))
             elif kind == "play-from-zone":
                 if not any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind") in effect["kinds"]
                            for k in self.state.positions[zone(owner, effect["zone"].upper())]) and not any(
@@ -536,7 +622,7 @@ class StatusForecast:
             elif kind == "return-declared-army-card":
                 net += self.economy.units.card_score(0.8 if self.targets(owner, owner, "army", "build") else 0.3)
             elif kind == "put-hand-on-deck-bottom":
-                net += 0.28 * min(effect["max"], len(self.hand(owner)), self.economy.count(owner, "DECK"))
+                net += self.config["filter_card_value"] * min(effect["max"], len(self.hand(owner)), self.economy.count(owner, "DECK"))
             elif kind == "order-deck-top":
                 net += self.deck_top(owner, effect["count"])
             elif kind == "economic-discard-bonus":
@@ -573,7 +659,8 @@ class StatusForecast:
         before, after = self.modifier_states(owner, card_id, source)
         old = ScoringRoutes(self.rules, before, self.units, self.economy.map_weights).position
         new = ScoringRoutes(self.rules, after, self.units, self.economy.map_weights).position
-        value = old.connection_change(new, owner, endpoints) if endpoints else 0
+        offset = self.config["projected_distance_offset"] if self.marginal else 0
+        value = old.connection_change(new, owner, endpoints, distance_offset=offset) if endpoints else 0
         for modifier in bonuses:
             site = modifier["site"]
             sign = -1 if modifier["amount"] < 0 else 1
@@ -607,7 +694,9 @@ class StatusForecast:
             for piece in self.units:
                 change = int(piece.token_id in second) - int(piece.token_id in first)
                 if change:
-                    supplied_delta += sign * change * self.support_value(force, piece.position_id)
+                    value = (self.economy.routes.protection_value(force, piece.position_id, token=piece.token_id)
+                             if self.marginal else self.support_value(force, piece.position_id))
+                    supplied_delta += sign * change * value
             for action, unit in (("BUILD_ARMY", "ARMY"), ("BUILD_NAVY", "NAVY"), ("LAND_BATTLE", "ARMY"), ("SEA_BATTLE", "NAVY")):
                 op = {"type": action, "unit_kind": unit, "force": force, "allied_effect": True}
                 old = set(self.legal.targets(before, seat, op))
@@ -619,8 +708,9 @@ class StatusForecast:
                 if new != old:
                     def options_value(regions):
                         values = sorted((self.support_value(force, p, battle) for p in regions), reverse=True)
-                        return sum(v / 2 ** i for i, v in enumerate(values[:4]))
-                    option_delta += sign * 0.32 * (options_value(new) - options_value(old))
+                        return sum(v * self.config["rule_option_decay"] ** i
+                                   for i, v in enumerate(values[:self.config["rule_option_limit"]]))
+                    option_delta += sign * self.config["rule_option_multiplier"] * (options_value(new) - options_value(old))
         return supplied_delta, option_delta
 
     def modifier(self, owner, actor, card_id, source, later, board):
@@ -634,18 +724,22 @@ class StatusForecast:
             if kind == "reallocate_cost" and actor == owner:
                 if len(self.hand(owner)) >= m["count"] and self.economy.count(owner, "DECK"):
                     units = self.economy.units
-                    value += units.card_score(0.35 * (1 if units.enabled else 0.55) * max(0, 3 - m["count"]))
+                    value += units.card_score(self.config["exchange_saved_payment_value"] * (1 if units.enabled else 0.55) *
+                                             max(0, self.rules.settings.get("reallocation_cost", 3) - m["count"]))
             elif kind == "reallocate_discard" and actor == owner:
                 if any(self.rules.cards.get(self.state.tokens[k].definition_id, {}).get("legacy_kind")
                        in BASIC_KINDS for k in self.state.positions[zone(owner, "DISCARD")]):
-                    value += self.economy.units.card_score(0.35 * (0.55 + 0.35 / (1 + self.economy.count(owner, "DECK"))))
+                    value += self.economy.units.card_score(self.config["exchange_saved_payment_value"] * (
+                        self.config["exchange_discard_base"] + self.config["exchange_discard_deck_bonus"] /
+                        (1 + self.economy.count(owner, "DECK"))))
             elif kind == "economic_adjustment":
                 if m["role"] == "actor" and actor == owner:
                     loss = max(self.economy.mill(owner, s, m["amount"], 0.75) for s in TURN_ORDER
                                if self.rules.team(s) != self.rules.team(owner))
                     value += self.chance(owner, ("economic",), later) * loss
                 elif m["role"] == "target" and self.rules.team(owner) != self.rules.team(actor):
-                    value += self.chance(actor, ("economic",), later) * self.economy.mill(actor, owner, -m["amount"], 0.75) / 3
+                    value += (self.chance(actor, ("economic",), later) * self.config["economic_target_share"] *
+                              self.economy.mill(actor, owner, -m["amount"], 0.75))
             elif kind == "ignore_enemy_statuses" and actor == owner and not board:
                 for foe in TURN_ORDER:
                     if self.rules.team(foe) == self.rules.team(owner):
@@ -681,19 +775,29 @@ class StatusForecast:
                 ability = self.rules.abilities[key]
                 steps = ability["effects"]
                 if (len(steps) == 1 and steps[0]["effect"]["type"] == "order-deck-top"
-                        and steps[0]["effect"]["count"] == 1 and not ability.get("discard_cost")
+                        and (self.marginal or steps[0]["effect"]["count"] == 1) and not ability.get("discard_cost")
                         and trigger_of(ability)["type"] in ("turn-start", "play-phase-start", "air-phase-start",
                                                             "during-victory", "discard-start")):
                     repeating_look.add(key)
         extras = ({key: result for key in card.get("abilities", ()) if (result := self.extra_reaction(owner, key))}
-                  if self.action_distance else {})
+                  if self.action_distance and not self.marginal else {})
+        conditional = {}
+        if self.marginal:
+            for key in card.get("abilities", ()):
+                trigger = trigger_of(self.rules.abilities[key])
+                if trigger["type"] in CONDITIONAL_TRIGGERS:
+                    conditional[key] = {actor: self.known_triggers(actor, trigger, kinds) for actor in TURN_ORDER
+                                        if (kinds := self.trigger_card_kinds(owner, actor, trigger)) is not None}
         limit = self.economy.horizon
         remaining = (self.rules.settings["max_rounds"] - self.turn.round_id + 1) * seat_count - self.turn.country_index
         if repeating_look and limit:
-            limit = max(limit, remaining)
+            limit = max(limit, min(remaining, first_play + 2 * seat_count)) if self.marginal else max(limit, remaining)
         if extras and limit:
             needed = max(count for count, _ in extras.values())
             limit = max(limit, min(remaining, first_play + (needed + 1) * seat_count))
+        if conditional and limit:
+            known = max((max(matches.values(), default=0) for matches in conditional.values()), default=0)
+            limit = max(limit, min(remaining, first_play + (known + self.config["extra_trigger_opportunities"] + 1) * seat_count))
         enabled = not self.action_distance or condition_met(self.rules, self.state, owner, card.get("content_condition"))
         for delay in range(limit):
             actor = TURN_ORDER[(self.turn.country_index + delay) % seat_count]
@@ -737,8 +841,38 @@ class StatusForecast:
                         counted[key] += 1
                     continue
                 if key in repeating_look:
-                    if enabled and actor == owner:
-                        rows.append(((delay, kind, "deck-look", None), 1, self.deck_top(owner, 1)))
+                    if enabled and actor == owner and (not self.marginal or not counted[key]):
+                        value = self.deck_top(owner, ability["effects"][0]["effect"]["count"])
+                        if not self.marginal or value > 0 or ability["activation_mode"] != "OPTIONAL":
+                            rows.append(((delay, kind, "deck-look", None), 1, value))
+                        counted[key] += 1
+                    continue
+                if key in conditional:
+                    matches = conditional[key]
+                    if actor not in matches or (not enabled and not self.board_condition(owner, card.get("content_condition"), development)):
+                        continue
+                    if counted[key, actor] >= matches[actor] and counted[key, "extra"] >= self.config["extra_trigger_opportunities"]:
+                        continue
+                    omitted = set(regional.get(key, ()))
+                    if counted[key, "look"]:
+                        omitted.update(i for i, step in enumerate(ability["effects"]) if step["effect"]["type"] == "order-deck-top")
+                    options = self.signals(owner, actor, key, later, deterministic=True)
+                    if not options:
+                        if kind not in ("after-build", "battle-space", "before-battle-removal"):
+                            continue
+                        options = ((None, 1),)
+                    net = max(self.program(owner, actor, key, region, excluded_steps=tuple(sorted(omitted))) for region, _ in options)
+                    if net <= 0 and ability["activation_mode"] == "OPTIONAL":
+                        continue
+                    window = (delay, kind, trigger.get("kind"), None)
+                    if actor != owner or ability["activation_mode"] != "OPTIONAL":
+                        window += (source or card_id, key)
+                    rows.append((window, 1, net))
+                    if counted[key, actor] < matches[actor]:
+                        counted[key, actor] += 1
+                    else:
+                        counted[key, "extra"] += 1
+                    counted[key, "look"] += 1
                     continue
                 if delay >= self.economy.horizon:
                     continue
@@ -771,7 +905,14 @@ class StatusForecast:
                 if not weight:
                     continue
                 if kind == "before-rule-use":
+                    permanent_supply = self.marginal and any(m["kind"] == "always_supplied" for m in card.get("modifiers", ()))
+                    if permanent_supply and counted[key, "permanent-supply"]:
+                        continue
                     value = self.modifier(owner, actor, card_id, source, later, board)
+                    if permanent_supply and actor == owner:
+                        value += self.economy.units.action
+                        weight = 1
+                        counted[key, "permanent-supply"] += 1
                     if value:
                         rows.append(((delay, "modifier", card_id), weight, value))
                     continue
@@ -790,9 +931,21 @@ class StatusForecast:
         return rows
 
     def portfolio(self, owner, board):
+        return self._portfolio(owner, board, residual=False)
+
+    def residual(self, owner):
+        return self._portfolio(owner, True, residual=True)
+
+    def _portfolio(self, owner, board, *, residual):
         values = {}
         for source, card in self.sources[owner]:
+            if residual and not any(trigger_of(self.rules.abilities[key])["type"] in CONDITIONAL_TRIGGERS or
+                                    any(step["effect"]["type"] == "order-deck-top" for step in self.rules.abilities[key]["effects"])
+                                    for key in self.rules.cards[card].get("abilities", ())):
+                continue
             for window, probability, gain in self.entries(owner, card, source, board):
+                if residual and window[1] not in CONDITIONAL_TRIGGERS and window[2] not in ("deck-top", "deck-look"):
+                    continue
                 previous = values.get(window)
                 value = probability * gain
                 values[window] = value if previous is None else max(previous, value)

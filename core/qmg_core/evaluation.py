@@ -15,9 +15,9 @@ from .map_influence import ScoringRoutes
 from .model import CoreError, TURN_ORDER, PHASES, zone, digest
 from .recruitment import recruitment_play
 from .operations import ScoreResolver, outcome
-from .reallocation_scoring import payment_plans, price
+from .reallocation_scoring import extra_refill, payment_plans, price
 from .response_scoring import is_delayed
-from .status_scoring import is_airdrop, is_status, verify_status
+from .status_scoring import STATUS_FORECAST_DEFAULTS, is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 from .score_units import ACTION_SUPPORT_EFFECTS, PLAY_OPPORTUNITY_COMMANDS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 from .settlement_scoring import PositionValue, SettlementScorer
@@ -33,6 +33,10 @@ class ScoreEvaluator:
         if type(opportunity) is not bool:
             raise CoreError("Invalid action opportunity scoring setting")
         self.action_opportunity = opportunity and self.action_distance
+        marginal = weights.get("marginal_opportunity_scoring", False)
+        if type(marginal) is not bool:
+            raise CoreError("Invalid marginal opportunity scoring setting")
+        self.marginal_opportunity = marginal and self.action_opportunity
         if type(weights.get("response_timing_scoring", False)) is not bool:
             raise CoreError("Invalid response timing scoring setting")
         if type(weights.get("stacked_site_scoring", False)) is not bool:
@@ -46,7 +50,8 @@ class ScoreEvaluator:
         expansion = weights.get("expansion_preference", 0)
         if type(expansion) not in (int, float) or not isfinite(expansion) or expansion < 0:
             raise CoreError("Invalid expansion preference")
-        self.settlement = (SettlementScorer(self.units, expansion, location_weights=self.weights if self.action_opportunity else None)
+        self.settlement = (SettlementScorer(self.units, expansion, location_weights=self.weights if self.action_opportunity else None,
+                                            economy_factory=self.economic_from_state if self.marginal_opportunity else None)
                            if settlement_scoring else None)
         self.seat_forecast = self.units.enabled or weights.get("seat_forecast", False)
         numbers = [*weights["distance_weights"], *weights["supply_weights"].values(),
@@ -105,7 +110,7 @@ class ScoreEvaluator:
                                  frontier["friendly_target"] > 1 or frontier["held_forecast"] < 1 or
                                  not 0 < frontier.get("build_friendly_neighbor", 1) <= 1):
             raise CoreError("Invalid frontier influence weights")
-        if "hand_retention" in weights and not 0 < retention["slot_cost"] < retention["basic_floor"]:
+        if "hand_retention" in weights and not (0 <= retention["slot_cost"] < retention["basic_floor"]):
             raise CoreError("Basic reserve must exceed the hand slot cost")
         if "route_forecast" in weights and not (
                 0 < route["distance_tail_decay"] < 1 and 0 < route["friendly_unit"] < 1 < route["enemy_unit"]):
@@ -120,7 +125,14 @@ class ScoreEvaluator:
             factor = weights["status_held_factor"]
             if "economic_forecast" not in weights or type(factor) not in (int, float) or not 0 <= factor <= 1:
                 raise CoreError("Invalid status forecast settings")
-            self.status_weights = {"discount": weights["time_discount"], "held_factor": factor}
+            coefficients = weights.get("status_forecast", {})
+            if (not isinstance(coefficients, dict) or coefficients.keys() - STATUS_FORECAST_DEFAULTS.keys() or any(
+                    type(value) not in (int, float) or not isfinite(value) or value < 0 or
+                    (type(STATUS_FORECAST_DEFAULTS[key]) is int and type(value) is not int)
+                    for key, value in coefficients.items()) or coefficients.get("unknown_hand_scale", 3) <= 0):
+                raise CoreError("Invalid status forecast coefficients")
+            self.status_weights = {"discount": weights["time_discount"], "held_factor": factor,
+                                   **({"coefficients": coefficients} if coefficients else {})}
             for card in rules.cards.values():
                 if is_status(card):
                     verify_status(rules, card)
@@ -223,6 +235,10 @@ class ScoreEvaluator:
         return self.units.card_score(self.weights.get("hand_retention", {}).get("slot_cost", 0.0))
 
     @property
+    def uses_hand_retention(self):
+        return self.marginal_opportunity or bool(self.hand_slot_cost)
+
+    @property
     def card_play_cost(self):
         if self.action_distance:
             return 0
@@ -292,7 +308,8 @@ class ScoreEvaluator:
 
         retention = {key: self.units.card_score(v) for key, v in self.weights["hand_retention"].items()}
         return score_retention(rules, state, country, retention, short_term,
-                               lambda card: self.basic_discard_cost(view, country, card))
+                               lambda card: self.basic_discard_cost(view, country, card),
+                               expansion_cost=economy.routes.expansion_discard_cost if self.marginal_opportunity else None)
 
     def target_proximity(self, view, country, regions):
         if "route_forecast" not in self.weights:
@@ -637,13 +654,18 @@ class OneStepPlanner:
         economy = self.evaluator.economic_from_state(rules, state)
         retention = (self.evaluator.retention(view, country, position=(rules, state))
                      if self.evaluator.hand_slot_cost else {})
+        marginal = self.evaluator.marginal_opportunity
 
         def payment_cost(card):
             return (-self.evaluator.hand_value(rules, state, country, card, legal, economy) -
                     self.evaluator.basic_discard_cost(view, country, card))
 
         by_definition = {}
-        for plan in payment_plans(rules, view, country, payment_cost):
+        for plan in payment_plans(rules, view, country, payment_cost,
+                                  expansion_cost=economy.routes.expansion_discard_cost if marginal else None):
+            if marginal:
+                plan["discard_usage_cost"] = sum(self.evaluator.basic_discard_cost(view, country,
+                    rules.cards[state.tokens[key].definition_id]) for key in plan["payment"])
             key = (plan["source"], plan["definition"])
             if key not in by_definition or plan["discard_score"] > by_definition[key]["discard_score"]:
                 by_definition[key] = plan
@@ -674,7 +696,7 @@ class OneStepPlanner:
             stock = simulation_from_observation(self.evaluator.rules, projected, search_projection=True)
         stock_state = stock.state
         original_board = frozenset(t.token_id for t in board_units(rules, state)) if self.evaluator.settlement else frozenset()
-        cycling = self.evaluator.cycle_value(economy, country, view["reallocation"]["cost"], retention)
+        cycling = self.evaluator.cycle_value(economy, country, view["reallocation"]["cost"], retention) if not marginal else {}
         for index, plan in enumerate(plans):
             nodes = [0]
             try:
@@ -685,14 +707,14 @@ class OneStepPlanner:
                     reserve = min(0.18 * (len(plans) - index - 1), max(0, deadline - perf_counter()) / 2)
                     plan_deadline -= reserve
                 yield self._exchange_play(stock, stock_state, deck_samples, plan, cycling, country, command,
-                                          before, original_board, nodes, plan_deadline)
+                                          before, original_board, nodes, plan_deadline, economy if marginal else None)
             except (SimulationIncomplete, ResolutionBudgetExceeded, TimeoutError) as error:
                 yield {"command": deepcopy(command), "complete": False,
                        "reason": "deadline" if isinstance(error, TimeoutError) else str(error),
                        "q": None, "nodes": nodes[0], "reallocation": plan}
 
     def _exchange_play(self, stock, stock_state, deck_samples, plan, cycling, country, command, before, original_board,
-                       nodes, deadline):
+                       nodes, deadline, original_economy=None):
         from .air import opportunity
         from .ai_match_policy import RulePolicy
 
@@ -743,12 +765,16 @@ class OneStepPlanner:
                                    default=(before, None, []))
         cost = self.evaluator.action_cost(play["type"], post_payment.turn.phase) if play else 0
         initial = -self.evaluator.hand_slot_cost if outcomes and not self.evaluator.units.enabled else 0.0
+        if original_economy:
+            spend = int(bool(play and play["type"] in ("PLAY_CARD", "DISCARD_CARD")))
+            draws = 0 if after.terminal_rank else extra_refill(original_economy, country, plan, spend=spend)
+            cycling = original_economy.cycle_value(country, draws)
         plan = {**plan, **cycling}
         if self.evaluator.settlement:
             # The final stock already contains the acquisition and has paid the real expense.
             fees = -self.evaluator.units.card_score(len(plan["payment"]))
-            plan = price({**plan, "discard_score": fees}, after.total - before.total - fees - cost)
-            card_adjustment = 0
+            card_adjustment = -plan.get("discard_expansion_cost", 0) - plan.get("discard_usage_cost", 0)
+            plan = price({**plan, "discard_score": fees + card_adjustment}, after.total - before.total - fees - cost)
         else:
             plan = price(plan, after.total - before.total + initial - cost)
             card_adjustment = plan["discard_score"]
@@ -799,7 +825,12 @@ class OneStepPlanner:
             if outcome["event"] == "ORDER_DECK":
                 actor = record["actor"]
                 seen = len(outcome["changes"])
-                if self.evaluator.settlement:
+                if self.evaluator.marginal_opportunity:
+                    forecast = draw_economy or economy
+                    if forecast is None:
+                        forecast = economy = self.evaluator.economic_from_state(rules, state)
+                    value = forecast.cycle_value(actor, seen)["cycle_score"]
+                elif self.evaluator.settlement:
                     look = self.evaluator.weights.get("economic_forecast", {}).get("deck_top_look", 0.3)
                     value = self.evaluator.units.card_score(1 if seen > 1 else look if seen else 0)
                 else:
@@ -864,6 +895,10 @@ class OneStepPlanner:
         client = CoreAPI(processor, (actor,))
         commands = client.legal_commands()
         width = self.evaluator.weights.get("construction_search_width", 0)
+        if self.evaluator.marginal_opportunity and decision.decision_type == "ORDER_DECK":
+            from .ai_match_policy import RulePolicy
+            ranked = RulePolicy(processor.rules, self.evaluator).rank(client.observe(include_history=False), commands)
+            commands = [row["command"] for row in ranked if row["command"]["type"] == "CHOOSE"][:1]
         if (actor == country and self.evaluator.weights.get("response_timing_scoring") and
                 decision.continuation["type"] == "RESPONSE_SELECTED"):
             from .ai_match_policy import RulePolicy

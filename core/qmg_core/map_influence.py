@@ -2,7 +2,7 @@
 from collections import Counter, defaultdict, deque
 import json
 
-from .content_effects import action_for, available_options, condition_met, target_regions
+from .content_effects import action_for, available_options, condition_met, filtered_units, force_id, target_regions
 from .definitions import BATTLES, CONSTRUCTION
 from .expansion_scoring import BUILD_CARDS, ConstructionNetwork, project_placement
 from .model import Token, canonical, zone
@@ -24,6 +24,7 @@ class ScoringRoutes:
         self.placement_supply = {}
         self.placement_projections = {}
         self.expansions = {}
+        self.hand_networks = {}
         self.expansion_vp = weights.get("expansion_preference", 0)
         self.pieces = pieces
         self.seat_rates = None
@@ -244,6 +245,17 @@ class ScoringRoutes:
             self.expansions[key] = {"sites": sites, "score": self.units.vp_score(len(sites) * self.expansion_vp)}
         return self.expansions[key]
 
+    def expansion_discard_cost(self, seat, discarded):
+        if not self.expansion_vp or not any(
+                self.rules.cards.get(self.state.tokens[key].definition_id, {}).get("legacy_kind") in BUILD_CARDS
+                for key in discarded if key in self.state.tokens):
+            return 0
+        if seat not in self.hand_networks:
+            self.hand_networks[seat] = ConstructionNetwork(self.rules, self.state, seat)
+        network = self.hand_networks[seat]
+        lost = network.hand_score_sites() - network.hand_score_sites(discarded)
+        return self.units.vp_score(len(lost) * self.expansion_vp)
+
     def target_value(self, force, region, *, battle=False, construction=False, local_only=False, include_capture=True,
                      spent_card=None):
         cache_key = (force, region, battle, construction, local_only, include_capture, spent_card)
@@ -325,6 +337,28 @@ class ScoringRoutes:
             return self.removal_value(victim) if victim else 0
         return self.move_value(force, region, token)
 
+    def protection_value(self, force, region=None, *, token=None):
+        return (self.position.value(force, region, construction=True, excluded=token)
+                if region in self.rules.regions else self.units.action)
+
+    def temporary_supply_value(self, seat, effect):
+        selected = (filtered_units(self.rules, self.state, seat, effect["filter"]) if "filter" in effect else
+                    [piece for piece in self.pieces if piece.owner_country == force_id(effect["force"], seat)])
+        assumptions = {token.token_id for token in selected}
+        if not assumptions:
+            return 0
+        supply = SupplyResolver(self.rules)
+        team = self.rules.team(seat)
+        total = 0
+        for force in {piece.owner_country for piece in self.pieces}:
+            before = supply.supplied(self.state, force, units=self.pieces)
+            after = supply.supplied(self.state, force, units=self.pieces, assume_supplied=assumptions)
+            sign = 1 if self.rules.team(force) == team else -1
+            for key in after - before:
+                piece = self.state.tokens[key]
+                total += sign * self.protection_value(force, piece.position_id, token=key)
+        return total
+
     def transfer_value(self, seat, op):
         token = self.state.tokens.get(op["token"])
         if token is None:
@@ -358,6 +392,19 @@ class ScoringRoutes:
             targets = available_options(self.rules, self.state, seat, effect)
             return max((self.removal_value(key) * (1 if self.rules.team(self.state.tokens[key].owner_country)
                         != self.rules.team(seat) else -1) for key in targets), default=0)
+        if self.weights.get("marginal_opportunity_scoring"):
+            if kind in ("supply-this-turn", "supply-units-this-turn"):
+                return self.temporary_supply_value(seat, effect) if condition_met(
+                    self.rules, self.state, seat, effect.get("when")) else 0
+            if kind in ("prevent-removal", "protect-unit-this-turn", "protect-units-this-turn"):
+                if "filter" in effect and not filtered_units(self.rules, self.state, seat, effect["filter"]):
+                    return 0
+                return self.protection_value(seat)
+            if kind == "request-hand-discard" and effect["target"] in self.rules.countries:
+                target = effect["target"]
+                rate = self.weights.get("status_forecast", {}).get("request_discard_card_value", 1)
+                amount = min(effect["min"], len(self.state.positions[zone(target, "HAND")]))
+                return self.units.card_score(rate * amount * (1 if self.rules.team(target) != self.rules.team(seat) else -1))
         if kind == "air-action":
             if not condition_met(self.rules, self.state, seat, effect.get("when")):
                 return 0

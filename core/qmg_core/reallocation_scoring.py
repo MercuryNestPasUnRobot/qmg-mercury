@@ -23,7 +23,7 @@ def acquisitions(rules, view, seat, *, include_payment=False):
                 yield "discard", definition, target
 
 
-def payment_plans(rules, view, seat, discard_value):
+def payment_plans(rules, view, seat, discard_value, *, expansion_cost=None):
     info = view.get("reallocation")
     if not info:
         return
@@ -41,10 +41,27 @@ def payment_plans(rules, view, seat, discard_value):
         fixed = paid | ({target} if target in fees else set())
         if len(fixed) > cost:
             continue
-        others = [key for key in cheap if key not in fixed][:cost - len(fixed)]
-        payment = sorted(fixed | set(others), key=lambda key: (-fees[key], key))
+        if expansion_cost is None:
+            fixed.update([key for key in cheap if key not in fixed][:cost - len(fixed)])
+        else:
+            while len(fixed) < cost:
+                next_card = min((key for key in cheap if key not in fixed),
+                                key=lambda key: (-fees[key] + expansion_cost(seat, fixed | {key}), key))
+                fixed.add(next_card)
+        payment = sorted(fixed, key=lambda key: (-fees[key], key))
+        loss = expansion_cost(seat, fixed) if expansion_cost is not None else 0
         yield {"source": source, "definition": definition, "target": target, "kind": kind,
-               "payment": payment, "discard_score": sum(fees[key] for key in payment)}
+               "payment": payment, "discard_score": sum(fees[key] for key in payment) - loss,
+               **({"discard_expansion_cost": loss} if expansion_cost is not None else {})}
+
+
+def extra_refill(economy, seat, plan, *, spend=1):
+    hand, deck = (economy.count(seat, area) for area in ("HAND", "DECK"))
+    limit = economy.rules.settings["hand_limit"]
+    baseline = min(deck, max(0, limit - hand + spend))
+    after = min(max(0, deck - int(plan["source"] == "deck")),
+                max(0, limit - hand + len(plan["payment"]) - 1 + spend))
+    return max(0, after - baseline)
 
 
 def price(plan, play_score):

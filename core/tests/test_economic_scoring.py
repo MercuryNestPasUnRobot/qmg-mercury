@@ -52,7 +52,7 @@ def test_milling_counts_only_added_shortfalls_and_checks_if_draws_will_happen(ec
     assert forecast.draws("united-kingdom") == 8
     assert forecast.mill("germany", "united-kingdom", 2, 0.75) == 0
     deck["count"] = 9
-    assert forecast.mill("germany", "united-kingdom", 2, 0.75) == pytest.approx(0.60)
+    assert forecast.mill("germany", "united-kingdom", 2, 0.75) == 1
     deck["count"] = 0
     # Both penalties are immediate, with no future draw removed from an already empty deck.
     assert forecast.mill("germany", "united-kingdom", 2, 0.75) == 2
@@ -83,7 +83,7 @@ def test_normal_play_switches_from_development_to_a_closing_point(economy):
     assert near_win.state.winner == "axis"
 
 
-def test_simulation_scores_only_the_deck_exhaustion_penalty_that_resolves(economy):
+def test_simulation_separates_actual_deck_exhaustion_from_the_added_future_shortfall(economy):
     economy["settings"]["victory_margin"] = 0  # Keep the remaining turns fixed across the VP change.
     card(economy, "g-noop")["effects"] = [
         instruction({"type": "discard-top", "target": "united-kingdom", "count": 2})]
@@ -94,7 +94,7 @@ def test_simulation_scores_only_the_deck_exhaustion_penalty_that_resolves(econom
     row = next(row for row in planner.rank(client, "germany") if row["command"]["type"] == "PLAY_CARD")
     assert row["complete"]
     assert row["actual_vp_delta"] == 1
-    assert row["resource_delta"] == 0
+    assert row["resource_delta"] == 1  # One available card was also removed from a future normal draw.
     client.submit(row["command"])
     assert engine.state.scores["allies"] == -1
 

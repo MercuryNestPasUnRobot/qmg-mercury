@@ -346,7 +346,9 @@ function showDecision(row, button) {
       const rank = candidate.complete === false ? (reasons[candidate.reason] || "未完成") : number(candidate.q ?? candidate.rule_score);
       const action = node("div", commandName(candidate.command, row, candidate.reallocation));
       const terms = [["行动机会", candidate.action_cost], ["VP", candidate.actual_vp_delta], ["地图", candidate.map_delta],
-        ["牌差", candidate.card_delta], ["过牌", candidate.cycle_score]].filter(([, value]) => value);
+        ["牌差", candidate.card_delta], ["过牌", candidate.cycle_score ?? candidate.retention?.draw_cycle],
+        ["损失可达分点", -(candidate.retention?.expansion_cost ?? candidate.reallocation?.discard_expansion_cost ?? 0)]]
+        .filter(([, value]) => value);
       if (terms.length) action.append(node("small", terms.map(([label, value]) => label + " " + number(value)).join(" · ")));
       item.append(action, node("span", rank));
       list.push(item);

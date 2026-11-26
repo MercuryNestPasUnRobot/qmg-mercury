@@ -64,14 +64,14 @@ class ActionDistanceScoring:
             order == turn.country_index and turn.phase in ("Victory", "Discard", "Draw"))
         return max(0, self.remaining - int(scored))
 
-    def capture(self, force, region, vp):
-        key = force, region, vp
+    def capture(self, force, region, vp, *, distance_offset=0):
+        key = force, region, vp, distance_offset
         if key not in self.bases:
             seat = self.rules.force_controllers[force]
             team = self.rules.team(force)
             cap = self.units.vp_score(vp * self.scoring_rounds(seat))
             # The occupying move has already cleared hostile units on the site itself.
-            nearest = min((self.distances(t.owner_country, t.position_id).get(region, inf)
+            nearest = min((self.distances(t.owner_country, t.position_id).get(region, inf) + distance_offset
                            for t in self.pieces if t.position_id != region and self.rules.team(t.owner_country) != team),
                           default=inf)
             initial = self.units.vp_score(vp * self.units.capture_rounds)
@@ -81,14 +81,14 @@ class ActionDistanceScoring:
     def distance_value(self, base, distance):
         return max(0, base - self.units.action_score(distance))
 
-    def proportional_base(self, force, region, vp):
-        return self.capture(force, region, STANDARD_SITE_VP) * vp / STANDARD_SITE_VP
+    def proportional_base(self, force, region, vp, *, distance_offset=0):
+        return self.capture(force, region, STANDARD_SITE_VP, distance_offset=distance_offset) * vp / STANDARD_SITE_VP
 
-    def site_base(self, force, region, site):
+    def site_base(self, force, region, site, *, distance_offset=0):
         if layer := self.layers.get(site):
             if not layer.build_eligible(self.rules, self.state, force, region, self.unit_definitions):
                 return 0
-            return self.proportional_base(layer.owner, region, layer.award.amount)
+            return self.proportional_base(layer.owner, region, layer.award.amount, distance_offset=distance_offset)
         definition = self.rules.sites[site]
         seat = self.rules.force_controllers[force]
         owners = self.source_owners[site, region] if definition.get("dynamic") else {None}
@@ -104,10 +104,10 @@ class ActionDistanceScoring:
                 self.income_changes[seat] = changes
             change = self.income_changes[seat].get(site, 0)
             if change:
-                return self.proportional_base(force, region, max(0, printed + change))
+                return self.proportional_base(force, region, max(0, printed + change), distance_offset=distance_offset)
         if definition.get("dynamic") or definition.get("scoring") == PER_UNIT_SITE:
-            return self.proportional_base(force, region, printed)
-        return self.capture(force, region, printed)
+            return self.proportional_base(force, region, printed, distance_offset=distance_offset)
+        return self.capture(force, region, printed, distance_offset=distance_offset)
 
     def construction_distances(self, force, region):
         key = force, region
@@ -117,10 +117,10 @@ class ActionDistanceScoring:
             self.construction_paths[key] = self.construction_networks[force].distance(region)
         return self.construction_paths[key]
 
-    def site_values(self, force, region, *, excluded=None, construction=False):
+    def site_values(self, force, region, *, excluded=None, construction=False, distance_offset=0):
         """Value each chosen score layer after distance and unit adjustments."""
         construction = construction and self.construction_rules
-        key = force, region, excluded, construction
+        key = force, region, excluded, construction, distance_offset
         if key in self.sites_by_position:
             return self.sites_by_position[key]
         from_start = self.distances(force, region)
@@ -133,7 +133,8 @@ class ActionDistanceScoring:
                 distance = practical.get(end)
                 if distance is None:
                     continue
-                base = self.site_base(force, end, site)
+                distance += distance_offset
+                base = self.site_base(force, end, site, distance_offset=distance_offset)
                 if base <= 0:
                     continue
                 value = base - self.units.action_score(penalty * distance)
@@ -170,10 +171,10 @@ class ActionDistanceScoring:
                 layer = self.layers.get(site)
                 per_unit = (layer.award.mode == "each-unit" if layer else
                             self.rules.sites[site].get("scoring") == PER_UNIT_SITE)
-                if friendly and distance == 0 and per_unit:
+                if friendly and distance == distance_offset and per_unit:
                     continue  # An allied unit here does not share the new unit's VP.
-                base = self.site_base(token.owner_country, end, site)
-                change = self.distance_value(base, to_end) / 2
+                base = self.site_base(token.owner_country, end, site, distance_offset=distance_offset)
+                change = self.distance_value(base, to_end + distance_offset) / 2
                 if self.stacked_sites:
                     changes[site] -= change
                 elif change > best:
@@ -184,9 +185,9 @@ class ActionDistanceScoring:
         self.sites_by_position[key] = scores
         return scores
 
-    def value(self, force, region, *, excluded=None, construction=False):
+    def value(self, force, region, *, excluded=None, construction=False, distance_offset=0):
         return sum(value for _, value in self.site_values(force, region, excluded=excluded,
-                                                         construction=construction).values())
+                                                        construction=construction, distance_offset=distance_offset).values())
 
     def best_adjacent_site(self, force, regions):
         regions = set(regions)
@@ -257,7 +258,7 @@ class ActionDistanceScoring:
             after.add(destination)
         return self.dynamic_site_value(owner, site, after) - self.dynamic_site_value(owner, site, before)
 
-    def connection_change(self, after, owner, endpoints):
+    def connection_change(self, after, owner, endpoints, *, distance_offset=0):
         closest, candidates = {}, defaultdict(list)
         for token in self.pieces:
             force, region = token.owner_country, token.position_id
@@ -275,7 +276,8 @@ class ActionDistanceScoring:
         team = self.rules.team(owner)
         result = 0
         for side, tokens in candidates.items():
-            changes = (after.value(t.owner_country, t.position_id, excluded=t.token_id) -
-                       self.value(t.owner_country, t.position_id, excluded=t.token_id) for t in tokens)
+            changes = (after.value(t.owner_country, t.position_id, excluded=t.token_id, distance_offset=distance_offset) -
+                       self.value(t.owner_country, t.position_id, excluded=t.token_id, distance_offset=distance_offset)
+                       for t in tokens)
             result += max(changes, key=abs) * (1 if side == team else -1)
         return result

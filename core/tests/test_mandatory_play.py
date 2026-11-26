@@ -34,7 +34,8 @@ def test_unplayable_hand_requires_discard_even_without_replacement(data):
     before = p.state.scores["axis"]
     action, row = SeatPolicy(p.rules, evaluator=ScoreEvaluator(p.rules, profile())).decide(client, "germany")
     assert action["type"] == "DISCARD_CARD" and row["rule_scores"][0]["retention"]["forced"]
-    assert row["rule_scores"][0]["retention"]["net"] > 0
+    retention = row["rule_scores"][0]["retention"]
+    assert retention["slot_cost"] == 0 and retention["discard_cost"] == 1
     assert not row["rule_scores"][0]["retention"]["replacement_available"]
     client.submit(action)
     assert p.state.tokens["g-deck-2"].position_id == zone("germany", "DISCARD")
