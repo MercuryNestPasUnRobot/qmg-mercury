@@ -3,6 +3,7 @@ from functools import cached_property
 from math import ceil, copysign
 
 from .content_effects import available_options, condition_met, filtered_units, force_id, point_award
+from .hand_retention import cycling_ev
 from .model import TURN_ORDER, zone
 from .score_units import ScoreUnits
 
@@ -15,7 +16,7 @@ CARD_RETURN_EFFECTS = {"put-hand-on-deck-bottom", "recover-discard", "return-dec
 
 class EconomicForecast:
     def __init__(self, rules, settings, turn, scores, count, visible_state, winner, *, status_weights=None, map_weights=None,
-                 units=ScoreUnits()):
+                 units=ScoreUnits(), hand_average=None):
         self.rules, self.settings = rules, settings
         self.scores, self.count, self.visible_state = scores, count, visible_state
         self.margin = rules.settings["victory_margin"]
@@ -33,6 +34,8 @@ class EconomicForecast:
         self.status_weights = status_weights
         self.map_weights = map_weights
         self.units = units
+        self.hand_average = hand_average
+        self.hand_averages = {}
 
     @cached_property
     def routes(self):
@@ -105,6 +108,15 @@ class EconomicForecast:
 
     def future_loss(self, seat):
         return self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat))
+
+    def cycle_value(self, seat, count):
+        if seat not in self.hand_averages:
+            self.hand_averages[seat] = self.hand_average(self, seat)
+        return cycling_ev(None, self.units.card, count, hand_average=self.hand_averages[seat])
+
+    def draw_value(self, seat, count, already_drawn=0):
+        draws = min(count, max(0, self.count(seat, "DECK") - already_drawn))
+        return self.cycle_value(seat, draws)["cycle_score"] - self.units.vp_score(self.penalty * (count - draws))
 
     def mill(self, seat, target, count, base, *, closeout=False):
         deck = self.count(target, "DECK")

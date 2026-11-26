@@ -6,6 +6,7 @@ from .model import CoreError
 
 
 VALUED_ACTIONS = {"BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE", "REDEPLOY", "USE_AIR"}
+PLAY_OPPORTUNITY_COMMANDS = {"PLAY_CARD", "USE_STATUS", "DISCARD_CARD", "FORFEIT_PLAY"}
 ACTION_SUPPORT_EFFECTS = {
     "prevent-removal", "protect-unit-this-turn", "protect-units-this-turn",
     "supply-this-turn", "supply-units-this-turn", "forbid-air-defense-this-turn",

@@ -82,9 +82,10 @@ def test_both_a_and_b_credit_one_action_for_a_certain_removal(data):
     view = client.observe()
     battle = next(c for c in client.legal_commands() if c.get("card") == "g-battle")
     row, = RulePolicy(game.rules, scorer).rank(view, [battle])
-    assert row["rule_score"] == 2 and "initial_card_score" not in row
+    assert row["rule_score"] == 0 and row["action_cost"] == -2 and "initial_card_score" not in row
     row, = OneStepPlanner(game.rules, profile()).rank(CandidateView(view, [battle]), "germany")
     assert row["complete"] and row["map_delta"] == row["unit_removal_score"] == 2
+    assert row["q"] == 0 and row["action_cost"] == -2
     assert row["continuations"][0]["option"] == "B"
 
 

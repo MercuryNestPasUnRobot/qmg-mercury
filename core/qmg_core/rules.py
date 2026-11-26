@@ -2,7 +2,7 @@ from collections import deque
 from copy import deepcopy
 
 from .definitions import BATTLES, CONNECTION_USES, CONSTRUCTION, FORCE_OPERATIONS, TARGETED_OPERATIONS
-from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, zone, shuffle
+from .model import CoreError, ZONES, TURN_ORDER, GameState, Token, TurnClock, ZoneRegistry, zone, shuffle
 
 
 def auxiliary_reserves(rules):
@@ -300,6 +300,12 @@ class LegalActionGenerator:
         selected = effect.get("destination", effect.get("target", effect.get("target_token", "$choice")))
         targets = self.targets(state, country, effect)
         return bool(targets) and (selected == "$choice" or selected in targets)
+
+    def redeploy_targets(self, state, country, token_id):
+        token = state.tokens[token_id]
+        virtual = deepcopy(state)
+        ZoneRegistry.transfer(virtual, token_id, zone(token.owner_country, "RESERVE_ARMY"))
+        return self.targets(virtual, country, {"type": "BUILD_ARMY", "force": token.owner_country})
 
     def targets(self, state, country, op):
         kind = op["type"]

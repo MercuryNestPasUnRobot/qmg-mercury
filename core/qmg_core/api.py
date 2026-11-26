@@ -145,6 +145,13 @@ def observation(processor, controlled_countries, *, include_history=True):
             if action["type"] in BATTLES | CONSTRUCTION:
                 decision.update(map_force=action.get("force", s.decision.required_country),
                                 map_battle=action["type"] in BATTLES)
+            if action["type"] == "REBUILD_UNIT":
+                decision["redeploy_token"] = action["token"]
+            if action["type"] == "AIR_ACTION_SELECTED":
+                force = action["effect"].get("force", "self")
+                decision["air_force"] = s.decision.required_country if force == "self" else force
+            if action["type"] == "AIR_REBASE_SELECTED":
+                decision["air_rebase_token"] = action["air"]
             if action["type"] == "TRANSFER":
                 token = visible.get(action.get("token"))
                 if token and token["token_type"] == "SCORE_SOURCE":
