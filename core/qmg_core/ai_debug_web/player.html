@@ -60,10 +60,19 @@
         </section>
         <section class="panel player-action-panel" aria-labelledby="player-actions-title">
           <h2 id="player-actions-title">可用操作</h2>
+          <div id="player-opening" hidden>
+            <h3>回合开始 · 调配资源</h3>
+            <p id="player-opening-note" class="muted"></p>
+            <div id="player-opening-action"></div>
+          </div>
           <div id="player-actions"></div>
           <button class="button secondary" id="player-pass" type="button" hidden>跳过响应，交给 AI</button>
         </section>
       </div>
+      <section class="panel player-zones" aria-labelledby="player-plays-title">
+        <h2 id="player-plays-title">最近公开出牌</h2>
+        <div id="player-plays" class="player-card-group"></div>
+      </section>
       <section class="panel player-zones" aria-labelledby="player-zones-title">
         <h2 id="player-zones-title">各国牌区</h2><div id="player-seats" class="player-seat-grid"></div>
         <div id="player-card-zones"></div>

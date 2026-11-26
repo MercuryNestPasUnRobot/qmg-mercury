@@ -2,12 +2,28 @@
 
 from copy import deepcopy
 
+from .board_connections import BALKANS_GERMANY
 from .definitions import CONNECTION_USES, PER_UNIT_SITE, RuleSet
 from .model import CoreError
 from .rules import initialize
 
 
 CURRENT_BOARD_RULES = {"round_end_victory": True, "occupied_home_blocks_scoring": True, "discard_phase_penalty": 1}
+
+
+def correct_saved_connections(connections, regions, uses_key):
+    """Complete the reviewed land connection while retaining other map edits."""
+    a, b = BALKANS_GERMANY
+    if a not in regions or b not in regions:
+        return
+    for connection in connections:
+        if {connection["a"], connection["b"]} == {a, b}:
+            connection[uses_key] = sorted(CONNECTION_USES)
+            return
+    connection = {"a": a, "b": b, uses_key: sorted(CONNECTION_USES)}
+    if uses_key == "movement_or_supply_tags":
+        connection["id"] = "board-border-balkans-germany"
+    connections.append(connection)
 
 
 def map_layout(rules):
@@ -24,7 +40,19 @@ def map_layout(rules):
 def match_rules(base, layout=None):
     data = deepcopy(base.data)
     data["settings"].update(CURRENT_BOARD_RULES)
+    # The legacy transcription uses four fixed locations. The card specifies
+    # Germany and its neighbors, which can change with the selected map.
+    if "germany" in base.regions:
+        for card in data["cards"]:
+            if card["id"] == "germany-conscription":
+                for step in card["effects"]:
+                    effect = step.get("effect", {})
+                    if effect.get("type") == "choose-space" and effect.get("action") == "recruit":
+                        effect.pop("spaces", None)
+                        effect["near"] = {"space": "germany", "maxDistance": 1}
+                break
     if layout is None:
+        correct_saved_connections(data["connections"], base.regions, "movement_or_supply_tags")
         return RuleSet(data)
     required = {"connections", "straits", "points"}
     if not isinstance(layout, dict) or not required <= layout.keys() <= required | {"unit_positions"}:

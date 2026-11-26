@@ -66,11 +66,14 @@ def test_all_six_seats_can_pay_three_and_take_one_non_air_basic_at_opening(data)
 
 def test_cancelling_is_free_and_normal_play_closes_exchange_window(data):
     enable(data, ("germany",))
+    data["settings"]["air_phase"] = True
     move_initial(data, "g-build", "germany:DECK")
     card(data, "g-build")["legacy_kind"] = "build-army"
     p = make(data)
     client = CoreAPI(p, ("germany",))
     before = p.state.positions
+    assert "reallocation" in client.observe()
+    assert "reallocation" not in CoreAPI(p, ("united-kingdom",)).observe()
     execute(client, "REALLOCATE")
     choose(p, "g-draw")
     choose(p, "cancel")
@@ -78,6 +81,10 @@ def test_cancelling_is_free_and_normal_play_closes_exchange_window(data):
     assert any(c["type"] == "REALLOCATE" for c in client.legal_commands())
     client.submit(next(c for c in client.legal_commands() if c.get("card") == "g-vp"))
     assert p.state.turn.phase == "Play"
+    assert not any(c["type"] == "REALLOCATE" for c in client.legal_commands())
+    assert "reallocation" not in client.observe()
+    execute(client, "END_PHASE")
+    assert p.state.turn.phase == "Air"
     assert not any(c["type"] == "REALLOCATE" for c in client.legal_commands())
 
 

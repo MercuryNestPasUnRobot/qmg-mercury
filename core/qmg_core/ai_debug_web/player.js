@@ -7,6 +7,7 @@ const factions = {germany: "axis", japan: "axis", italy: "axis", "united-kingdom
 const phaseNames = {Setup: "开局弃牌", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "摸牌"};
 const unitNames = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};
 const zoneLabels = {HAND: "手牌", RESPONSE: "响应牌", STATUS: "状态牌", DISABLED_STATUS: "停用状态牌", DISCARD: "弃牌堆"};
+const playLabels = {play: "出牌", response: "响应", air: "空军"};
 const seats = Object.keys(factions);
 const terminal = new Set(["completed", "failed", "stopped"]);
 const setup = {versions: new Map(), profiles: {}, editing: "", occupied: ""};
@@ -218,11 +219,13 @@ function paintCards() {
     chip.setAttribute("aria-pressed", String(cardSeat === seat));
     const controller = seat === match.human ? "你" : "AI " + profileLabel(match.seats[seat]);
     chip.append(node("strong", `${names[seat]} · ${controller}`), node("small",
-      `手牌 ${entry.counts.HAND} · 响应 ${entry.counts.RESPONSE} · 牌库 ${entry.counts.DECK}`));
+      `手牌 ${entry.counts.HAND} · 响应 ${entry.counts.RESPONSE} · 弃牌 ${entry.counts.DISCARD} · 牌库 ${entry.counts.DECK}`));
     return chip;
   }));
   const entry = positions[cardSeat];
-  $("player-card-zones").replaceChildren(...Object.entries(entry.cards).map(([kind, cards]) => {
+  const visible = Object.entries(entry.cards).filter(([kind]) => cardSeat === match.human ||
+    kind === "STATUS" || kind === "DISABLED_STATUS");
+  $("player-card-zones").replaceChildren(...visible.map(([kind, cards]) => {
     const group = node("div", undefined, "player-card-group");
     group.append(node("h3", `${names[cardSeat]} · ${zoneLabels[kind]} · ${cards.length} 张`));
     for (const card of cards) group.append(button(card.name, () => inspect(card.name, card.text)));
@@ -253,13 +256,27 @@ function paintMatch(next) {
     completed: winner, stopped: "这局已结束", stopping: "正在结束这局", failed: match.error};
   $("player-timing").textContent = status[match.state];
   for (const team of ["axis", "allies"]) $(team + "-vp").textContent = match.board?.scores[team] ?? 0;
-  $("player-actions").replaceChildren(...match.choices.map((choice, i) => {
+  const regular = $("player-actions");
+  const opening = $("player-opening-action");
+  regular.replaceChildren();
+  opening.replaceChildren();
+  $("player-opening").hidden = match.state !== "human" || !match.reallocation_open;
+  for (const [i, choice] of match.choices.entries()) {
     const row = node("div", undefined, "player-move");
     row.append(button(choice.label, () => choose(i)));
     if (choice.text) row.append(button("牌文", () => inspect(choice.label, choice.text), "text-button"));
-    return row;
+    (choice.opening ? opening : regular).append(row);
+  }
+  $("player-opening-note").textContent = opening.childElementCount
+    ? "在本回合出牌前，可调配一次。所找基本牌不含空军行动。"
+    : "当前没有足够的可弃手牌，或没有可找的基本牌。";
+  if (!match.choices.length) regular.append(node("p", status[match.state], "muted"));
+  const plays = $("player-plays");
+  plays.replaceChildren(...(match.recent_plays || []).map(play => {
+    const title = [names[play.country] || names[play.owner], playLabels[play.kind], play.name].join(" · ");
+    return button(title, () => inspect(title, play.text));
   }));
-  if (!match.choices.length) $("player-actions").append(node("p", status[match.state], "muted"));
+  if (!plays.childElementCount) plays.append(node("small", "尚未公开出牌。", "muted"));
   $("player-pass").hidden = !match.may_pass;
   paintBoard();
   paintCards();

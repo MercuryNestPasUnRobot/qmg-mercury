@@ -24,6 +24,9 @@
 .player-region { min-height: 45px; padding: 10px 0 0; font-size: .875rem; }
 .player-region p { margin: 4px 0; }
 .player-region .button { margin: 4px 6px 0 0; }
+#player-opening { border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+#player-opening h3 { font-size: .9rem; margin: 10px 0 4px; }
+#player-opening p { font-size: .8rem; margin: 0 0 8px; }
 #player-actions { display: grid; gap: 6px; max-height: 52vh; overflow: auto; margin: 12px 0; }
 .player-move { display: flex; gap: 8px; align-items: start; }
 .player-move .button { flex: 1 1 auto; white-space: normal; text-align: left; justify-content: flex-start; }
