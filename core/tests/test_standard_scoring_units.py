@@ -3,6 +3,7 @@ import pytest
 from conftest import card, make, move_initial
 from qmg_core import CoreAPI, ScoreEvaluator
 from qmg_core.ai_match_policy import CandidateView, RulePolicy
+from qmg_core.api import simulation_from_observation
 from qmg_core.content_effects import instruction
 from qmg_core.definitions import PER_UNIT_SITE
 from qmg_core.evaluation import OneStepPlanner
@@ -192,5 +193,7 @@ def test_b_preserves_each_units_half_site_value_without_awarding_unit_stock(data
         move_initial(data, "italy-army-0", region)
         game = make(data)
         evaluator = ScoreEvaluator(game.rules, profile())
-        values.append(evaluator.settlement.value(game, "germany").map_value)
+        sight = CoreAPI(game, ("germany",)).observe(include_history=False)
+        projected = simulation_from_observation(evaluator.rules, sight, search_projection=True)
+        values.append(evaluator.settlement.value(projected, "germany").map_value)
     assert values == [4, 8]
