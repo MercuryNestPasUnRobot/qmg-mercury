@@ -28,19 +28,24 @@ class ScoreUnits:
     action: float = 2
     capture_rounds: int = 0
     enabled: bool = False
+    supply_stability: float | None = None
 
     @classmethod
     def from_weights(cls, weights):
         if "scoring_units" not in weights:
             return cls()
         units = weights["scoring_units"]
-        if not isinstance(units, dict) or units.keys() != {"vp", "card", "action", "capture_rounds"}:
+        required = {"vp", "card", "action", "capture_rounds"}
+        if not isinstance(units, dict) or not required <= units.keys() <= required | {"supply_stability"}:
             raise CoreError("Invalid scoring units")
         if any(type(units[key]) not in (float, int) or not isfinite(units[key]) or units[key] <= 0
                for key in ("vp", "card", "action")):
             raise CoreError("Scoring units must be finite and positive")
         if type(units["capture_rounds"]) is not int or units["capture_rounds"] < 0:
             raise CoreError("Capture rounds must be a nonnegative integer")
+        stability = units.get("supply_stability", 0)
+        if type(stability) not in (float, int) or not isfinite(stability) or stability < 0:
+            raise CoreError("Supply stability must be finite and nonnegative")
         return cls(**units, enabled=True)
 
     def vp_score(self, amount):

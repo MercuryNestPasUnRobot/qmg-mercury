@@ -152,8 +152,10 @@ def test_redeploy_prices_the_improvement_from_the_units_original_position(data):
     weights = profile()
     evaluator = ScoreEvaluator(game.rules, weights)
     routes = evaluator.economic_from_view(client.observe()).routes
-    improvement = routes.position.value("germany", "C", excluded="germany-army-0") - routes.position.value(
+    location = routes.position.value("germany", "C", excluded="germany-army-0") - routes.position.value(
         "germany", "A", excluded="germany-army-0")
+    improvement = routes.move_value("germany", "C", "germany-army-0")
+    assert improvement > location
     command = next(c for c in client.legal_commands() if c.get("card") == "g-draw")
     paper, settled = score_play(game, client, command, weights)
     assert improvement > 0 and paper["rule_score"] == improvement - 2
@@ -180,7 +182,8 @@ def test_air_uses_position_value_and_pays_once_without_earning_site_vp(data):
     paper, settled = score_play(game, client, command, profile())
     assert paper["action_cost"] == settled["action_cost"] == -2
     assert settled["map_delta"] > 0
-    assert paper["rule_score"] == settled["q"] == settled["map_delta"] - 2
+    assert paper["rule_score"] == pytest.approx(settled["q"])
+    assert settled["q"] == pytest.approx(settled["map_delta"] - 2)
     assert settled["actual_vp_delta"] == 0
 
 
@@ -195,5 +198,6 @@ def test_b_preserves_each_units_half_site_value_without_awarding_unit_stock(data
         evaluator = ScoreEvaluator(game.rules, profile())
         sight = CoreAPI(game, ("germany",)).observe(include_history=False)
         projected = simulation_from_observation(evaluator.rules, sight, search_projection=True)
-        values.append(evaluator.settlement.value(projected, "germany").map_value)
+        score = evaluator.settlement.value(projected, "germany")
+        values.append(score.map_value - score.supply_stability)
     assert values == [4, 8]

@@ -105,13 +105,13 @@ def test_remote_response_recruit_uses_shifted_position_without_supply_proof(data
     economy = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe())
     routes = economy.routes
     assert not routes.placement_supplied("germany", "B")
-    shifted = routes.position.value("germany", "B", construction=True, distance_offset=1)
+    shifted = routes.position.value("germany", "B", construction=True, distance_offset=1) + routes.placement_stability("germany", "B")
     assert shifted > 0
     assert economy.responses.staging("germany", "g-status")["base"] == shifted
     client = CoreAPI(game, ("germany",))
     activate = next(c for c in client.legal_commands() if c["type"] == "ACTIVATE_CARD")
     planned, = OneStepPlanner(game.rules, profile()).rank(CandidateView(client.observe(), [activate]), "germany")
-    assert planned["complete"] and planned["map_delta"] == shifted
+    assert planned["complete"] and planned["map_delta"] == pytest.approx(shifted)
     move_initial(data, "united-kingdom-army-1", "B")
     game = make(data)
     forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses

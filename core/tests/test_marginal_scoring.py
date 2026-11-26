@@ -151,6 +151,6 @@ def test_turn_start_home_recruit_prices_one_ordinary_build_at_the_capital(data):
     shifted = routes.position.value("germany", "A", construction=True, distance_offset=1)
     assert ordinary > shifted
     actual = economy.statuses.report("germany", "g-status")
-    assert actual["windows"] == 1 and actual["future"] == ordinary
+    assert actual["windows"] == 1 and actual["future"] == round(ordinary, 4)
     move_initial(data, "germany-army-0", "A")
     assert forecast(data).statuses.report("germany", "g-status")["windows"] == 0

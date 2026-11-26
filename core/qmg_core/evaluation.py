@@ -193,16 +193,21 @@ class ScoreEvaluator:
         if self.action_opportunity and economy and card.get("play_as"):
             program = max((economy.routes.tactical_effect(country, {"type": mode}) for mode in card["play_as"]), default=0)
         else:
-            program = self.program_value(rules, state, country, card["effects"], economy, estimate_draw=estimate_draw)
+            program = self.program_value(rules, state, country, card["effects"], economy, estimate_draw=estimate_draw,
+                                         economic=bool(economy and economy.continuous_rules and card.get("legacy_kind") == "economic"))
         value = air_value + self.units.action_score(copies * weights["ability_ready"] / 2) + program
         return card_stock + max(0.0, value) * (
             1 if legal.can_start_card(state, country, card) else w["unusable_card_weight"])
 
-    def program_value(self, rules, state, country, steps, economy=None, *, estimate_draw=True):
+    def program_value(self, rules, state, country, steps, economy=None, *, estimate_draw=True, economic=False):
         w, value = self.weights, 0.0
         card_weights = w["card_value_weights"]
         drawn = 0
-        for instruction in steps:
+        mills = economy.economic_mill_values(country, steps) if economic else {}
+        for index, instruction in enumerate(steps):
+            if index in mills:
+                value += mills[index]
+                continue
             operation = instruction.get("operation", instruction)
             kind = operation["type"]
             multiplier = operation.get("amount", 1) if kind == "GAIN_VP" else operation.get("count", 1)
@@ -328,9 +333,14 @@ class ScoreEvaluator:
         removal = 0.0
         if excluded_unit is not None:
             pieces = [piece for piece in pieces if piece.token_id != excluded_unit.token_id]
+        economy = self.economic_from_state(rules, s)
+        stability = 0
         if self.action_distance:
-            routes = ScoringRoutes(rules, s, pieces, w, include_connections=False)
+            routes = ScoringRoutes(rules, s, pieces, w, include_connections=bool(economy and economy.continuous_rules))
             map_value, point_values, influences = routes.position.board_values(country, routes.scoring_rates())
+            if not s.winner:
+                stability = routes.supply_stability.value(country)
+                map_value += stability
             if initial_units is not None:
                 present = {piece.token_id for piece in pieces}
                 removal = self.units.action_score(-sum(sign(owner) for key, owner in initial_units.items()
@@ -341,7 +351,6 @@ class ScoreEvaluator:
         cards, resources = 0.0, 0.0
         legal = LegalActionGenerator(rules)
         card_weights = w["card_value_weights"]
-        economy = self.economic_from_state(rules, s)
         for c in TURN_ORDER:
             hand = s.positions[zone(c, "HAND")]
             for token_id in hand:
@@ -369,7 +378,8 @@ class ScoreEvaluator:
         terminal = 2 if s.winner == team else -2 if s.winner == enemy else 0
         return PositionValue(float(actual), map_value, cards, resources,
                              self.units.vp_score(actual) + map_value + cards + resources,
-                             terminal, tuple(point_values), tuple(influences), removal, card_event_value)
+                             terminal, tuple(point_values), tuple(influences), removal, card_event_value,
+                             supply_stability=stability)
 
     def _legacy_map(self, rules, s, pieces, sign, excluded_unit):
         w = self.weights
@@ -627,6 +637,8 @@ class OneStepPlanner:
                        "weights_digest": digest(self.evaluator.weights),
                        "actual_vp_delta": vp_delta, "vp_score_delta": self.evaluator.units.vp_score(vp_delta),
                        "map_delta": value.map_value - before.map_value,
+                       **({"supply_stability_delta": value.supply_stability - before.supply_stability}
+                          if self.evaluator.units.supply_stability is not None else {}),
                        "card_delta": value.card_value - before.card_value + initial,
                        "resource_delta": value.resource_adjustment - before.resource_adjustment,
                        "q": value.total - before.total + initial - cost, "terminal_rank": value.terminal_rank,
@@ -783,6 +795,8 @@ class OneStepPlanner:
                 "actual_vp_delta": after.actual_vp - before.actual_vp,
                 "vp_score_delta": self.evaluator.units.vp_score(after.actual_vp - before.actual_vp),
                 "map_delta": after.map_value - before.map_value,
+                **({"supply_stability_delta": after.supply_stability - before.supply_stability}
+                   if self.evaluator.units.supply_stability is not None else {}),
                 "card_delta": after.card_value - before.card_value + card_adjustment + initial,
                 "resource_delta": after.resource_adjustment - before.resource_adjustment,
                 **({"cycle_score": cycling["cycle_score"]} if cycling else {}),
@@ -898,7 +912,7 @@ class OneStepPlanner:
             if self.evaluator.weights.get("known_ability_scoring"):
                 airdrops = {**(airdrops or {}), **self._settled_airdrops(processor, state)}
                 effects["airdrops"] = airdrops
-            if self.evaluator.settlement.expansion_vp:
+            if self.evaluator.settlement.expansion_vp or self.evaluator.units.supply_stability is not None:
                 constructed = constructed.union(key for _, key in new_units)
                 effects["constructed"] = constructed
         if state.winner:

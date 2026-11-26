@@ -1,15 +1,18 @@
 """Value the nearest scoring sites using current, visible board routes."""
 from collections import Counter, defaultdict, deque
+from dataclasses import replace
+from functools import cached_property
 import json
 
 from .content_effects import action_for, available_options, condition_met, filtered_units, force_id, target_regions
 from .definitions import BATTLES, CONSTRUCTION
 from .expansion_scoring import BUILD_CARDS, ConstructionNetwork, project_placement
-from .model import Token, canonical, zone
+from .model import Token, ZoneRegistry, canonical, zone
 from .operations import ScoreResolver
 from .positional_scoring import ActionDistanceScoring
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, unit_rule_matches
 from .score_units import ScoreUnits
+from .supply_stability import SupplyStability
 
 
 class ScoringRoutes:
@@ -53,6 +56,8 @@ class ScoringRoutes:
         self.near_site_distances = {}
         self.attack_victims = {}
         self.removal_routes = {}
+        self.stability_changes = {}
+        self.anchor_changes = {}
         self.status_forecast = status_forecast
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections,
@@ -199,8 +204,11 @@ class ScoringRoutes:
         if self.position:
             # Price the denied position from its owner's side, plus one lost action.
             status_value = self.status_forecast().regional_removal(victim) if self.status_forecast else 0
-            return self.units.action + status_value + self.position.value(
-                victim.owner_country, victim.position_id, excluded=token_id)
+            force = victim.owner_country
+            reserve = zone(force, "RESERVE_" + self.rules.units[victim.definition_id]["kind"])
+            anchors = self.source_anchor_delta(force, token_id, lambda: self.move_projection(token_id, reserve))
+            position = self.position.value(force, victim.position_id, excluded=token_id)
+            return self.units.action + status_value + self.removal_stability(token_id) + position - anchors
         return self._without_unit(token_id).target_value(
             victim.owner_country, victim.position_id, construction=True, local_only=local_only)
 
@@ -230,6 +238,63 @@ class ScoringRoutes:
         if key not in self.placement_projections:
             self.placement_projections[key] = project_placement(self.rules, self.state, force, region)
         return self.placement_projections[key]
+
+    @cached_property
+    def supply_stability(self):
+        return SupplyStability(self.rules, self.state, self.units.supply_stability, pieces=self.pieces)
+
+    def placement_stability(self, force, region):
+        if not self.units.supply_stability:
+            return 0
+        key = force, region
+        if key not in self.stability_changes:
+            placed = self.placement(force, region)
+            self.stability_changes[key] = (SupplyStability(self.rules, placed[0], self.units.supply_stability).value(force)
+                                           - self.supply_stability.value(force) if placed else 0)
+        return self.stability_changes[key]
+
+    def removal_stability(self, token_id):
+        if not self.units.supply_stability:
+            return 0
+        if token_id not in self.stability_changes:
+            victim = self.state.tokens[token_id]
+            force = victim.owner_country
+            reserve = zone(force, "RESERVE_" + self.rules.units[victim.definition_id]["kind"])
+            removed = self.move_projection(token_id, reserve)
+            self.stability_changes[token_id] = (self.supply_stability.value(force) -
+                                               SupplyStability(self.rules, removed, self.units.supply_stability).value(force))
+        return self.stability_changes[token_id]
+
+    def move_projection(self, token_id, destination):
+        source = self.state.tokens[token_id].position_id
+        moved = replace(self.state, tokens=dict(self.state.tokens), positions={**self.state.positions,
+                        source: list(self.state.positions[source]), destination: list(self.state.positions[destination])})
+        ZoneRegistry.transfer(moved, token_id, destination)
+        return moved
+
+    def source_movement_value(self, seat, token, region):
+        value = self.position.source_move(seat, token, region)
+        if not self.units.supply_stability or region not in self.state.positions:
+            return value
+        moved = self.move_projection(token.token_id, region)
+        return value + SupplyStability(self.rules, moved, self.units.supply_stability).value(seat) - self.supply_stability.value(seat)
+
+    def source_anchor_delta(self, force, key, projection):
+        if self.units.supply_stability is None or not self.status_forecast:
+            return 0
+        forecast = self.status_forecast()
+        if not forecast.source_cards:
+            return 0
+        if key not in self.anchor_changes:
+            state = projection()
+            if state is None:
+                return 0
+            after = forecast.economy.on_board(state).statuses.source_scores
+            before = forecast.source_scores
+            team = self.rules.team(force)
+            enemy = "axis" if team == "allies" else "allies"
+            self.anchor_changes[key] = (after[team] - before[team]) - (after[enemy] - before[enemy])
+        return self.anchor_changes[key]
 
     def expansion(self, force, region, *, spent_card=None):
         token = self.state.tokens.get(spent_card)
@@ -271,6 +336,9 @@ class ScoringRoutes:
                 value += self.status_forecast().regional_placement(force, region)
             if construction and self.expansion_vp:
                 value += self.expansion(force, region, spent_card=spent_card)["score"]
+            if construction:
+                value += self.placement_stability(force, region)
+                value += self.source_anchor_delta(force, (force, region), lambda: (self.placement(force, region) or (None,))[0])
             self.target_scores[cache_key] = value
             return value
         if battle and self.weights.get("mirrored_attacks"):
@@ -321,8 +389,13 @@ class ScoringRoutes:
 
     def move_value(self, force, region, token_id=None):
         old = self.state.tokens.get(token_id)
-        previous = self.position.value(force, old.position_id, excluded=token_id) if old else 0
-        return self.position.value(force, region, excluded=token_id) - previous
+        previous = (self.position.value(force, old.position_id, excluded=token_id)
+                    if old and old.position_id in self.rules.regions else 0)
+        value = self.position.value(force, region, excluded=token_id) - previous
+        if old and self.units.supply_stability:
+            moved = self.move_projection(token_id, region)
+            value += SupplyStability(self.rules, moved, self.units.supply_stability).value(force) - self.supply_stability.value(force)
+        return value
 
     def redeploy_values(self, seat, token_id):
         if token_id not in self.redeploy_scores:
@@ -335,6 +408,8 @@ class ScoringRoutes:
         action, token, region, victim = json.loads(option)
         if action == "superiority":
             return self.removal_value(victim) if victim else 0
+        if token is None and self.units.supply_stability:
+            token = next(iter(self.state.positions[zone(force, "RESERVE_AIR")]), None)
         return self.move_value(force, region, token)
 
     def protection_value(self, force, region=None, *, token=None):
@@ -366,7 +441,7 @@ class ScoringRoutes:
         destination = op["destination"]
         if token.token_type == "SCORE_SOURCE":
             targets = op.get("destinations", self.rules.regions) if destination == "$choice" else (destination,)
-            return max((self.position.source_move(seat, token, target) for target in targets), default=0)
+            return max((self.source_movement_value(seat, token, target) for target in targets), default=0)
         if token.token_type == "CARD":
             owner = token.owner_country
             hand, discard = zone(owner, "HAND"), zone(owner, "DISCARD")

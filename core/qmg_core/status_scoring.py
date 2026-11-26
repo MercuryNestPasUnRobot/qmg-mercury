@@ -10,7 +10,8 @@ from .content_effects import condition_met, filtered_units, point_award, point_r
 from .economic_scoring import CARD_RETURN_EFFECTS, POINT_EFFECTS
 from .model import CoreError, PHASES, TURN_ORDER, Token, zone
 from .regional_sites import regional_award, site_layers
-from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units, home_regions, status_enabled
+from .positional_scoring import STANDARD_SITE_VP
+from .rules import LegalActionGenerator, MapGraph, RuleModifierResolver, SupplyResolver, board_units, home_regions, status_enabled
 
 STAGES = ("Setup", *PHASES)
 TRIGGER_PHASE = {
@@ -23,6 +24,8 @@ TRIGGER_PHASE = {
 MAP_MODS = {"always_supplied", "supply_source", "deny_supply_source", "supply_sharing",
             "connection", "recruit_region", "home", "score_bonus"}
 OTHER_MODS = {"reallocate_cost", "reallocate_discard", "economic_adjustment", "ignore_enemy_statuses"}
+CONTINUOUS_MODS = (MAP_MODS - {"score_bonus"}) | {"economic_adjustment", "ignore_enemy_statuses"}
+SOURCE_MODS = {"home", "supply_source", "deny_supply_source"}
 EFFECTS = POINT_EFFECTS | CARD_RETURN_EFFECTS | {
     "discard-top", "prevent-removal", "protect-unit-this-turn", "protect-units-this-turn", "supply-this-turn",
     "supply-units-this-turn", "battle", "build-at-battle-space", "choose-space", "recruit",
@@ -99,7 +102,7 @@ def placement_value(economy, force, region, *, airdrop):
            for t in routes.pieces):
         return 0
     offset = economy.map_weights.get("status_forecast", {}).get("projected_distance_offset", 1)
-    return routes.position.value(force, region, construction=True, distance_offset=offset)
+    return routes.position.value(force, region, construction=True, distance_offset=offset) + routes.placement_stability(force, region)
 
 
 def verify_status(rules, card):
@@ -148,7 +151,8 @@ class StatusForecast:
         # Caches belong to this one observed position and expire with it.
         for name in ("hand", "targets", "adjacent", "supplied", "program", "signals", "board_changes",
                      "entries", "portfolio", "report", "baseline_play", "possibility", "after_event_targets",
-                     "strategic_modifiers", "extra_reaction", "airdrop_value", "regional_awards", "regional_placement"):
+                     "strategic_modifiers", "extra_reaction", "airdrop_value", "regional_awards", "regional_placement",
+                     "continuous_value"):
             setattr(self, name, lru_cache(maxsize=None)(getattr(self, name)))
 
     def hand(self, owner):
@@ -801,6 +805,176 @@ class StatusForecast:
                                              for region, p in self.signals(foe, actor, key, later))
         return value
 
+    def source_site_delta(self, owner, before, after, old, new, old_mods, new_mods):
+        supply = SupplyResolver(self.rules)
+        scoring = supply.scoring_sources(before)
+        value = 0
+        for force in self.rules.force_controllers:
+            removed_mods = [m for m in old_mods[force] if m not in new_mods[force]]
+            added_mods = [m for m in new_mods[force] if m not in old_mods[force]]
+            if not (removed_mods or added_mods):
+                continue
+            first = supply.army_sources(before, force, old_mods[force], scoring)
+            second = supply.army_sources(after, force, new_mods[force], scoring)
+            candidates = {m["region"] for m in (*removed_mods, *added_mods)
+                          if m["kind"] in ("supply_source", "deny_supply_source", "home")}
+            gained = (second - first) & candidates
+            lost = (first - second) & candidates
+            gained.update(m["region"] for m in added_mods if m["kind"] == "supply_source")
+            lost.update(m["region"] for m in removed_mods if m["kind"] == "supply_source")
+            home_gained, home_lost = set(), set()
+            if any(m["kind"] == "home" for m in (*removed_mods, *added_mods)):
+                homes_before, homes_after = home_regions(self.rules, before, force), home_regions(self.rules, after, force)
+                home_gained, home_lost = homes_after - homes_before, homes_before - homes_after
+                gained.update(home_gained)
+                lost.update(home_lost)
+            sign = 1 if self.rules.team(force) == self.rules.team(owner) else -1
+            new_value = sum(new.force_site_interest(force, region, STANDARD_SITE_VP, contested=region in home_gained)
+                            for region in gained - lost)
+            old_value = sum(old.force_site_interest(force, region, STANDARD_SITE_VP, contested=region in home_lost)
+                            for region in lost - gained)
+            value += sign * (new_value - old_value)
+        return value
+
+    def economic_modifier_value(self, owner, source, before, after, modifications):
+        resolver = RuleModifierResolver(self.rules)
+        economic_mods = [m for m in modifications if m["kind"] == "economic_adjustment"]
+        sign = lambda seat: 1 if self.rules.team(seat) == self.rules.team(owner) else -1
+        value = 0
+        extras = []
+        typical_amount = max(abs(m["amount"]) for m in economic_mods)
+        for actor in TURN_ORDER:
+            if not any(m["country"] == actor if m["role"] == "actor" else sign(actor) != sign(m["country"])
+                       for m in economic_mods):
+                continue
+            play_turn = replace(before.turn, country_index=TURN_ORDER.index(actor), phase="Play")
+            play_state = replace(before, turn=play_turn)
+            old = resolver.resolve(play_state, actor)
+            new = resolver.resolve(replace(after, turn=play_turn), actor)
+            if old == new:
+                continue
+            active = TURN_ORDER[self.turn.country_index]
+            available = self.economy.routes.position.scoring_rounds(actor)
+            if active == actor and self.turn.phase in ("Play", "Setup"):
+                if self.turn.plays_remaining <= int(actor == owner and source is None):
+                    available -= 1
+            elif active == actor and self.turn.phase in ("Air", "Supply"):
+                available -= 1
+            if available <= 0:
+                continue
+            known = []
+            for card in self.hand(actor):
+                if card.get("legacy_kind") != "economic" or not self.legal.can_start_card(play_state, actor, card):
+                    continue
+                first = self.economy.economic_mill_values(actor, card["effects"], modifiers=old)
+                if self.economy.visible_economic_value(actor, card, old, first) <= self.economy.units.action:
+                    continue
+                second = self.economy.economic_mill_values(actor, card["effects"], modifiers=new)
+                delta = sign(actor) * (sum(second.values()) - sum(first.values()))
+                known.append(delta)
+            known.sort(reverse=True)
+            value += sum(known[:available])
+            if len(known) >= available:
+                continue
+            if known:
+                extras.append(sum(known) / len(known))
+            else:
+                extras.append(max((sign(actor) * (self.economy.mill(actor, target,
+                                  self.economy.economic_amount(actor, target, typical_amount, new), 1) -
+                                  self.economy.mill(actor, target,
+                                  self.economy.economic_amount(actor, target, typical_amount, old), 1))
+                                  for target in TURN_ORDER if sign(target) != sign(actor)), default=0))
+        return value + max(extras, default=0)
+
+    def suppressed_status_value(self, owner, without_suppression):
+        if self.economy.final_round and TURN_ORDER[self.turn.country_index] == owner and (
+                self.turn.phase not in ("Play", "Setup") or self.turn.plays_remaining <= 0):
+            return 0
+        forecast = self.economy.on_board(without_suppression).statuses
+        value = 0
+        for foe in TURN_ORDER:
+            if self.rules.team(foe) == self.rules.team(owner):
+                continue
+            for source, card in forecast.sources[foe]:
+                if not status_enabled(self.rules, without_suppression, without_suppression.tokens[source]):
+                    continue
+                if not condition_met(self.rules, without_suppression, foe, self.rules.cards[card].get("content_condition")):
+                    continue
+                effects = []
+                for key in self.rules.cards[card].get("abilities", ()):
+                    if (source, key) not in forecast.ready:
+                        continue
+                    trigger = trigger_of(self.rules.abilities[key])
+                    if trigger["type"] not in CONDITIONAL_TRIGGERS:
+                        continue
+                    kinds = forecast.trigger_card_kinds(foe, owner, trigger)
+                    if kinds is None or (trigger["type"] not in BASIC_WINDOWS and not forecast.known_triggers(owner, trigger, kinds)):
+                        continue
+                    effects.extend(forecast.program(foe, owner, key, region, committed=True)
+                                   for region, _ in forecast.signals(foe, owner, key, 0, deterministic=True))
+                value += max(0, max(effects, default=0))
+        return value
+
+    def continuous_value(self, owner, card_id, source, *, settled=False, sources_only=False):
+        from .map_influence import ScoringRoutes
+
+        mods = self.rules.cards[card_id].get("modifiers", ())
+        kinds = {m["kind"] for m in mods}
+        if sources_only:
+            kinds &= SOURCE_MODS
+            if not kinds:
+                return 0
+        before, after = self.modifier_states(owner, card_id, source)
+        value = 0
+        if kinds & MAP_MODS and (not settled or kinds & (SOURCE_MODS | {"recruit_region"})):
+            old = ScoringRoutes(self.rules, before, self.units, self.economy.map_weights)
+            new = ScoringRoutes(self.rules, after, self.units, self.economy.map_weights)
+            resolver = RuleModifierResolver(self.rules)
+            if not settled:
+                value += new.supply_stability.value(owner) - old.supply_stability.value(owner)
+            if kinds & SOURCE_MODS:
+                old_mods = {force: resolver.resolve(before, force) for force in self.rules.force_controllers}
+                new_mods = {force: resolver.resolve(after, force) for force in self.rules.force_controllers}
+                value += self.source_site_delta(owner, before, after, old.position, new.position, old_mods, new_mods)
+            if "connection" in kinds and not settled:
+                endpoints = {region for m in mods if m["kind"] == "connection" for region in (m["a"], m["b"])}
+                value += old.position.connection_change(new.position, owner, endpoints,
+                                                        distance_offset=self.config["projected_distance_offset"], affected_only=True)
+            if "recruit_region" in kinds:
+                projected = self.economy.on_board(after)
+                remote = []
+                for force, seat in self.rules.force_controllers.items():
+                    regions = {m["region"] for m in resolver.resolve(after, force) if m["kind"] == "recruit_region"}
+                    regions -= {m["region"] for m in resolver.resolve(before, force) if m["kind"] == "recruit_region"}
+                    action = {"type": "BUILD_ARMY", "force": force}
+                    opened = set(self.legal.targets(after, seat, action)) - set(self.legal.targets(before, seat, action))
+                    if self.rules.team(force) == self.rules.team(owner):
+                        remote.extend(placement_value(projected, force, region, airdrop=True) for region in regions & opened)
+                value += max(remote, default=0)
+        if "economic_adjustment" in kinds:
+            value += self.economic_modifier_value(owner, source, before, after, mods)
+        if "ignore_enemy_statuses" in kinds:
+            value += self.suppressed_status_value(owner, before)
+        return value
+
+    def continuous_residual(self, owner):
+        return sum(self.continuous_value(owner, card, source, settled=True) for source, card in self.sources[owner]
+                   if source not in self.disabled and any(m["kind"] in CONTINUOUS_MODS
+                       for m in self.rules.cards[card].get("modifiers", ())))
+
+    @cached_property
+    def source_cards(self):
+        return [(owner, source, card) for owner, group in self.sources.items() for source, card in group
+                if source not in self.disabled and any(m["kind"] in SOURCE_MODS
+                                                       for m in self.rules.cards[card].get("modifiers", ()))]
+
+    @cached_property
+    def source_scores(self):
+        scores = {"axis": 0, "allies": 0}
+        for owner, source, card in self.source_cards:
+            scores[self.rules.team(owner)] += self.continuous_value(owner, card, source, settled=True, sources_only=True)
+        return scores
+
     def entries(self, owner, card_id, source, board, held=False):
         card = self.rules.cards[card_id]
         active = TURN_ORDER[self.turn.country_index]
@@ -813,6 +987,7 @@ class StatusForecast:
             first_play += seat_count
         rows = []
         counted = Counter()
+        continuous = self.economy.continuous_rules and any(m["kind"] in CONTINUOUS_MODS for m in card.get("modifiers", ()))
         regional = self.regional_awards(card_id) if self.action_distance else {}
         hidden = self.rules.hidden_score_rules.get(card_id, {})
         income = {key: sum(site.income(self.rules, self.state, self.units)
@@ -852,7 +1027,8 @@ class StatusForecast:
         enabled = not self.action_distance or condition_met(self.rules, self.state, owner, card.get("content_condition"))
         for delay in range(limit):
             actor = TURN_ORDER[(self.turn.country_index + delay) % seat_count]
-            if (source in self.disabled and delay == 0) or (not source and delay < first_play) or (self.rules.team(owner) != self.rules.team(actor) and any(
+            if (source in self.disabled and delay == 0) or (not source and delay < first_play) or (not (self.economy.continuous_rules and board) and
+                    self.rules.team(owner) != self.rules.team(actor) and any(
                     any(m["kind"] == "ignore_enemy_statuses" for m in self.rules.cards[c].get("modifiers", ()))
                     for token, c in self.sources[actor] if token not in self.disabled or delay)):
                 continue
@@ -958,6 +1134,13 @@ class StatusForecast:
                         counted[key] += 1
                     continue
                 if delay >= self.economy.horizon:
+                    continue
+                if continuous and kind == "before-rule-use":
+                    if enabled and actor == owner and not counted["continuous"]:
+                        value = self.continuous_value(owner, card_id, source, settled=board)
+                        if value:
+                            rows.append(((delay, "modifier", card_id), 1, value))
+                        counted["continuous"] += 1
                     continue
                 if self.action_distance and actor == owner and enabled:
                     if kind == "before-rule-use" and counted["strategic"] == 0:

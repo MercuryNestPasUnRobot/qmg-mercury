@@ -234,13 +234,7 @@ class ResponseForecast:
         return False
 
     def on_board(self, state):
-        from .economic_scoring import EconomicForecast
-
-        return EconomicForecast(self.rules, self.economy.settings, vars(state.turn), state.scores,
-                                lambda seat, area: len(state.positions[zone(seat, area)]), lambda: state,
-                                state.winner, status_weights=self.economy.status_weights,
-                                map_weights=self.economy.map_weights, units=self.units,
-                                hand_average=self.economy.hand_average)
+        return self.economy.on_board(state)
 
     def program(self, owner, ability, *, source=None, event=None, moves=(), baseline=False, economy=None,
                 estimate_draw=True, check_conditions=False):

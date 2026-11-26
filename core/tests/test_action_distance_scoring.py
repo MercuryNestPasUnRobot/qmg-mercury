@@ -117,11 +117,13 @@ def test_airdrop_and_deck_top_use_their_separate_bases(data):
                                    "owner_country": "germany", "position_id": zone("germany", "RESERVE_AIR")})
     ability["effects"] = [instruction({"type": "choose-space", "kind": "army",
                                        "action": "build", "nearAirAction": True})]
-    assert forecast(data).statuses.program("germany", "germany", "g-extra", "A", committed=True) == 2
+    economy = forecast(data)
+    expected = 2 + economy.routes.placement_stability("germany", "B")
+    assert economy.statuses.program("germany", "germany", "g-extra", "A", committed=True) == pytest.approx(expected)
     assert forecast(data).statuses.report("germany", "g-status")["future"] == 0
     card(data, "g-noop")["legacy_kind"] = "air-power"
     hand_only(data, "g-deck-2")
-    assert forecast(data).statuses.report("germany", "g-status")["future"] == 2
+    assert forecast(data).statuses.report("germany", "g-status")["future"] == round(expected, 4)
     ability["trigger"]["card_trigger"]["type"] = "play-phase-start"
     ability["effects"] = [instruction({"type": "order-deck-top", "count": 3})]
     card(data, "g-noop").pop("legacy_kind")
@@ -137,21 +139,23 @@ def test_path_and_site_modifiers_count_a_single_nearest_piece_per_side(data):
     map_with_sites(data, [("A", "B"), ("B", "C"), ("C", "E"), ("A", "F")])
     change = {"kind": "connection", "team": "axis", "scope": "all", "a": "A", "b": "C", "enabled": True}
     card(data, "g-status")["modifiers"] = [change]
-    est = forecast(data).statuses
+    weights = profile()
+    weights["scoring_units"]["supply_stability"] = 0
+    est = forecast(data, weights=weights).statuses
     value = est.strategic_modifiers("germany", "g-status", None)
     assert value > 0
     assert est.report("germany", "g-status")["future"] == value
     move_initial(data, "italy-army-0", "F")
     # A second unit a step farther from the edited edge does not get its own path award.
-    estimate = forecast(data).statuses
+    estimate = forecast(data, weights=weights).statuses
     assert estimate.strategic_modifiers("germany", "g-status", None) == value
     card(data, "g-status")["modifiers"] = [{"kind": "score_bonus", "site": "C", "amount": 2, "scope": "all"}]
-    estimate = forecast(data).statuses
+    estimate = forecast(data, weights=weights).statuses
     site = estimate.economy.routes.position.closest_site_interest("germany", "C", 2, TURN_ORDER)
     assert site != 0
     assert estimate.report("germany", "g-status")["future"] == site
     card(data, "g-status")["modifiers"][0]["amount"] = -2
-    assert forecast(data).statuses.report("germany", "g-status")["future"] == -site
+    assert forecast(data, weights=weights).statuses.report("germany", "g-status")["future"] == -site
 
 
 def test_publicly_known_score_source_activation_and_cancellation_match_in_a_and_b(data):
@@ -171,7 +175,8 @@ def test_publicly_known_score_source_activation_and_cancellation_match_in_a_and_
     command = next(c for c in client.legal_commands() if c.get("card") == "g-deck-2")
     paper, = RulePolicy(engine.rules, scorer).rank(view, [command])
     searched, = OneStepPlanner(engine.rules, weights).rank(CandidateView(view, [command]), "germany")
-    assert paper["rule_score"] == searched["map_delta"] == 4
+    assert paper["rule_score"] == pytest.approx(searched["map_delta"])
+    assert searched["map_delta"] - searched["supply_stability_delta"] == pytest.approx(4)
     client.submit(command)
     economy = scorer.economic_from_view(client.observe())
     active = economy.visible_state().tokens[source["token_id"]]
