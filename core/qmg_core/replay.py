@@ -193,7 +193,7 @@ def render_recording(path, payload):
 
 
 def recording_topology(path, payload):
-    if payload["game"].get("human") or set(payload["regions"]) != PRINTED_REGIONS:
+    if payload.get("game", {}).get("human") or set(payload["regions"]) != PRINTED_REGIONS:
         return payload
     result = {**payload}
     result.pop("board_reference", None)

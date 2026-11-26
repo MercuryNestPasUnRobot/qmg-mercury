@@ -66,13 +66,21 @@ def command_description(rules, view, command):
                  view.get("reallocation", {}).get("targets", {}).get(option) or
                  decision.get("visible_choices", {}).get(option))
         if details := describe(source or option, known):
-            return {"label": ("发动 · " if source else "") + details["name"], "text": details.get("text", "")}
+            label = details["name"]
+            if source:
+                label = "发动 · " + label
+            elif view["turn"]["phase"] == "Setup" or decision.get("hand_discard") or decision.get("operation_type") == "DISCARD":
+                label = "弃置 · " + label
+            elif decision.get("operation_type") in ("COST_SELECTED", "PAYMENT_SELECTED"):
+                label = "支付 · " + label
+            return {"label": label, "text": details.get("text", "")}
         target = option.rsplit("|", 1)[-1]
         if decision.get("operation_type") == "AIR_ACTION_SELECTED":
             action, _, target, _ = json.loads(option)
             label = {"deploy": "部署空军", "marshal": "调动空军", "superiority": "争夺制空"}.get(action, "空军行动")
         elif target in rules.regions:
-            label = "空降至" if option in decision.get("map_airdrop_options", ()) else "选择地区"
+            label = ("空降至" if option in decision.get("map_airdrop_options", ()) else
+                     "攻击" if decision.get("map_battle") else "选择地区")
         else:
             return {"label": (decision.get("option_labels", {}).get(option) or
                               view.get("reallocation", {}).get("sources", {}).get(option) or CHOICE_NAMES.get(option) or

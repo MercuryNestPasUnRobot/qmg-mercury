@@ -90,11 +90,14 @@ async function mount(data) {
   map.classList.toggle("printed-board", artMap);
 
   $("match-name").textContent = batch.name;
-  if (game.human) $("reveal").closest("label").hidden = true;
+  if (game.human) {
+    $("reveal").closest("label").hidden = true;
+    if ($("seat-help")) $("seat-help").textContent = "点击可见牌名查看牌文。其他席位的手牌和响应牌保留数量。";
+  }
   $("match-info").textContent = [
     batch.ai_version, game.human ? "玩家执 " + country(game.human) : "种子 " + game.seed,
     game.human ? "玩家视角" : "B 执" + teamNames[game.search_team],
-    batch.settings.budget_ms && "预算 " + batch.settings.budget_ms + " ms", batch.ai_note,
+    batch.settings.budget_ms && "预算 " + batch.settings.budget_ms + " ms", game.human ? null : batch.ai_note,
   ].filter(Boolean).join(" · ");
   $("position").max = end;
   frames.forEach((frame, index) => {

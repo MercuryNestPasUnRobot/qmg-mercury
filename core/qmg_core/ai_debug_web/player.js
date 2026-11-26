@@ -245,7 +245,8 @@ function paintMatch(next) {
   $("match-replay").hidden = !match.replay;
   if (match.replay) $("match-replay").href = match.replay;
   const turn = match.turn;
-  $("player-turn").textContent = turn ? `第 ${turn.round_id} 轮 · ${names[match.active]} · ${phaseNames[turn.phase]}` : "准备开局";
+  const seat = turn?.phase === "Setup" ? match.actor : match.active;
+  $("player-turn").textContent = turn ? `第 ${turn.round_id} 轮 · ${names[seat]} · ${phaseNames[turn.phase]}` : "准备开局";
   const winner = match.winner === "draw" ? "平局" : match.winner === "axis" ? "轴心获胜" : "同盟获胜";
   const status = {starting: "正在准备对局", human: match.may_pass ? "你可以在当前时机响应" : "轮到你操作",
     ai: `等待${names[match.actor] || "其他"} AI`, resolving: "正在结算", archiving: `${match.winner ? winner : "对局已结束"} · 正在核对录像`,
