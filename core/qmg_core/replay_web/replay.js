@@ -16,7 +16,7 @@ const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "�
   ABILITY_READY: "可用区", ABILITY_PENDING: "待结算", OBJECT_POOL: "对象池",
   RESOLUTION: "结算区", SCORE_DORMANT: "计分休眠区", SET_ASIDE: "待命区"};
 const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "弃牌", FORFEIT_PLAY: "无牌可弃，扣 1 VP", CHOOSE: "选择", USE_STATUS: "发动状态牌",
-  USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应",
+  USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应", PRIVATE_OPERATION: "不可见的操作",
   BUILD_ARMY: "建立陆军", BUILD_NAVY: "建立海军", LAND_BATTLE: "陆战", SEA_BATTLE: "海战", RECRUIT: "征召"};
 const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
   ABILITY_TRIGGERED: "响应触发", BEGIN_PHASE: "进入阶段", TURN_END: "回合结束", GAIN_VP: "获得 VP",
@@ -90,9 +90,11 @@ async function mount(data) {
   map.classList.toggle("printed-board", artMap);
 
   $("match-name").textContent = batch.name;
+  if (game.human) $("reveal").closest("label").hidden = true;
   $("match-info").textContent = [
-    batch.ai_version, "种子 " + game.seed, "B 执" + teamNames[game.search_team],
-    "预算 " + batch.settings.budget_ms + " ms", batch.ai_note,
+    batch.ai_version, game.human ? "玩家执 " + country(game.human) : "种子 " + game.seed,
+    game.human ? "玩家视角" : "B 执" + teamNames[game.search_team],
+    batch.settings.budget_ms && "预算 " + batch.settings.budget_ms + " ms", batch.ai_note,
   ].filter(Boolean).join(" · ");
   $("position").max = end;
   frames.forEach((frame, index) => {
@@ -207,7 +209,7 @@ async function mount(data) {
     $("force-key").append(legend);
   }
 
-  const judge = () => $("reveal").checked;
+  const judge = () => !game.human && $("reveal").checked;
   let activePile = null;
   const tokenName = key => {
     const t = tokens[key];
@@ -347,7 +349,7 @@ async function mount(data) {
       const pane = node("article", undefined, "seat team-" + team + (active === id ? " active" : ""));
       const head = node("div", undefined, "seat-head");
       head.append(node("strong", country(id)), node("span", teamNames[team], "seat-side"),
-        node("span", team === game.search_team ? "B" : "A", "seat-side"));
+        node("span", game.human ? (id === game.human ? "玩家" : game.seats[id]) : (team === game.search_team ? "B" : "A"), "seat-side"));
       pane.append(head);
       if (seat.piles) {
         const controls = node("div", undefined, "pile-controls");
@@ -376,11 +378,12 @@ async function mount(data) {
       for (const key of seat.DISABLED_STATUS) cards.append(cardButton(key, "disabled", "停用 · "));
       const responses = seat.RESPONSE.filter(key => tokens[key]?.kind === "CARD");
       const listeners = seat.RESPONSE.filter(key => tokens[key]?.kind !== "CARD");
-      if (judge()) {
+      if (judge() || id === game.human) {
         for (const key of responses) cards.append(cardButton(key, "response", "盖牌 · "));
         for (const key of listeners) cards.append(cardButton(key, "response", "监听 · "));
       } else {
-        if (responses.length) cards.append(node("span", "盖牌 ×" + responses.length, "card-back"));
+        const count = seat.response_count ?? responses.length;
+        if (count) cards.append(node("span", "响应 ×" + count, "card-back"));
         if (listeners.length) cards.append(node("span", "监听 ×" + listeners.length, "card-back"));
       }
       if (!cards.childElementCount) cards.append(node("small", "场上无状态牌或响应"));
@@ -396,10 +399,12 @@ async function mount(data) {
     const {id, kind} = activePile;
     const keys = frame.seats[id].piles[kind];
     const label = kind === "HAND" ? "手牌" : "弃牌堆";
-    $("pile-title").textContent = country(id) + " · " + label + " · " + keys.length + " 张";
+    $("pile-title").textContent = country(id) + " · " + label + " · " + frame.seats[id][kind] + " 张";
     const cards = $("pile-cards");
     cards.replaceChildren();
-    if (kind === "HAND" && !judge()) {
+    if (kind === "HAND" && game.human && id !== game.human) {
+      cards.append(node("small", "该席位只显示手牌数量。"));
+    } else if (kind === "HAND" && !game.human && !judge()) {
       cards.append(node("small", "打开上方的「裁判视角」查看手牌内容。"));
     } else if (!keys.length) {
       cards.append(node("small", "此时没有牌。"));
@@ -416,8 +421,8 @@ async function mount(data) {
       const setResponse = frame.events.some(e => e.moves.some(([key, , to]) =>
         tokens[key]?.kind === "CARD" && to?.endsWith(":RESPONSE")));
       const obscure = !judge() && (setResponse || row.command.type === "CHOOSE");
-      area.append(node("p", country(row.country) + " · " + commandLabel(row.command, obscure), "decision-label"),
-        node("p", [row.policy, modeNames[row.mode] || row.mode,
+      area.append(node("p", country(row.country) + " · " + (row.label || commandLabel(row.command, obscure)), "decision-label"),
+        node("p", game.human ? (row.policy === "human" ? "玩家操作" : "AI " + row.policy) : [row.policy, modeNames[row.mode] || row.mode,
           row.elapsed_ms.toFixed(1) + " / " + row.budget_ms + " ms"].join(" · "), "action-meta muted"));
     } else {
       area.append(node("p", "开局 · 初始发牌", "muted"));
@@ -456,6 +461,10 @@ async function mount(data) {
   function paintEvaluation(frame) {
     const area = $("evaluation");
     area.replaceChildren();
+    if (game.human) {
+      area.parentElement.hidden = true;
+      return;
+    }
     const row = frame.decision;
     if (!row) {
       area.append(node("p", "走到第一条指令后显示评分。", "muted"));
