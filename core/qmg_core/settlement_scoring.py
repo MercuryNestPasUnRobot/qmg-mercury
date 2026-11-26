@@ -12,6 +12,7 @@ from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, ZoneRegistry, zone
 from .operations import OperationExecutor, ScoreResolver, outcome
 from .rules import SupplyResolver, board_units, status_enabled
+from .supply_stability import SupplyStability
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class PositionValue:
     expansion_sites: tuple = ()
     expansion_score: float = 0
     temporary_vp: float = 0
+    supply_stability: float = 0
 
 
 class SettlementScorer:
@@ -178,6 +180,7 @@ class SettlementScorer:
         terminal = 2 if state.winner == own else -2 if state.winner == enemy else 0
 
         board = board_units(rules, state)
+        stability_state = replace(state, tokens=dict(state.tokens)) if self.units.supply_stability else state
         still_on_board = {t.token_id for t in board}
         landed = {t.token_id: t for t in board if (airdrops or {}).get(t.token_id) == t.position_id and not any(
             enemy.position_id == t.position_id and rules.team(enemy.owner_country) != rules.team(t.owner_country)
@@ -252,7 +255,15 @@ class SettlementScorer:
             if origins:
                 expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
         expansion_score = self.units.vp_score(len(expansion) * self.expansion_vp)
-        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp) + air_support
+        settled_ids = {t.token_id for t in pieces}
+        vanished_placements = (set(constructed) | set(recruited)) - settled_ids - landed.keys()
+        if self.units.supply_stability:
+            for key in vanished_placements:
+                stability_state.tokens[key] = state.tokens[key]
+        stability_pieces = [t for t in board if t.token_id not in vanished_placements]
+        stability = (SupplyStability(rules, stability_state, self.units.supply_stability, pieces=stability_pieces).value(country)
+                     if not state.winner else 0)
+        map_value = stock + sum(site_values.values()) + expansion_score + self.units.vp_score(temporary_vp) + air_support + stability
         resources = 0
         if self.economy_factory and not state.winner:
             economy = self.economy_factory(rules, state)
@@ -268,15 +279,17 @@ class SettlementScorer:
             if economy.status_weights and any(state.positions[zone(seat, "STATUS")] for seat in TURN_ORDER):
                 status = economy.statuses
                 cards += sum(sign(seat) * sum(status.residual(seat).values()) for seat in TURN_ORDER)
-                # The settled map already contains the supply difference. Only add the durable waiver once.
-                for seat in TURN_ORDER:
-                    for key in state.positions[zone(seat, "STATUS")]:
-                        source = state.tokens[key]
-                        definition = rules.cards[source.definition_id]
-                        if (any(mod["kind"] == "always_supplied" for mod in definition.get("modifiers", ()))
-                                and status_enabled(rules, state, source)
-                                and condition_met(rules, state, seat, definition.get("content_condition"))):
-                            cards += sign(seat) * self.units.action
+                if economy.continuous_rules:
+                    cards += sum(sign(seat) * status.continuous_residual(seat) for seat in TURN_ORDER)
+                else:
+                    for seat in TURN_ORDER:
+                        for key in state.positions[zone(seat, "STATUS")]:
+                            source = state.tokens[key]
+                            definition = rules.cards[source.definition_id]
+                            if (any(mod["kind"] == "always_supplied" for mod in definition.get("modifiers", ()))
+                                    and status_enabled(rules, state, source)
+                                    and condition_met(rules, state, seat, definition.get("content_condition"))):
+                                cards += sign(seat) * self.units.action
         return PositionValue(float(actual), map_value, cards, resources, self.units.vp_score(actual) + map_value + cards + resources,
                              terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score,
-                             temporary_vp)
+                             temporary_vp, stability)

@@ -126,15 +126,18 @@ class RulePolicy:
             region = site["region"]
             self.sites[region] = self.sites.get(region, 0) + site["vp"]
 
-    def instructions(self, steps, seat, economy, *, closeout=False, spent_card=None):
+    def instructions(self, steps, seat, economy, *, closeout=False, spent_card=None, economic=False):
         team = self.rules.team(seat)
         value = 0
         frontier = bool(closeout and economy and economy.map_weights)
         tactical = bool(economy and self.evaluator and self.evaluator.action_opportunity)
         drawn = 0
-        for step in steps:
+        mills = economy.economic_mill_values(seat, steps) if economic else {}
+        for index, step in enumerate(steps):
             op = step.get("operation", step)
-            if op["type"] == "CARD_EFFECT":
+            if index in mills:
+                value += mills[index]
+            elif op["type"] == "CARD_EFFECT":
                 value += effect_priority(op["effect"], team, economy, seat, closeout=closeout, frontier=frontier,
                                          units=self.units, spent_card=spent_card, tactical=tactical)
             elif op["type"] == "GAIN_VP" and (economy or self.units.enabled):
@@ -190,6 +193,8 @@ class RulePolicy:
                     economy.statuses.report(seat, card["id"], held=not closeout)["future"])
         if active:
             return self.instructions(self.rules.abilities[card["active_ability"]]["effects"], seat, economy, closeout=closeout)
+        if economy and economy.continuous_rules and card.get("legacy_kind") == "economic":
+            return self.instructions(card["effects"], seat, economy, closeout=closeout, spent_card=spent_card, economic=True)
         abilities = [self.rules.abilities[a] for a in card.get("abilities", ())]
         airdrop = [ability for ability in abilities if economy and economy.status_weights and
                    self.evaluator.action_distance and is_airdrop(ability)]
@@ -374,7 +379,14 @@ class RulePolicy:
             source = view["tokens"].get(decision.get("response_sources", {}).get(option))
             return 1 + self.card_value(self.rules.cards[source["definition_id"]], seat, economy) if source else 1
         if economy and "deck_discard_count" in decision and option in self.rules.countries:
-            return economy.mill(seat, option, decision["deck_discard_count"], ACTION_PRIORITY["GAIN_VP"], closeout=True)
+            count = decision["deck_discard_count"]
+            if (economy.continuous_rules and "economic_targets_already_used" in decision and
+                    option not in decision["economic_targets_already_used"] and self.rules.team(option) != self.rules.team(seat)):
+                from .rules import RuleModifierResolver
+
+                modifiers = RuleModifierResolver(self.rules).resolve(economy.visible_state(), seat)
+                count = economy.economic_amount(seat, option, count, modifiers)
+            return economy.mill(seat, option, count, ACTION_PRIORITY["GAIN_VP"], closeout=True)
         if option in ("confirm", "air", "discard-top"):
             return 100
         if economy and self.evaluator.action_opportunity:
@@ -401,7 +413,7 @@ class RulePolicy:
                            default=0)
         if economy and self.evaluator.action_distance and (source := decision.get("score_source")):
             token = economy.visible_state().tokens[source]
-            return economy.routes.position.source_move(seat, token, option)
+            return economy.routes.source_movement_value(seat, token, option)
         if token := view["tokens"].get(option):
             if token["token_type"] == "CARD":
                 value = self.card_value(self.rules.cards[token["definition_id"]], seat, economy)

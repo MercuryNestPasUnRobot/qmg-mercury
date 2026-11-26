@@ -74,8 +74,9 @@ def test_b_needs_proof_that_an_unsupplied_recruit_survives(data, mode, expected)
     card(data, "g-status")["abilities"] = ["guard-at-supply"]
     move_initial(data, "g-status", zone("germany", "STATUS"))
     game, client, play = deploy(data, [{"type": "recruit", "kind": "army", "space": "B"}])
-    assert paper_rank(game, client, play) == expected - 2
-    assert rank(game, client, play)["map_delta"] == expected
+    outcome = rank(game, client, play)
+    assert outcome["map_delta"] - outcome["supply_stability_delta"] == pytest.approx(expected)
+    assert paper_rank(game, client, play) == pytest.approx(outcome["map_delta"] - 2)
     client.apply(play)
     assert "germany-army-1" not in SupplyResolver(game.rules).supplied(game.state, "germany")
     while game.state.turn.country_index == 0:
@@ -180,8 +181,9 @@ def test_second_recruitment_can_supply_the_first_before_cleanup(data):
     map_with_sites(data, [("A", "C"), ("C", "B")], ())
     data["settings"].update(free_recruit=True, supply_revision=2, mandatory_turn_play=True)
     game, client, play = deploy(data, [{"type": "recruit", "kind": "army", "space": region} for region in ("B", "C")])
-    assert paper_rank(game, client, play) == -2
-    assert rank(game, client, play)["map_delta"] == 0
+    projected = rank(game, client, play)
+    assert projected["map_delta"] == projected["supply_stability_delta"]
+    assert paper_rank(game, client, play) == projected["map_delta"] - 2
     client.apply(play)
     client.apply(next(c for c in client.legal_commands() if c["type"] == "END_PHASE"))
     assert {t.position_id for t in game.state.tokens.values() if t.token_type == "UNIT" and

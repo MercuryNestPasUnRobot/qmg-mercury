@@ -206,6 +206,9 @@ def observation(processor, controlled_countries, *, include_history=True):
             if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
                     s.decision.continuation["effect"]["type"] == "choose-country"):
                 decision["deck_discard_count"] = s.decision.continuation["effect"]["count"]
+                economic = s.stack[-1].context.get("economic")
+                if economic is not None:
+                    decision["economic_targets_already_used"] = list(economic.get("applied_targets", ()))
             if (s.decision.continuation["type"] == "CARD_EFFECT_SELECTED" and
                     s.decision.continuation["effect"]["type"] == "discard-hand"):
                 decision["hand_discard"] = True

@@ -26,10 +26,8 @@ def status_enabled(rules, state, source):
     current = TURN_ORDER[state.turn.country_index]
     if rules.team(source.owner_country) == rules.team(current):
         return True
-    return not any(t.token_type == "CARD" and t.owner_country == current
-                   and t.position_id == zone(current, "STATUS") and any(
-                       m["kind"] == "ignore_enemy_statuses" for m in rules.cards[t.definition_id].get("modifiers", []))
-                   for t in state.tokens.values())
+    return not any(m["kind"] == "ignore_enemy_statuses" for key in state.positions.get(zone(current, "STATUS"), ())
+                   for m in rules.cards[state.tokens[key].definition_id].get("modifiers", ()))
 
 
 class RuleModifierResolver:
@@ -40,7 +38,9 @@ class RuleModifierResolver:
         force = country
         country = self.rules.force_controllers[country]
         result = []
-        for token in sorted(state.tokens.values(), key=lambda item: item.token_id):
+        deployed = sorted(key for seat in TURN_ORDER for key in state.positions.get(zone(seat, "STATUS"), ()))
+        for key in deployed:
+            token = state.tokens[key]
             if token.token_type == "CARD" and status_enabled(self.rules, state, token):
                 for modifier in self.rules.cards[token.definition_id].get("modifiers", []):
                     if self.rules.cards[token.definition_id].get("content_condition"):
@@ -131,9 +131,11 @@ def capture_turn_start(rules, state):
         }
 
 
-def home_regions(rules, state, force):
+def home_regions(rules, state, force, *, modifiers=None):
     homes = {r["id"] for r in rules.regions.values() if r.get("home_country") == force}
-    for modifier in RuleModifierResolver(rules).resolve(state, force):
+    if modifiers is None:
+        modifiers = RuleModifierResolver(rules).resolve(state, force)
+    for modifier in modifiers:
         if modifier["kind"] == "home":
             homes = {modifier["region"]}
     return homes
@@ -162,6 +164,34 @@ class SupplyResolver:
     def __init__(self, rules):
         self.rules, self.graph = rules, MapGraph(rules)
 
+    def network(self, country, modifiers):
+        groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
+        network = {country}
+        while True:
+            expanded = network | {force for group in groups if network.intersection(group) for force in group}
+            if expanded == network:
+                break
+            network = expanded
+        if self.rules.settings["allied_supply"]:
+            network.update(force for force in self.rules.force_controllers if self.rules.team(force) == self.rules.team(country))
+        return network
+
+    def scoring_sources(self, state):
+        if self.rules.settings.get("supply_revision", 1) != 2:
+            return set()
+        return ({site["region"] for site in self.rules.sites.values() if not site.get("dynamic")} |
+                {t.position_id for t in state.tokens.values() if t.token_type == "SCORE_SOURCE" and
+                 t.position_id in self.rules.regions and self.rules.sites[t.definition_id].get("dynamic")})
+
+    def army_sources(self, state, force, modifiers, scoring_regions):
+        sources = home_regions(self.rules, state, force, modifiers=modifiers) | scoring_regions
+        if self.rules.settings.get("supply_revision", 1) == 2:
+            sources.update(r["id"] for r in self.rules.regions.values()
+                           if r.get("supply_source_for") == force and r.get("home_country") != force)
+        sources.update(m["region"] for m in modifiers if m["kind"] == "supply_source")
+        sources.difference_update(m["region"] for m in modifiers if m["kind"] == "deny_supply_source")
+        return sources
+
     def supplied(self, state, country, *, units=None, assume_supplied=()):
         if units is None:
             units = board_units(self.rules, state)
@@ -175,14 +205,7 @@ class SupplyResolver:
         groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
         revised = self.rules.settings.get("supply_revision", 1) == 2
         if revised or self.rules.settings.get("surface_supply"):
-            network = {country}
-            while True:
-                expanded = network | {force for group in groups if network.intersection(group) for force in group}
-                if expanded == network:
-                    break
-                network = expanded
-            if share:
-                network.update(force for force in self.rules.force_controllers if self.rules.team(force) == self.rules.team(country))
+            network = self.network(country, modifiers)
             pieces = [t for t in units if t.owner_country in network and self.rules.units[t.definition_id]["kind"] != "AIR"]
             seeded, occupied = set(), set()
             adjacency = self.graph.adjacency(state, country, "supply")
@@ -191,11 +214,7 @@ class SupplyResolver:
                      (revised or self.rules.units[t.definition_id]["kind"] == "ARMY")}
             unported = {t.token_id for t in pieces if self.rules.units[t.definition_id]["kind"] == "NAVY" and
                         adjacency[t.position_id].isdisjoint(ports)}
-            scoring_regions = set()
-            if revised:
-                scoring_regions.update(site["region"] for site in self.rules.sites.values() if not site.get("dynamic"))
-                scoring_regions.update(t.position_id for t in state.tokens.values() if t.token_type == "SCORE_SOURCE"
-                                       and t.position_id in self.rules.regions and self.rules.sites[t.definition_id].get("dynamic"))
+            scoring_regions = self.scoring_sources(state)
             army_sources = {}
             for token in pieces:
                 has_port = token.token_id not in unported
@@ -212,13 +231,7 @@ class SupplyResolver:
                     seeded.add(token.position_id)
                 elif self.rules.units[token.definition_id]["kind"] == "ARMY":
                     if force not in army_sources:
-                        sources = home_regions(self.rules, state, force) | scoring_regions
-                        if revised:
-                            sources.update(r["id"] for r in self.rules.regions.values()
-                                           if r.get("supply_source_for") == force and r.get("home_country") != force)
-                        sources.update(m["region"] for m in token_modifiers if m["kind"] == "supply_source")
-                        sources.difference_update(m["region"] for m in token_modifiers if m["kind"] == "deny_supply_source")
-                        army_sources[force] = sources
+                        army_sources[force] = self.army_sources(state, force, token_modifiers, scoring_regions)
                     if token.position_id in army_sources[force]:
                         seeded.add(token.position_id)
             reached, queue = seeded.copy(), deque(sorted(seeded))

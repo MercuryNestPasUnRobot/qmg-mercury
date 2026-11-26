@@ -244,6 +244,20 @@ class ActionDistanceScoring:
         team = self.rules.team(owner)
         return -teams.get(team, (inf, 0))[1] + sum(row[1] for side, row in teams.items() if side != team)
 
+    def force_site_interest(self, force, region, vp, *, contested=False):
+        distance = min((self.distances(force, token.position_id).get(region, inf) for token in self.pieces
+                        if token.owner_country == force), default=inf)
+        value = self.distance_value(self.proportional_base(force, region, vp), distance)
+        if not contested:
+            return value
+        opponents = []
+        for token in self.pieces:
+            enemy = token.owner_country
+            if self.rules.team(enemy) != self.rules.team(force):
+                distance = self.distances(enemy, token.position_id).get(region, inf)
+                opponents.append((distance, -self.distance_value(self.proportional_base(enemy, region, vp), distance)))
+        return value + min(opponents, default=(inf, 0))[1]
+
     def dynamic_site_value(self, owner, site, regions):
         definition = self.rules.sites[site]
         return max((self.closest_site_interest(owner, p, definition["vp"], definition["countries"])
@@ -258,7 +272,7 @@ class ActionDistanceScoring:
             after.add(destination)
         return self.dynamic_site_value(owner, site, after) - self.dynamic_site_value(owner, site, before)
 
-    def connection_change(self, after, owner, endpoints, *, distance_offset=0):
+    def connection_change(self, after, owner, endpoints, *, distance_offset=0, affected_only=False):
         closest, candidates = {}, defaultdict(list)
         for token in self.pieces:
             force, region = token.owner_country, token.position_id
@@ -268,16 +282,24 @@ class ActionDistanceScoring:
             if distance == inf:
                 continue
             team = self.rules.team(force)
+            if affected_only:
+                delta = (after.value(force, region, excluded=token.token_id, distance_offset=distance_offset) -
+                         self.value(force, region, excluded=token.token_id, distance_offset=distance_offset))
+                if not delta:
+                    continue
+            else:
+                delta = None
             if distance < closest.get(team, inf):
                 closest[team] = distance
                 candidates[team].clear()
             if distance == closest[team]:
-                candidates[team].append(token)
+                candidates[team].append((token, delta))
         team = self.rules.team(owner)
         result = 0
         for side, tokens in candidates.items():
-            changes = (after.value(t.owner_country, t.position_id, excluded=t.token_id, distance_offset=distance_offset) -
+            changes = (delta if delta is not None else
+                       after.value(t.owner_country, t.position_id, excluded=t.token_id, distance_offset=distance_offset) -
                        self.value(t.owner_country, t.position_id, excluded=t.token_id, distance_offset=distance_offset)
-                       for t in tokens)
+                       for t, delta in tokens)
             result += max(changes, key=abs) * (1 if side == team else -1)
         return result

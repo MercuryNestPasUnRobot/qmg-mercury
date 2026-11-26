@@ -5,6 +5,7 @@ from math import ceil, copysign
 from .content_effects import available_options, condition_met, filtered_units, force_id, point_award
 from .hand_retention import cycling_ev
 from .model import TURN_ORDER, zone
+from .rules import RuleModifierResolver, board_units, unit_rule_matches
 from .score_units import ScoreUnits
 
 
@@ -66,6 +67,20 @@ class EconomicForecast:
     @property
     def known_abilities(self):
         return self.marginal and self.map_weights.get("known_ability_scoring", False)
+
+    @property
+    def continuous_rules(self):
+        return self.known_abilities and self.units.supply_stability is not None
+
+    @property
+    def final_round(self):
+        return self.turn["round_id"] >= self.rules.settings["max_rounds"]
+
+    def on_board(self, state):
+        return EconomicForecast(self.rules, self.settings, vars(state.turn), state.scores,
+                                lambda seat, area: len(state.positions[zone(seat, area)]), lambda: state,
+                                state.winner, status_weights=self.status_weights, map_weights=self.map_weights,
+                                units=self.units, hand_average=self.hand_average)
 
     @cached_property
     def routes(self):
@@ -137,6 +152,8 @@ class EconomicForecast:
         return max(0, self.draws(seat) - (self.count(seat, "DECK") if deck is None else deck))
 
     def future_loss(self, seat):
+        if self.continuous_rules and self.final_round:
+            return 0
         return self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * self.shortfall(seat))
 
     def cycle_value(self, seat, count):
@@ -154,14 +171,78 @@ class EconomicForecast:
         draws = min(count, max(0, self.count(seat, "DECK") - already_drawn))
         return self.cycle_value(seat, draws)["cycle_score"] - self.units.vp_score(self.penalty * (count - draws))
 
-    def mill(self, seat, target, count, base, *, closeout=False):
-        deck = self.count(target, "DECK")
+    def mill(self, seat, target, count, base, *, closeout=False, already_removed=0):
+        deck = max(0, self.count(target, "DECK") - already_removed)
         sign = -1 if self.rules.team(seat) == self.rules.team(target) else 1
         immediate = sign * self.penalty * max(0, count - deck)
-        future = 0 if self.closes_game(seat, immediate) else (
-            self.shortfall(target, max(0, deck - count)) - self.shortfall(target))
+        future = 0 if self.closes_game(seat, immediate) or (self.continuous_rules and self.final_round) else (
+            self.shortfall(target, max(0, deck - count)) - self.shortfall(target, deck))
         return (self.points(seat, immediate, base, closeout=closeout)
                 + sign * self.units.vp_score(self.settings["future_shortfall_value"] * self.penalty * future))
+
+    def economic_amount(self, seat, target, base, modifiers):
+        return max(0, base + sum(m["amount"] for m in modifiers if m["kind"] == "economic_adjustment" and
+                                m["country"] == (seat if m["role"] == "actor" else target)))
+
+    def economic_mill_values(self, seat, steps, *, modifiers=None):
+        """Use each target's adjustment once and price only the additional exhaustion."""
+        state = self.visible_state()
+        if modifiers is None:
+            modifiers = RuleModifierResolver(self.rules).resolve(state, seat)
+        removed = {}
+        values = {}
+        for index, step in enumerate(steps):
+            effect = step.get("operation", step).get("effect", {})
+            kind = effect.get("type")
+            if kind not in MILL_EFFECTS | {"country-loss-choice"}:
+                continue
+            values[index] = 0
+            if not condition_met(self.rules, state, seat, effect.get("when")):
+                continue
+            if kind == "choose-country":
+                if effect.get("action") != "discard-top":
+                    values.pop(index)
+                    continue
+                targets = available_options(self.rules, state, seat, effect)
+            else:
+                targets = [force_id(effect["target"], seat)]
+            amount = (effect["countPer"] * len(filtered_units(self.rules, state, seat, effect["filter"]))
+                      if kind == "discard-top-per-unit" else effect["count"])
+            options = []
+            for target in targets:
+                if target not in TURN_ORDER:
+                    continue
+                enemy = self.rules.team(seat) != self.rules.team(target)
+                count = self.economic_amount(seat, target, amount, modifiers) if enemy and target not in removed else amount
+                value = self.mill(seat, target, count, 1, already_removed=removed.get(target, 0))
+                if kind == "country-loss-choice" and count and enemy:
+                    losses = sorted(self.routes.removal_value(t.token_id) for t in board_units(self.rules, state, target)
+                                    if self.rules.units[t.definition_id]["kind"].lower() in effect["removeKinds"] and
+                                    ("removeSpaces" not in effect or t.position_id in effect["removeSpaces"]) and
+                                    not unit_rule_matches(self.rules, state, t, "protection"))
+                    losses = losses[:count]
+                    value, count = min((sum(losses[:n]) + self.mill(seat, target, count - n, 1,
+                                       already_removed=removed.get(target, 0)), count - n) for n in range(len(losses) + 1))
+                options.append((value, target, count))
+            if options:
+                value, target, count = max(options)
+                values[index] = value
+                removed[target] = removed.get(target, 0) + count
+        return values
+
+    def visible_economic_value(self, seat, card, modifiers, mills=None):
+        if mills is None:
+            mills = self.economic_mill_values(seat, card["effects"], modifiers=modifiers)
+        value = sum(mills.values())
+        for index, step in enumerate(card["effects"]):
+            if index in mills:
+                continue
+            op = step.get("operation", step)
+            if op["type"] == "GAIN_VP":
+                value += self.units.vp_score(self.direct_points(seat, op))
+            elif op["type"] == "CARD_EFFECT":
+                value += self.effect(seat, op["effect"], 1) or 0
+        return value
 
     def top_value(self, seen, remaining_rounds, *, seat=None):
         if self.marginal and self.hand_average and seat is not None:

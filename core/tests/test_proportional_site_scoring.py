@@ -30,7 +30,8 @@ def test_one_vp_occupation_is_half_a_regular_site_even_on_an_unmarked_region(dat
     economy = evaluator.economic_from_view(client.observe())
     assert economy.routes.position.capture("germany", "C", 2) == 6
     assert economy.statuses.portfolio("germany", True) == {(0, "during-victory", "regional", None): 1}
-    assert economy.routes.target_value("germany", "C", construction=True) == 2
+    assert economy.routes.target_value("germany", "C", construction=True) - economy.routes.placement_stability("germany", "C") == pytest.approx(2)
+    assert not economy.routes.placement_supplied("italy", "C")
     assert economy.routes.target_value("italy", "C", construction=True) == 0
     build = next(c for c in client.legal_commands() if c.get("card") == "g-build")
     result, = OneStepPlanner(game.rules, forecast_search_profile()).rank(CandidateView(client.observe(), [build]), "germany")
