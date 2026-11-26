@@ -220,6 +220,32 @@ def test_numeric_settings_and_loopback_panel_routes(tmp_path, data):
             thread.join()
 
 
+def test_map_parameters_follow_the_selected_scoring_model(tmp_path, data):
+    weights = SyntheticVersion(tmp_path, data).defaults
+    legacy = {**weights, "action_distance_scoring": False}
+    registry = VersionRegistry.__new__(VersionRegistry)
+    registry.options = {name: {"id": name, "label": name, "commit": name, "pinned": False,
+                               "catalog": None, "defaults": defaults}
+                        for name, defaults in (("current", weights), ("legacy", legacy))}
+    current, previous = registry.public()
+    obsolete = {f"distance_weights.{index}" for index in range(len(weights["distance_weights"]))}
+    obsolete.update(f"frontier_scoring.{key}" for key in weights["frontier_scoring"])
+    visible = {field["key"] for field in current["fields"]}
+    assert set(current["inactive_fields"]) == obsolete and visible.isdisjoint(obsolete)
+    assert {"scoring_units.action", "scoring_units.supply_stability", "route_forecast.nearest_sites"} <= visible
+    assert not previous["inactive_fields"] and obsolete <= {field["key"] for field in previous["fields"]}
+
+    updates = {"distance_weights.0": 2.5, "frontier_scoring.near_enemy": 1.8, "scoring_units.action": 3}
+    edited = edited_weights(weights, updates)
+    assert edited["distance_weights"] == weights["distance_weights"]
+    assert edited["frontier_scoring"] == weights["frontier_scoring"]
+    assert edited["scoring_units"]["action"] == 3
+    edited = edited_weights(legacy, updates)
+    assert edited["distance_weights"][0] == 2.5 and edited["frontier_scoring"]["near_enemy"] == 1.8
+    with pytest.raises(RequestError, match="没有该评分参数"):
+        edited_weights(weights, {"distance_weights.999": 2.5})
+
+
 def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):
     commit = "a" * 40
     monkeypatch.setattr(ai_debug, "VERSIONS", {"pinned": ("历史版本", commit, "catalog")})

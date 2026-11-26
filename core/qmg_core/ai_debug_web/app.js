@@ -508,6 +508,7 @@ function checkedProfile(raw) {
   const result = preset(raw.version, raw.policy);
   const fields = new Map(version.fields.map(field => [field.key, field]));
   for (const [key, value] of Object.entries(raw.values)) {
+    if (version.inactive_fields?.includes(key)) continue;
     const field = fields.get(key);
     if (!field) throw new Error(`此版本没有参数 ${key}。`);
     if (!Number.isFinite(value) || value < 0 || value > 1e6 || (field.integer && !Number.isInteger(value))) {
