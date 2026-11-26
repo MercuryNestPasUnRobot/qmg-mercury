@@ -70,6 +70,22 @@ h3 { font-size: 1rem; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .section-head .meta { margin-top: 3px; }
 .parameter-note { margin: 5px 0 14px; }
+.team-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.team-choice { display: grid; gap: 3px; text-align: left; padding: 8px 10px; min-width: 0;
+  background: #f6f8fa; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); }
+.team-choice[aria-pressed="true"] { background: var(--green-wash); border-color: #85b5a4; color: var(--green-dark); }
+.team-choice strong { font-size: .9rem; }
+.team-choice small { font-size: .76rem; overflow-wrap: anywhere; color: var(--muted); }
+.profile-selectors { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); margin-bottom: 8px; }
+.profile-tools { display: flex; flex-wrap: wrap; gap: 5px 16px; border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+#profile-notice { margin-top: 5px; }
+#config-dialog { width: min(560px, calc(100% - 32px)); background: var(--surface); color: var(--ink);
+  padding: 20px; border: 1px solid var(--line); border-radius: 11px; }
+#config-dialog::backdrop { background: #17243480; }
+.config-text-label { margin: 12px 0; }
+#config-text { width: 100%; min-height: 132px; resize: vertical; border: 1px solid #cdd5e1; border-radius: 7px;
+  background: #f7f9fc; color: var(--ink); padding: 8px; font: .85rem/1.4 ui-monospace, Consolas, monospace; }
+.config-controls { display: flex; justify-content: flex-end; gap: 8px; }
 .group { border-top: 1px solid var(--line); }
 .group summary { padding: 11px 0; font-weight: 640; font-size: .9rem; cursor: pointer; color: #334155; }
 .advanced { border-top: 1px solid var(--line); }
