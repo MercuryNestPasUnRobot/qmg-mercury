@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from .definitions import CONNECTION_USES, PER_UNIT_SITE, RuleSet
 from .model import CoreError
+from .rules import initialize
 
 
 CURRENT_BOARD_RULES = {"round_end_victory": True, "occupied_home_blocks_scoring": True, "discard_phase_penalty": 1}
@@ -16,7 +17,8 @@ def map_layout(rules):
         edges.setdefault(pair, set()).update(row.get("movement_or_supply_tags", CONNECTION_USES))
     return {"connections": [{"a": a, "b": b, "uses": sorted(uses)} for (a, b), uses in sorted(edges.items())],
             "straits": rules.settings.get("straits", []),
-            "points": {row["region"]: row["vp"] for row in rules.sites.values() if not row.get("dynamic")}}
+            "points": {row["region"]: row["vp"] for row in rules.sites.values() if not row.get("dynamic")},
+            "unit_positions": {t.token_id: t.position_id for t in rules.inventory.values() if t.token_type == "UNIT"}}
 
 
 def match_rules(base, layout=None):
@@ -24,7 +26,8 @@ def match_rules(base, layout=None):
     data["settings"].update(CURRENT_BOARD_RULES)
     if layout is None:
         return RuleSet(data)
-    if not isinstance(layout, dict) or set(layout) != {"connections", "straits", "points"}:
+    required = {"connections", "straits", "points"}
+    if not isinstance(layout, dict) or not required <= layout.keys() <= required | {"unit_positions"}:
         raise CoreError("地图配置不完整。")
     links, straits, points = layout["connections"], layout["straits"], layout["points"]
     if not isinstance(links, list) or not isinstance(straits, list) or not isinstance(points, dict):
@@ -79,4 +82,27 @@ def match_rules(base, layout=None):
             sites.append({"id": "map-score-" + region, "region": region, "vp": vp, "countries": list(base.countries),
                           "requires_supply": True, "scoring": PER_UNIT_SITE if vp == 1 else "regular"})
     data["connections"], data["score_sites"], data["settings"]["straits"] = connections, sites, straits
-    return RuleSet(data)
+    positions = layout.get("unit_positions", {})
+    if not isinstance(positions, dict) or any(not isinstance(pos, str) for pos in positions.values()):
+        raise CoreError("初始单位位置格式有误。")
+    initial_units = {row["token_id"]: row for row in data["initial_tokens"] if row["token_type"] == "UNIT"}
+    if not positions.keys() <= initial_units.keys():
+        raise CoreError("初始布置只能移动卡库中已有的单位。")
+    changed = False
+    for token_id, position in positions.items():
+        unit = initial_units[token_id]
+        changed |= unit["position_id"] != position
+        unit["position_id"] = position
+    rules = RuleSet(data)
+    if changed:
+        try:
+            initialize(rules)
+        except CoreError as error:
+            messages = {
+                "Invalid initial position": "初始单位的地区或预备区不存在。",
+                "Invalid reserve": "单位只能移回自己的对应预备区。",
+                "Unit terrain mismatch": "陆军只能放在陆地，海军只能放在海域。",
+                "Illegal hostile coexistence or duplicate national unit": "同一地区不能放敌对单位，也不能重复部署同国同兵种。",
+            }
+            raise CoreError(messages.get(str(error), str(error))) from error
+    return rules

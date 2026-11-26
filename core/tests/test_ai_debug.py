@@ -281,6 +281,7 @@ def test_paused_config_restores_linkage_and_keeps_old_preset_coefficients(tmp_pa
 
 
 def test_saved_map_is_available_after_reload_and_runs_in_the_referee(tmp_path, data):
+    data["settings"]["supply_revision"] = 2
     panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
     try:
         standard = panel.map_details("standard")
@@ -288,17 +289,25 @@ def test_saved_map_is_available_after_reload_and_runs_in_the_referee(tmp_path, d
         layout["connections"] = [{"a": "A", "b": "D", "uses": ["build"]}]
         layout["straits"] = [{"land": "A", "seas": ["S", "T"]}]
         layout["points"].update(A=1, D=2)
+        layout["unit_positions"].update({"germany-army-1": "D", "united-kingdom-army-0": "united-kingdom:RESERVE_ARMY"})
         saved = panel.save_map({"name": "新测试地图", "layout": layout})
         reloaded = DebugPanel(panel.output, panel.versions)
         assert reloaded.list_maps()[1] == saved
         assert reloaded.map_details(saved["id"])["layout"] == layout
         assert panel.map_details("standard")["layout"] != layout
+        original_layout = {key: value for key, value in layout.items() if key != "unit_positions"}
+        old_rules = match_rules(panel.base_rules, original_layout)
+        assert old_rules.inventory["germany-army-1"].position_id == "germany:RESERVE_ARMY"
+        assert old_rules.inventory["united-kingdom-army-0"].position_id == "E"
         with pytest.raises(RequestError, match="普通连接或海峡"):
             panel.save_map({"name": "重复通道", "layout": {**layout, "connections": [*layout["connections"],
                                                                                  {"a": "S", "b": "T", "uses": ["build"]}]}})
 
         rules = match_rules(panel.base_rules, layout)
         state = CommandProcessor.create(rules).state
+        assert state.tokens.keys() == CommandProcessor.create(old_rules).state.tokens.keys()
+        assert state.tokens["germany-army-1"].position_id == "D"
+        assert state.tokens["united-kingdom-army-0"].position_id == "united-kingdom:RESERVE_ARMY"
         paths = MapGraph(rules)
         assert paths.neighbors("A", state, "germany", "build") == ["D"]
         assert paths.neighbors("A", state, "germany", "supply") == []
@@ -311,9 +320,27 @@ def test_saved_map_is_available_after_reload_and_runs_in_the_referee(tmp_path, d
         assert ai_debug.read_json(panel.directory(run["id"]) / "map.json")["layout"] == layout
         board = eventually(lambda: panel.board(run["id"], 1))
         assert board["regions"]["A"]["vp"] == 1 and board["regions"]["D"]["vp"] == 2
+        assert board["regions"]["D"]["units"] == [{"force": "germany", "unit": "ARMY"}]
+        assert board["regions"]["E"]["units"] == []
         eventually(lambda: panel.detail(run["id"])["status"]["step"] > 0)
     finally:
         panel.close()
+
+
+@pytest.mark.parametrize("token,position,error", [
+    ("g-deck-1", "B", "只能移动卡库中已有的单位"),
+    ("germany-army-1", "T", "陆军只能放在陆地"),
+    ("germany-army-1", "united-kingdom:RESERVE_ARMY", "自己的对应预备区"),
+    ("germany-army-1", "E", "不能放敌对单位"),
+    ("germany-army-1", "A", "不能重复部署同国同兵种"),
+])
+def test_invalid_starting_positions_are_not_saved(tmp_path, data, token, position, error):
+    panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
+    layout = panel.map_details("standard")["layout"]
+    layout["unit_positions"][token] = position
+    with pytest.raises(RequestError, match=error):
+        panel.save_map({"name": "无效初始布置", "layout": layout})
+    assert [row["id"] for row in panel.list_maps()] == ["standard"]
 
 
 def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):
