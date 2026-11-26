@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -148,23 +147,25 @@ class VersionRegistry:
         if not option["pinned"]:
             return self.workspace / "core"
         destination = self.cache / option["commit"]
-        if destination.is_dir():
+        ready = destination / ".ready"
+        if ready.is_file():
             return destination / "core"
-        self.cache.mkdir(parents=True, exist_ok=True)
         blob = self.git("archive", "--format=zip", option["commit"], "core/qmg_core", "core/data/architecture_fixture.json")
-        with TemporaryDirectory(dir=self.cache) as staging:
-            source = Path(staging) / "runtime"
-            with ZipFile(BytesIO(blob)) as archive:
-                for name in archive.namelist():
-                    path = PurePosixPath(name)
-                    if path.is_absolute() or ".." in path.parts or name.endswith("/"):
-                        continue
-                    if (not name.startswith("core/qmg_core/") or path.suffix != ".py") and name != "core/data/architecture_fixture.json":
-                        continue
-                    target = source.joinpath(*path.parts)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(archive.read(name))
-            source.replace(destination)
+        # Install individual files atomically. Moving a whole populated directory
+        # is unreliable on Windows checkout and antivirus configurations.
+        with ZipFile(BytesIO(blob)) as archive:
+            for name in archive.namelist():
+                path = PurePosixPath(name)
+                if path.is_absolute() or ".." in path.parts or name.endswith("/"):
+                    continue
+                if (not name.startswith("core/qmg_core/") or path.suffix != ".py") and name != "core/data/architecture_fixture.json":
+                    continue
+                target = destination.joinpath(*path.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temp = target.with_name(f".{target.name}.{uuid4().hex[:8]}.tmp")
+                temp.write_bytes(archive.read(name))
+                temp.replace(target)
+        ready.touch()
         return destination / "core"
 
     def public(self):

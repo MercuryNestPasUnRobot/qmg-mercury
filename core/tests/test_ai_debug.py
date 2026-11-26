@@ -1,14 +1,17 @@
 from http.server import HTTPServer
+from io import BytesIO
 import json
 from pathlib import Path
 from threading import Thread
 from time import monotonic, sleep
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
 import pytest
 
-from qmg_core.ai_debug import DebugPanel, RequestError, edited_weights, handler_for, log_window
+from qmg_core import ai_debug
+from qmg_core.ai_debug import DebugPanel, RequestError, VersionRegistry, edited_weights, handler_for, log_window
 from qmg_core.definitions import RuleSet
 
 
@@ -151,3 +154,29 @@ def test_numeric_settings_and_loopback_panel_routes(tmp_path, data):
         finally:
             server.shutdown()
             thread.join()
+
+
+def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):
+    commit = "a" * 40
+    monkeypatch.setattr(ai_debug, "VERSIONS", {"pinned": ("历史版本", commit, "catalog")})
+    archive = BytesIO()
+    with ZipFile(archive, "w") as output:
+        output.writestr("core/qmg_core/ai_match_policy.py", "PINNED = True\n")
+        output.writestr("core/data/architecture_fixture.json", "{}")
+        output.writestr("core/qmg_core/unrelated.txt", "excluded")
+    calls = []
+
+    def git(_registry, *args):
+        calls.append(args)
+        if args[0] == "show":
+            return b'{"scoring_units":{"vp":1}}'
+        assert args[2] == commit
+        return archive.getvalue()
+
+    monkeypatch.setattr(VersionRegistry, "git", git)
+    versions = VersionRegistry(tmp_path, tmp_path / "cache")
+    installed = versions.core("pinned")
+    assert (installed / "qmg_core" / "ai_match_policy.py").read_text() == "PINNED = True\n"
+    assert not (installed / "qmg_core" / "unrelated.txt").exists()
+    assert versions.core("pinned") == installed
+    assert [args[0] for args in calls] == ["show", "archive"]
