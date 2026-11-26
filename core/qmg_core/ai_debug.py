@@ -82,6 +82,7 @@ INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "hori
            "max_simulation_nodes", "status_forecast.extra_trigger_opportunities", "status_forecast.projected_distance_offset",
            "status_forecast.condition_horizon", "status_forecast.unknown_hand_scale", "status_forecast.rule_option_limit"}
 LEGACY_CARD_VALUES = {"REDEPLOY", "DRAW", "GAIN_VP", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE"}
+LEGACY_MAP_GROUPS = {"distance_weights", "frontier_scoring"}
 TERMINAL = {"completed", "stopped", "failed", "interrupted"}
 RUN_ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
 
@@ -92,7 +93,7 @@ class RequestError(ValueError):
         self.status = status
 
 
-def numeric_fields(weights):
+def numeric_fields(weights, *, inactive=False):
     fields = []
 
     def visit(value, path):
@@ -113,7 +114,10 @@ def numeric_fields(weights):
             fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
                 "label": label, "group": group})
 
-    visit(weights, ())
+    for group, value in weights.items():
+        legacy_map = weights.get("action_distance_scoring") is True and group in LEGACY_MAP_GROUPS
+        if legacy_map == inactive:
+            visit(value, (group,))
     return fields
 
 
@@ -121,8 +125,11 @@ def edited_weights(weights, updates):
     if not isinstance(updates, dict):
         raise RequestError("评分参数必须是一组数值。")
     permitted = {field["key"]: field for field in numeric_fields(weights)}
+    inactive = {field["key"] for field in numeric_fields(weights, inactive=True)}
     edited = deepcopy(weights)
     for key, value in updates.items():
+        if key in inactive:
+            continue  # Older presets included parameters that this scoring model has replaced.
         field = permitted.get(key)
         if field is None:
             raise RequestError("此版本没有该评分参数。")
@@ -195,6 +202,7 @@ class VersionRegistry:
     def public(self):
         return [{k: row[k] for k in ("id", "label", "commit", "pinned")} | {
             "catalog": "本地六席卡库" if row["catalog"] else "合成测试场景",
+            "inactive_fields": [field["key"] for field in numeric_fields(row["defaults"], inactive=True)],
             "fields": numeric_fields(row["defaults"])} for row in self.options.values()]
 
 

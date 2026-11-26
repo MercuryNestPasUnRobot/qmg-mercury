@@ -101,7 +101,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         eventually(lambda: status().get("error"))
         assert status()["step"] == paused_at and status()["weights_revision"] == 1
         assert status()["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 1
-        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "distance_weights.1": 0.9})})
+        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "scoring_units.supply_stability": 0.9})})
         eventually(lambda: status()["weights_revision"] == 2)
         assert status()["step"] == paused_at and status()["state"] == "paused"
         initial = panel.board(run_id, 1)
@@ -135,7 +135,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         params = [json.loads(line) for line in (directory / "parameters.jsonl").read_text(encoding="utf-8").splitlines()]
         assert params[-1]["after_decision"] == paused_at
         assert params[-2]["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 2
-        assert params[-2]["configs"]["axis"]["weights"]["distance_weights"][1] == 0.9
+        assert params[-2]["configs"]["axis"]["weights"]["scoring_units"]["supply_stability"] == 0.9
         assert params[-1]["configs"]["axis"]["weights"]["scoring_units"]["action"] == 2.4
         assert params[-1]["configs"]["allies"] == params[0]["configs"]["allies"]
         assert rows[paused_at]["weights_digest"] == params[-1]["configs"][row["config_slot"]]["weights_digest"]
@@ -218,6 +218,32 @@ def test_numeric_settings_and_loopback_panel_routes(tmp_path, data):
         finally:
             server.shutdown()
             thread.join()
+
+
+def test_map_parameters_follow_the_selected_scoring_model(tmp_path, data):
+    weights = SyntheticVersion(tmp_path, data).defaults
+    legacy = {**weights, "action_distance_scoring": False}
+    registry = VersionRegistry.__new__(VersionRegistry)
+    registry.options = {name: {"id": name, "label": name, "commit": name, "pinned": False,
+                               "catalog": None, "defaults": defaults}
+                        for name, defaults in (("current", weights), ("legacy", legacy))}
+    current, previous = registry.public()
+    obsolete = {f"distance_weights.{index}" for index in range(len(weights["distance_weights"]))}
+    obsolete.update(f"frontier_scoring.{key}" for key in weights["frontier_scoring"])
+    visible = {field["key"] for field in current["fields"]}
+    assert set(current["inactive_fields"]) == obsolete and visible.isdisjoint(obsolete)
+    assert {"scoring_units.action", "scoring_units.supply_stability", "route_forecast.nearest_sites"} <= visible
+    assert not previous["inactive_fields"] and obsolete <= {field["key"] for field in previous["fields"]}
+
+    updates = {"distance_weights.0": 2.5, "frontier_scoring.near_enemy": 1.8, "scoring_units.action": 3}
+    edited = edited_weights(weights, updates)
+    assert edited["distance_weights"] == weights["distance_weights"]
+    assert edited["frontier_scoring"] == weights["frontier_scoring"]
+    assert edited["scoring_units"]["action"] == 3
+    edited = edited_weights(legacy, updates)
+    assert edited["distance_weights"][0] == 2.5 and edited["frontier_scoring"]["near_enemy"] == 1.8
+    with pytest.raises(RequestError, match="没有该评分参数"):
+        edited_weights(weights, {"distance_weights.999": 2.5})
 
 
 def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tmp_path, monkeypatch):
