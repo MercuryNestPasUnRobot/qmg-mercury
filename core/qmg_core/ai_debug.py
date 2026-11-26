@@ -22,7 +22,7 @@ from zipfile import ZipFile
 from .ai_debug_worker import read_json, timestamp, write_json
 from .definitions import RuleSet
 from .map_variants import map_layout, match_rules
-from .model import CoreError
+from .model import CoreError, zone
 from .score_units import LINKED_SCORES
 
 
@@ -350,7 +350,16 @@ class DebugPanel:
     def map_details(self, map_id):
         record = self.map_record(map_id)
         rules = match_rules(self.base_rules, record["layout"])
+        units = []
+        for token in rules.inventory.values():
+            if token.token_type == "UNIT":
+                force = token.owner_country
+                country = rules.countries.get(force) or rules.auxiliary_forces[force]
+                kind = rules.units[token.definition_id]["kind"]
+                units.append({"id": token.token_id, "force": force, "name": country.get("name", force),
+                              "team": rules.team(force), "kind": kind, "reserve": zone(force, "RESERVE_" + kind)})
         return {"id": record["id"], "name": record["name"], "layout": map_layout(rules),
+                "starting_units": units,
                 "regions": {key: {"name": region.get("name", key), "type": region["type"],
                                   "home": region.get("home_country")}
                             for key, region in rules.regions.items()}}

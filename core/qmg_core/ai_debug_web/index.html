@@ -185,6 +185,19 @@
       <div class="map-editor-controls">
         <label class="field">当前地区<select id="map-region"></select></label>
         <label class="field">分点类型<select id="map-points"><option value="0">普通地区</option><option value="1">半分点 · 每支部队 1 VP</option><option value="2">全分点 · 每国最多 2 VP</option></select></label>
+        <details class="map-tool" id="map-unit-tool">
+          <summary>初始单位布置</summary>
+          <ul id="map-initial-units" class="map-list"></ul>
+          <div class="map-unit-form">
+            <label class="field">单位所属国<select id="map-unit-force"></select></label>
+            <label class="field">初始单位<select id="map-unit-piece"></select></label>
+            <div class="map-unit-actions">
+              <button class="button secondary" type="button" id="map-unit-place">放到当前地区</button>
+              <button class="button quiet" type="button" id="map-unit-reserve">移回预备区</button>
+            </div>
+            <p class="muted meta" id="map-unit-note"></p>
+          </div>
+        </details>
         <details open class="map-tool">
           <summary>地区连接</summary>
           <ul id="map-neighbors" class="map-list"></ul>

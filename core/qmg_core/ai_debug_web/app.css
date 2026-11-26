@@ -117,6 +117,14 @@ h3 { font-size: 1rem; }
   background: #f6fbf6; color: #164a37; font-size: 14px; cursor: pointer; }
 .map-marker[aria-pressed="true"] { z-index: 1; background: #174a70; border-color: #f6fbf6;
   color: white; outline: 2px solid #174a70; }
+.map-unit-count { position: absolute; top: -6px; right: -6px; display: grid; place-items: center;
+  min-width: 16px; min-height: 16px; padding: 0 3px; border-radius: 9px; background: #174a70;
+  border: 1px solid #f6fbf6; color: #fff; font-size: .66rem; font-weight: 700; }
+.map-unit-form { display: grid; gap: 8px; }
+.map-unit-form p { margin: 0; }
+.map-unit-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+#map-initial-units .piece { width: 26px; height: 19px; }
+#map-initial-units .piece + span { flex: 1 1 auto; }
 .map-editor-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 7px 0; }
 .map-editor-controls { display: grid; align-content: start; gap: 10px; }
 .map-tool { border-top: 1px solid var(--line); padding-top: 8px; }

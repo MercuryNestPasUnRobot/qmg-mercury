@@ -7,12 +7,16 @@
   const straitForm = $("map-strait-form");
   const image = $("map-editor-art");
   const canvas = $("map-editor-lines");
+  const unitForce = $("map-unit-force");
+  const unitPiece = $("map-unit-piece");
   const usesNames = {build: "建设", battle: "战斗", supply: "补给"};
   let draft, region, editingStrait;
   let loading = false;
   let saving = false;
 
   const sameLink = (a, b, c, d) => (a === c && b === d) || (a === d && b === c);
+  const unitLabel = unit => `${countries[unit.force] || unit.name}${unit.label}`;
+  const unitsAt = place => draft.starting_units.filter(unit => draft.layout.unit_positions[unit.id] === place);
 
   function notice(text, error = false) {
     const box = $("map-editor-message");
@@ -62,14 +66,17 @@
     $("map-editor-regions").replaceChildren(...regions.map(([id, place]) => {
       const [x, y] = coords.get(id);
       const vp = draft.layout.points[id] || 0;
+      const stationed = unitsAt(id);
       const marker = node("button", vp === 2 ? "●" : vp === 1 ? "◐" : "○", "map-marker");
       marker.type = "button";
       marker.style.left = `${x}%`;
       marker.style.top = `${y}%`;
-      marker.title = `${place.name} · ${vp === 2 ? "全分点" : vp === 1 ? "半分点" : "普通地区"}`;
+      marker.title = [place.name, vp === 2 ? "全分点" : vp === 1 ? "半分点" : "普通地区",
+        ...stationed.map(unitLabel)].join(" · ");
       marker.setAttribute("aria-label", marker.title);
       marker.setAttribute("aria-pressed", String(id === region));
       marker.addEventListener("click", () => selectRegion(id));
+      if (stationed.length) marker.append(node("small", stationed.length, "map-unit-count"));
       return marker;
     }));
   }
@@ -100,6 +107,57 @@
     $("map-points").value = draft.layout.points[id] || 0;
     optionsFor("map-link-destination", $("map-link-destination").value, ([key]) => key !== id);
     renderLinks();
+    renderStartingUnits();
+    draw();
+  }
+
+  function placementIssue(unit) {
+    if (!unit || draft.layout.unit_positions[unit.id] === region) return "";
+    const terrain = draft.regions[region].type;
+    if (unit.kind === "ARMY" && terrain !== "LAND") return "陆军只能放在陆地。";
+    if (unit.kind === "NAVY" && terrain !== "SEA") return "海军只能放在海域。";
+    if (unitsAt(region).some(other => other.team !== unit.team)) return "当前地区已有敌对单位。";
+    if (unitsAt(region).some(other => other.force === unit.force && other.kind === unit.kind)) {
+      return "当前地区已有同国同兵种单位。";
+    }
+    return "";
+  }
+
+  function updateUnitActions() {
+    const unit = draft.starting_units.find(item => item.id === unitPiece.value);
+    const issue = placementIssue(unit);
+    const current = unit && draft.layout.unit_positions[unit.id];
+    $("map-unit-place").disabled = !unit || current === region || Boolean(issue);
+    $("map-unit-reserve").disabled = !unit || current === unit.reserve;
+    $("map-unit-note").textContent = issue || (unit ? `当前地区 · ${draft.regions[region].name}` : "");
+  }
+
+  function renderStartingUnits(selected = unitPiece.value) {
+    const stationed = unitsAt(region);
+    const list = $("map-initial-units");
+    list.replaceChildren(...stationed.map(unit => {
+      const row = node("li");
+      const label = unitLabel(unit);
+      row.append(pieceIcon(unit.kind, forceColors[unit.force] || "#647769", label), node("span", label),
+        rowAction("选择", `选择${label}`, () => { unitForce.value = unit.force; renderStartingUnits(unit.id); }));
+      return row;
+    }));
+    if (!stationed.length) list.append(node("li", "当前地区没有初始单位。", "muted"));
+    const choices = draft.starting_units.filter(unit => unit.force === unitForce.value).map(unit => {
+      const place = draft.regions[draft.layout.unit_positions[unit.id]];
+      return [unit.id, `${unit.label} · ${place?.name || "预备区"}`];
+    });
+    setOptions(unitPiece, choices, choices.some(([id]) => id === selected) ? selected : choices[0]?.[0] || "", "无可用单位");
+    updateUnitActions();
+  }
+
+  function moveStartingUnit(toReserve) {
+    const unit = draft.starting_units.find(item => item.id === unitPiece.value);
+    if (!unit) return;
+    if (!toReserve && placementIssue(unit)) return;
+    draft.layout.unit_positions[unit.id] = toReserve ? unit.reserve : region;
+    notice(`${unitLabel(unit)}已移到${toReserve ? "预备区" : draft.regions[region].name}。`);
+    renderStartingUnits(unit.id);
     draw();
   }
 
@@ -153,6 +211,16 @@
     loading = true;
     try {
       draft = await api(`/api/maps/${encodeURIComponent(selector.value)}`);
+      const forces = new Map(), counts = new Map();
+      for (const unit of draft.starting_units) {
+        forces.set(unit.force, countries[unit.force] || unit.name);
+        const key = `${unit.force}/${unit.kind}`;
+        const ordinal = (counts.get(key) || 0) + 1;
+        counts.set(key, ordinal);
+        unit.label = `${units[unit.kind]} ${ordinal}`;
+      }
+      setOptions(unitForce, [...forces], forces.keys().next().value || "", "无可用国家");
+      $("map-unit-tool").open = false;
       const first = Object.keys(draft.regions)[0];
       optionsFor("map-region", first);
       optionsFor("map-strait-land", "", ([, place]) => place.type === "LAND");
@@ -176,6 +244,10 @@
   $("map-region").addEventListener("change", event => selectRegion(event.target.value));
   $("map-link-destination").addEventListener("change", fillLink);
   $("map-points").addEventListener("change", event => { draft.layout.points[region] = Number(event.target.value); draw(); });
+  unitForce.addEventListener("change", () => renderStartingUnits());
+  unitPiece.addEventListener("change", updateUnitActions);
+  $("map-unit-place").addEventListener("click", () => moveStartingUnit(false));
+  $("map-unit-reserve").addEventListener("click", () => moveStartingUnit(true));
   linkForm.addEventListener("submit", event => {
     event.preventDefault();
     const destination = $("map-link-destination").value;
