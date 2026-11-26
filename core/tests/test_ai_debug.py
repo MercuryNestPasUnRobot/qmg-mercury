@@ -1,7 +1,8 @@
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from io import BytesIO
 import json
 from pathlib import Path
+from socket import create_connection
 from threading import Thread
 from time import monotonic, sleep
 from urllib.error import HTTPError
@@ -69,19 +70,36 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         panel.control(run_id, "weights", {"values": {"scoring_units.vp": 2, "distance_weights.1": 0.9}})
         eventually(lambda: status()["weights_revision"] == 2)
         assert status()["step"] == paused_at and status()["state"] == "paused"
+        initial = panel.board(run_id, 1)
+        assert initial["step"] == paused_at and initial["regions"]
+        assert len(initial["seats"]) == 6
+        assert all(set(zones) == {"HAND", "STATUS", "DISABLED_STATUS", "RESPONSE"} for zones in initial["seats"].values())
+        panel.control(run_id, "step", {"values": {"scoring_units.action": 2.4}})
+        stepped = eventually(lambda: status().get("last_step"))
+        assert stepped["step"] == paused_at + 1
+        sleep(0.25)
+        assert status()["step"] == paused_at + 1 and status()["state"] == "paused"
+        board = panel.board(run_id, stepped["game"])
+        assert board["step"] == stepped["step"]
+        row = log_window(directory / "game-1.jsonl")["rows"][0]
+        assert row["settlement"]["scores_before"] == initial["scores"]
+        assert row["settlement"]["scores_after"] == board["scores"]
+        assert row["settlement"]["events"]
+        assert row["weights_revision"] == 3
         panel.control(run_id, "resume", {})
-        eventually(lambda: status()["step"] > paused_at)
+        eventually(lambda: status()["step"] > stepped["step"])
         panel.control(run_id, "stop", {})
         eventually(lambda: status()["state"] == "stopped")
         rows = [json.loads(line) for line in (directory / "game-1.jsonl").read_text(encoding="utf-8").splitlines()]
         assert rows[paused_at - 1]["weights_revision"] == 1
-        assert rows[paused_at]["weights_revision"] == 2
+        assert rows[paused_at]["weights_revision"] == 3
         assert rows[paused_at]["decision_index"] == paused_at + 1
         assert rows[paused_at]["version"] > rows[paused_at - 1]["version"]
         params = [json.loads(line) for line in (directory / "parameters.jsonl").read_text(encoding="utf-8").splitlines()]
         assert params[-1]["after_decision"] == paused_at
         assert params[-1]["weights"]["scoring_units"]["vp"] == 2
         assert params[-1]["weights"]["distance_weights"][1] == 0.9
+        assert params[-1]["weights"]["scoring_units"]["action"] == 2.4
         assert rows[paused_at]["weights_digest"] == params[-1]["weights_digest"]
         assert DebugPanel(panel.output, panel.versions).list_runs()["runs"][0]["state"] == "stopped"
     finally:
@@ -135,13 +153,17 @@ def test_numeric_settings_and_loopback_panel_routes(tmp_path, data):
     with pytest.raises(RequestError, match="数值无效"):
         edited_weights(registry.defaults, {"max_simulation_nodes": 1.5})
     panel = DebugPanel(tmp_path / "runs", registry)
-    with HTTPServer(("127.0.0.1", 0), handler_for(panel)) as server:
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler_for(panel)) as server:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            with urlopen(base, timeout=5) as response:
-                assert "AI 调试台" in response.read().decode()
+            # Browsers may preconnect before requesting any resources on the socket.
+            with create_connection(server.server_address, timeout=2):
+                with urlopen(base, timeout=2) as response:
+                    assert "AI 调试台" in response.read().decode()
+                with urlopen(base + "/board.js", timeout=2) as response:
+                    assert "pieceIcon" in response.read().decode()
             with urlopen(base + "/api/versions", timeout=5) as response:
                 assert json.load(response)[0]["id"] == "v1-test"
             with urlopen(base + "/api/runs", timeout=5) as response:

@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="本机 AI 对局测试、评分调试与决策日志">
   <title>AI 调试台 · QMG Mercury</title>
+  <link rel="stylesheet" href="/board.css">
   <link rel="stylesheet" href="/app.css">
+  <script src="/board.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -23,6 +25,7 @@
       </div>
       <div class="controls" aria-label="测试控制">
         <button id="stop" type="button" class="button quiet" hidden>停止测试</button>
+        <button id="step" type="button" class="button secondary" hidden>单步执行</button>
         <button id="primary" type="button" class="button primary" disabled>开始测试</button>
       </div>
     </div>
@@ -81,6 +84,27 @@
             <span id="revision">B 决策预算 3 秒</span>
           </div>
         </section>
+        <section class="panel live-board" aria-labelledby="live-title">
+          <div class="section-head board-head">
+            <div><h2 id="live-title">对局棋盘</h2><p class="muted meta" id="board-position"></p></div>
+            <button class="text-button" id="board-fit" type="button" aria-pressed="false" hidden>适应宽度</button>
+          </div>
+          <p class="board-wait muted" id="board-wait">开始测试后显示地图和各国牌区。</p>
+          <div id="board-detail" hidden>
+            <div class="board-scroll" id="board-scroll" tabindex="0" aria-label="地图，可横向滚动">
+              <div class="board-stage" id="board-stage">
+                <img id="board-art" alt="桌游棋盘地图" width="3366" height="1803">
+                <div id="board-regions"></div>
+              </div>
+            </div>
+            <p class="board-focus muted" id="board-focus" aria-live="polite"></p>
+            <div class="board-legend" id="board-legend" aria-label="棋子颜色"></div>
+            <div class="seat-panel">
+              <label class="field">查看国家<select id="board-seat"></select></label>
+              <div class="card-zones" id="card-zones"></div>
+            </div>
+          </div>
+        </section>
         <section class="panel logs" aria-labelledby="logs-title">
           <div class="section-head logs-head">
             <div><h2 id="logs-title">调试日志</h2><p class="muted meta">仅列出从本调试台发起的测试。</p></div>
@@ -94,6 +118,17 @@
             <label class="field">对局<select id="games" disabled><option>暂无对局</option></select></label>
           </div>
           <div class="log-summary muted" id="log-summary"></div>
+          <section class="decision" id="decision" aria-label="选中的决策详情" hidden>
+            <h3 id="decision-title" tabindex="-1"></h3>
+            <p id="decision-meta" class="muted"></p>
+            <ul id="decision-scores"></ul>
+            <div id="settlement" hidden>
+              <h4>实际结算</h4>
+              <p id="settlement-meta"></p>
+              <ol id="settlement-events"></ol>
+            </div>
+            <details class="raw"><summary>原始记录</summary><pre id="decision-raw"></pre></details>
+          </section>
           <div class="table-scroll" id="step-table" hidden>
             <table>
               <thead><tr><th scope="col">步数</th><th scope="col">国家</th><th scope="col">阶段</th><th scope="col">实际操作</th><th scope="col">参数</th><th scope="col">耗时</th></tr></thead>
@@ -105,12 +140,6 @@
             <button class="button quiet" id="newest" type="button" disabled>最新记录</button>
             <button class="button quiet" id="older" type="button" disabled>更早记录</button>
           </div>
-          <section class="decision" id="decision" aria-label="选中的决策详情" hidden>
-            <h3 id="decision-title"></h3>
-            <p id="decision-meta" class="muted"></p>
-            <ul id="decision-scores"></ul>
-            <details class="raw"><summary>原始评分记录</summary><pre id="decision-raw"></pre></details>
-          </section>
         </section>
       </div>
     </div>
