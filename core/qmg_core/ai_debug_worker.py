@@ -350,10 +350,13 @@ def main():
     directory, core, catalog = map(Path, sys.argv[1:])
     sys.path.insert(0, str(core))
     from qmg_core.definitions import RuleSet
+    from qmg_core.map_variants import match_rules
     from qmg_core.model import CoreError
 
     try:
         rules = RuleSet.load(catalog)
+        if (map_file := directory / "map.json").is_file():
+            rules = match_rules(rules, read_json(map_file)["layout"])
         run = DebugRun(directory, rules)
         if run.meta["rules_digest"] and run.meta["rules_digest"] != rules.fingerprint:
             raise CoreError("所选卡库与该版本的校验值不符。")

@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 
 from .board_connections import PRINTED_REGIONS, apply_half_sites, corrected_edges, corrected_straits, edge_pairs
+from .map_variants import CURRENT_BOARD_RULES
 from .catalog import ContentCatalog
 from .content_effects import instruction, supported_effect
 from .content_triggers import supported_trigger
@@ -218,7 +219,7 @@ def compile_transcriptions(export):
         "cards": cards, "abilities": abilities, "score_sites": sites, "initial_tokens": initial,
         "settings": {"initial_hand": 12, "setup_discard": 5, "hand_limit": 7, "plays_per_turn": 1,
                      "mandatory_turn_play": True, "max_rounds": 20, "victory_margin": 30, "deck_exhaustion_vp": -1,
-                     "discard_phase_penalty": 1,
+                     **CURRENT_BOARD_RULES,
                      "max_atomic_steps": 10000, "allied_supply": False,
                      "unit_responses": ["unit-protection", "unit-supply"], "area_responses": area_responses,
                      "record_turn_start": True, "air_phase": True, "temporary_status_disable": True,

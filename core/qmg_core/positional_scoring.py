@@ -6,7 +6,7 @@ from .definitions import PER_UNIT_SITE
 from .expansion_scoring import ConstructionNetwork
 from .model import TURN_ORDER, zone
 from .regional_sites import active_hidden_sites
-from .rules import MapGraph, RuleModifierResolver
+from .rules import MapGraph, RuleModifierResolver, home_regions, occupied_home_forces
 from .score_units import STANDARD_SITE_VP
 
 
@@ -23,6 +23,10 @@ class ActionDistanceScoring:
         self.unit_definitions = {unit["kind"]: key for key, unit in rules.units.items()}
         self.nearest_sites = nearest_sites
         self.pieces = tuple(t for t in pieces if rules.units[t.definition_id]["kind"] != "AIR")
+        self.blocked = occupied_home_forces(rules, state, self.pieces)
+        self.homes = {}
+        if rules.settings.get("occupied_home_blocks_scoring") and (units.home_importance or units.auxiliary_home_importance):
+            self.homes = {owner: home_regions(rules, state, owner) for owner in rules.force_controllers}
         self.remaining = 0 if state.winner else max(0, rules.settings["max_rounds"] - state.turn.round_id + 1)
         self.include_connections = include_connections
         self.construction_rules = construction_rules
@@ -83,8 +87,10 @@ class ActionDistanceScoring:
         return self.capture(force, region, STANDARD_SITE_VP, distance_offset=distance_offset) * vp / STANDARD_SITE_VP
 
     def site_base(self, force, region, site, *, distance_offset=0):
+        if force in self.blocked:
+            return 0
         if layer := self.layers.get(site):
-            if not layer.build_eligible(self.rules, self.state, force, region, self.unit_definitions):
+            if layer.owner in self.blocked or not layer.build_eligible(self.rules, self.state, force, region, self.unit_definitions):
                 return 0
             return self.proportional_base(layer.owner, region, layer.award.amount, distance_offset=distance_offset)
         definition = self.rules.sites[site]
@@ -183,9 +189,39 @@ class ActionDistanceScoring:
         self.sites_by_position[key] = scores
         return scores
 
+    def home_values(self, force, region, *, construction=False, distance_offset=0, local_only=False):
+        if not self.homes:
+            return {}
+        practical = construction and self.construction_rules
+        distances = self.construction_distances(force, region) if practical else self.distances(force, region)
+        step = 2 if practical and force in self.rules.auxiliary_forces else 1
+        values = {}
+        for owner, homes in self.homes.items():
+            distance = min((distances.get(home, inf) for home in homes), default=inf)
+            if distance == inf or (local_only and distance):
+                continue
+            base = self.units.auxiliary_home_importance if owner in self.rules.auxiliary_forces else self.units.home_importance
+            if score := self.distance_value(base, step * (distance + distance_offset)):
+                values[owner] = score
+        return values
+
+    def home_board_values(self, country):
+        best = defaultdict(float)
+        if self.homes:
+            for token in self.pieces:
+                force = token.owner_country
+                for owner, value in self.home_values(force, token.position_id).items():
+                    key = owner, self.rules.team(force)
+                    best[key] = max(best[key], value)
+        team = self.rules.team(country)
+        enemy = "allies" if team == "axis" else "axis"
+        return {"home:" + owner: best[owner, team] - best[owner, enemy]
+                for owner in dict.fromkeys(owner for owner, _ in best)}
+
     def value(self, force, region, *, excluded=None, construction=False, distance_offset=0):
-        return sum(value for _, value in self.site_values(force, region, excluded=excluded,
-                                                        construction=construction, distance_offset=distance_offset).values())
+        sites = self.site_values(force, region, excluded=excluded, construction=construction, distance_offset=distance_offset)
+        homes = self.home_values(force, region, construction=construction, distance_offset=distance_offset)
+        return sum(value for _, value in sites.values()) + sum(homes.values())
 
     def best_adjacent_site(self, force, regions):
         regions = set(regions)
@@ -226,6 +262,8 @@ class ActionDistanceScoring:
                            "long_term_score": value - controlled, "control": int(bool(held[site, own])) -
                            int(bool(held[site, enemy])), "baseline_vp": layer.award.amount if layer else definition["vp"],
                            "friendly": best[site, own], "hostile": best[site, enemy], "advantage": value})
+        points.extend({"site": site, "value": value, "fixed_score": 0, "long_term_score": value}
+                      for site, value in self.home_board_values(country).items())
         return sum(row["value"] for row in points), points, influences
 
     def closest_site_interest(self, owner, region, vp, countries=None):

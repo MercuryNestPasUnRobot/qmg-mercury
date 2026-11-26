@@ -1,6 +1,7 @@
 {
-  "profile": "ai-test-v1.26-linked-scores",
-  "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2, "supply_stability": 1},
+  "profile": "ai-test-v1.27-capitals",
+  "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2, "supply_stability": 1,
+                    "home_importance": 2, "auxiliary_home_importance": 1},
   "scoring_overrides": {},
   "action_opportunity_scoring": true,
   "marginal_opportunity_scoring": true,

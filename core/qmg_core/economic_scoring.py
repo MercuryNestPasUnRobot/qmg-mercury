@@ -40,7 +40,7 @@ class EconomicForecast:
                  units=ScoreUnits(), hand_average=None):
         self.rules, self.settings = rules, settings
         self.scores, self.count, self.visible_state = scores, count, visible_state
-        self.margin = rules.settings["victory_margin"]
+        self.margin = rules.victory_threshold
         self.current = turn["country_index"]
         seats = len(TURN_ORDER)
         total = rules.settings["max_rounds"] * seats
@@ -49,6 +49,8 @@ class EconomicForecast:
         score_pressure = 1 - gap / self.margin if self.margin else 0
         self.pressure = max(1 - remaining / total, score_pressure)
         margin_turns = max(1, ceil(gap * seats / settings["lead_vp_per_round"])) if self.margin else remaining
+        if rules.settings.get("round_end_victory"):
+            margin_turns = max(margin_turns, seats - self.current)
         self.horizon = min(remaining, margin_turns) if not winner else 0
         self.turn = turn
         self.penalty = max(0, -rules.settings.get("deck_exhaustion_vp", 0))
@@ -128,6 +130,8 @@ class EconomicForecast:
         return amount if self.rules.team(seat) == self.rules.team(recipient) else -amount
 
     def closes_game(self, seat, delta):
+        if self.rules.settings.get("round_end_victory"):
+            return False  # A card settles before the remaining turns and their scoring.
         own, enemy = self.gaps(self.rules.team(seat))
         gap = own if delta > 0 else enemy
         return bool(self.margin and 0 < gap <= abs(delta))

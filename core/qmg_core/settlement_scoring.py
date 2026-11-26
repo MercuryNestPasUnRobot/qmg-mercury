@@ -125,6 +125,9 @@ class SettlementScorer:
                 token = state.tokens[key]
                 if token.source_token_id not in deployed:
                     continue
+                source = state.tokens[token.source_token_id].definition_id
+                if token.definition_id in rules.hidden_score_rules.get(source, {}):
+                    continue  # ScoreResolver already evaluates this site's income and homeland gate.
                 ability = rules.abilities[token.definition_id]
                 if ability["trigger"].get("card_trigger", {}).get("type") == "during-victory" and (
                         ability["effects"] and all(step["type"] == "CARD_EFFECT" and
@@ -247,6 +250,7 @@ class SettlementScorer:
                             next_income[key] = max(next_income[key], value)
             for key, value in held_per_unit.items():
                 next_income[key] = max(next_income[key], value)
+            site_values.update(position.home_board_values(country))
         for (site, team), value in next_income.items():
             site_values[site] += value if team == own else -value
         points = tuple({"site": site, "value": value} for site, value in site_values.items())

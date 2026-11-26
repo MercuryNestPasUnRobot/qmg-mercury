@@ -141,6 +141,17 @@ def home_regions(rules, state, force, *, modifiers=None):
     return homes
 
 
+def occupied_home_forces(rules, state, pieces):
+    if not rules.settings.get("occupied_home_blocks_scoring"):
+        return set()
+    armies = {team: set() for team in ("axis", "allies")}
+    for piece in pieces:
+        if rules.units[piece.definition_id]["kind"] == "ARMY":
+            armies[rules.team(piece.owner_country)].add(piece.position_id)
+    return {force for force in rules.force_controllers
+            if home_regions(rules, state, force) & armies["allies" if rules.team(force) == "axis" else "axis"]}
+
+
 def active_unit_rule(state, token_id, definition):
     return any(t.token_type == "RULE" and t.source_token_id == token_id and t.definition_id == definition
                and t.position_id in (zone(t.owner_country, "RESPONSE"), "RESOLUTION")
