@@ -174,6 +174,10 @@ def observation(processor, controlled_countries, *, include_history=True, includ
             if action["type"] == "AIR_ACTION_SELECTED":
                 force = action["effect"].get("force", "self")
                 decision["air_force"] = s.decision.required_country if force == "self" else force
+                if action["effect"].get("paid_redeployment"):
+                    decision["paid_air_redeployment"] = True
+                if s.stack[-1].context.get("phase_air_power"):
+                    decision["phase_air_power"] = True
             if action["type"] == "AIR_REBASE_SELECTED":
                 decision["air_rebase_token"] = action["air"]
             if action["type"] == "TRANSFER":

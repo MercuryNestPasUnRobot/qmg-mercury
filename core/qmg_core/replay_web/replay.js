@@ -16,7 +16,7 @@ const zoneNames = {HAND: "手牌", DECK: "牌库", DISCARD: "弃牌", STATUS: "�
   ABILITY_READY: "可用区", ABILITY_PENDING: "待结算", OBJECT_POOL: "对象池",
   RESOLUTION: "结算区", SCORE_DORMANT: "计分休眠区", SET_ASIDE: "待命区"};
 const commandNames = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "弃牌", FORFEIT_PLAY: "无牌可弃，扣 1 VP", CHOOSE: "选择", USE_STATUS: "发动状态牌",
-  USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应", PRIVATE_OPERATION: "不可见的操作",
+  USE_AIR: "空军行动", MOVE_AIR: "弃牌移动空军", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应", PRIVATE_OPERATION: "不可见的操作",
   BUILD_ARMY: "建立陆军", BUILD_NAVY: "建立海军", LAND_BATTLE: "陆战", SEA_BATTLE: "海战", RECRUIT: "征召"};
 const eventNames = {...commandNames, TRANSFER: "对象转移", DRAW: "抓牌", DISCARD: "弃牌", SET_RESPONSE: "盖放响应",
   ABILITY_TRIGGERED: "响应触发", BEGIN_PHASE: "进入阶段", TURN_END: "回合结束", GAIN_VP: "获得 VP",

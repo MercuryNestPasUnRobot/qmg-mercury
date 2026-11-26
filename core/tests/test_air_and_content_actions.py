@@ -1,9 +1,12 @@
 """Synthetic cases for mechanics used by the locally imported content."""
 import json
 
+import pytest
+
 from conftest import card, choose, make, move_initial, play
-from qmg_core import CoreAPI, SaveRepository
+from qmg_core import CommandProcessor, CoreAPI, SaveRepository
 from qmg_core.api import simulation_from_observation
+from qmg_core.air import air_options
 from qmg_core.content_effects import instruction
 from qmg_core.model import TURN_ORDER
 
@@ -55,6 +58,107 @@ def test_air_power_opportunity_is_a_restoring_response_object(tmp_path, data):
     moves = [c for r in p.records for c in r["outcome"]["changes"]
              if c["token_id"] == "opportunity:air-opportunity-germany"]
     assert any(c["from"] == "germany:RESPONSE" and c["to"] == "RESOLUTION" for c in moves)
+
+
+def test_paid_air_move_uses_the_same_opportunity_and_can_reach_a_distant_own_base(data):
+    add_air(data)
+    data["settings"]["paid_air_redeployment"] = True
+    marker(data, "air-opportunity-germany", "germany")
+    card(data, "g-draw").update(legacy_kind="air-power", effects=[])
+    move_initial(data, "germany-air", "A")
+    move_initial(data, "germany-army-1", "D")
+    p = make(data)
+    end_phase(p)
+    commands = p.legal_commands(("germany",))
+    assert any(c["type"] == "USE_AIR" for c in commands)
+    pay = next(c for c in commands if c["type"] == "MOVE_AIR" and c["card"] == "g-vp")
+    p.submit(pay, ("germany",))
+    assert p.state.tokens["g-vp"].position_id == "germany:HAND"
+    options = {tuple(json.loads(option)[1:3]): option for option in p.state.decision.legal_options}
+    assert set(options) == {("germany-air", "D"), ("germany-air", "S")}
+    choose(p, options["germany-air", "D"])
+    assert p.state.tokens["germany-air"].position_id == "D"
+    assert p.state.tokens["g-vp"].position_id == "germany:DISCARD"
+    assert p.state.tokens["g-draw"].position_id == "germany:HAND"
+    assert not any(c["type"] in ("USE_AIR", "MOVE_AIR") for c in p.legal_commands(("germany",)))
+    assert not any(r["operation_type"] == "AIR_ACTION_FINISHED" for r in p.records)
+
+    q = make(data)
+    end_phase(q)
+    q.submit(next(c for c in q.legal_commands(("germany",)) if c["type"] == "USE_AIR"), ("germany",))
+    choose(q, q.state.decision.legal_options[0])
+    assert not any(c["type"] == "MOVE_AIR" for c in q.legal_commands(("germany",)))
+
+
+def test_air_placement_counts_own_base_and_the_same_threat_value(data):
+    from test_action_distance_scoring import forecast, map_with_sites
+    from test_ai_match import profile
+    from qmg_core import ScoreEvaluator
+    from qmg_core.ai_match_policy import RulePolicy
+    from qmg_core.evaluation import OneStepPlanner
+
+    add_air(data)
+    data["settings"]["paid_air_redeployment"] = True
+    marker(data, "air-opportunity-germany", "germany")
+    card(data, "g-draw").update(legacy_kind="air-power", effects=[])
+    map_with_sites(data, [("C", "E")], rounds=2)
+    next(r for r in data["regions"] if r["id"] == "C")["supply_source_for"] = "germany"
+    weights = profile()
+    weights["scoring_units"]["supply_stability"] = 0
+    move_initial(data, "germany-army-0", "C")
+    move_initial(data, "united-kingdom-army-0", "D")
+    safe = forecast(data, weights=weights).routes
+    assert safe.position.value("germany", "C") == 4
+    assert safe.position.value("germany", "C", air=True) == 0
+    deploy = json.dumps(["deploy", None, "C", None])
+    assert safe.air_value("germany", deploy) == 2
+    p = make(data)
+    end_phase(p)
+    client = CoreAPI(p, ("germany",))
+    rule = RulePolicy(p.rules, ScoreEvaluator(p.rules, weights))
+    rows = rule.rank(client.observe(), client.legal_commands())
+    assert rows[0]["command"]["type"] == "END_PHASE"
+    assert next(row for row in rows if row["command"]["type"] == "USE_AIR")["no_air_target"]
+    safe_plan = next(row for row in OneStepPlanner(p.rules, weights).rank(client, "germany")
+                     if row["command"]["type"] == "USE_AIR")
+    assert not safe_plan["complete"]
+    move_initial(data, "united-kingdom-army-0", "E")
+    threatened = forecast(data, weights=weights).routes
+    assert threatened.position.value("germany", "C", air=True) == 2
+    assert threatened.air_value("germany", deploy) == 4
+    p = make(data)
+    end_phase(p)
+    client = CoreAPI(p, ("germany",))
+    rule = RulePolicy(p.rules, ScoreEvaluator(p.rules, weights))
+    assert rule.rank(client.observe(), client.legal_commands())[0]["command"]["type"] == "USE_AIR"
+    planned = next(row for row in OneStepPlanner(p.rules, weights).rank(client, "germany")
+                   if row["command"]["type"] == "USE_AIR")
+    assert planned["complete"] and planned["q"] > 0
+
+
+@pytest.mark.parametrize(("seat", "aux"), [("united-kingdom", "france"), ("united-states", "china")])
+def test_basic_air_power_can_deploy_only_the_seats_own_planes(data, seat, aux):
+    add_air(data)
+    data["settings"]["paid_air_redeployment"] = True
+    marker(data, "air-opportunity-" + seat, seat)
+    marker(data, "air-opportunity-" + aux, aux)
+    data["auxiliary_forces"] = [{"id": aux, "controller": seat, "name": aux}]
+    next(r for r in data["regions"] if r["id"] == "C").update(home_country=aux, supply_source_for=aux)
+    data["initial_tokens"].extend([
+        {"token_id": "aux-army", "definition_id": "army", "token_type": "UNIT", "owner_country": aux, "position_id": "C"},
+        {"token_id": "aux-air", "definition_id": "air", "token_type": "UNIT", "owner_country": aux, "position_id": aux + ":RESERVE_AIR"},
+        {"token_id": "basic-air", "definition_id": "basic-air", "token_type": "CARD", "owner_country": seat, "position_id": seat + ":HAND"},
+    ])
+    data["cards"].append({"id": "basic-air", "country": seat, "type": "EVENT", "legacy_kind": "air-power",
+                          "effects": [], "abilities": [], "failure_policy": "stop"})
+    p = make(data)
+    state = p.state
+    state.turn.country_index = TURN_ORDER.index(seat)
+    p = CommandProcessor(p.rules, state)
+    assert air_options(p.rules, p.state, seat, {"force": aux, "actions": ["deploy"]})
+    end_phase(p)
+    options = [command for command in p.legal_commands((seat,)) if command["type"] == "USE_AIR"]
+    assert options and {command["force"] for command in options} == {seat}
 
 
 def battle_setup(data):

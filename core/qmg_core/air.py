@@ -6,8 +6,28 @@ from .operations import outcome, outcome_failure
 from .rules import MapGraph, SupplyResolver, board_units, unit_rule_matches
 
 
+def phase_air_forces(rules, country):
+    return (country,) if rules.settings.get("paid_air_redeployment") else rules.controlled_forces(country)
+
+
+def phase_air_effect(force, *, paid=False):
+    return {"type": "air-action", "force": force,
+            "actions": ["marshal"] if paid else ["deploy", "marshal", "superiority"],
+            **({"paid_redeployment": True} if paid else {})}
+
+
 def air_units(rules, state, force=None):
     return [t for t in board_units(rules, state, force) if rules.units[t.definition_id]["kind"] == "AIR"]
+
+
+def defensive_air_options(rules, state, force, options):
+    """Keep deployments that protect a base with hostile surface units one step away."""
+    adjacency = MapGraph(rules).adjacency(state, force)
+    threatened = {neighbor for unit in board_units(rules, state)
+                  if rules.team(unit.owner_country) != rules.team(force)
+                  and rules.units[unit.definition_id]["kind"] != "AIR"
+                  for neighbor in adjacency[unit.position_id]}
+    return [option for option in options if (choice := json.loads(option))[0] != "deploy" or choice[2] in threatened]
 
 
 def air_options(rules, state, actor, effect):
@@ -18,7 +38,8 @@ def air_options(rules, state, actor, effect):
     units = board_units(rules, state, force)
     air = air_units(rules, state, force)
     occupied = {t.position_id for t in air}
-    bases = {t.position_id for t in units if t.token_id in supplied and
+    paid = effect.get("paid_redeployment", False)
+    bases = {t.position_id for t in units if (paid or t.token_id in supplied) and
              rules.units[t.definition_id]["kind"] != "AIR" and
              (effect.get("baseKind") != "navy" or rules.units[t.definition_id]["kind"] == "NAVY")}
     if near := effect.get("near"):
@@ -28,10 +49,12 @@ def air_options(rules, state, actor, effect):
     if "deploy" in effect["actions"] and state.positions.get(zone(force, "RESERVE_AIR")):
         options.extend(["deploy", None, p, None] for p in sorted(bases - occupied))
     for token in air:
-        if token.token_id not in supplied:
+        if not paid and token.token_id not in supplied:
             continue
         if "marshal" in effect["actions"]:
-            options.extend(["marshal", token.token_id, p, None] for p in sorted(bases - (occupied - {token.position_id})))
+            destinations = bases - (occupied if paid or rules.settings.get("paid_air_redeployment")
+                                    else occupied - {token.position_id})
+            options.extend(["marshal", token.token_id, p, None] for p in sorted(destinations))
         if "superiority" in effect["actions"]:
             for p in MapGraph(rules).neighbors(token.position_id, state, force):
                 victims = [t.token_id for t in air_units(rules, state) if t.position_id == p
@@ -75,13 +98,24 @@ def execute_air(engine, state, frame, op):
         action, attacker, target, victim = json.loads(op["choice"])
         force = country if op["effect"].get("force", "self") == "self" else op["effect"]["force"]
         result = outcome("AIR_MOVEMENT")
+        origin = state.tokens[attacker].position_id if attacker else None
+        if op["effect"].get("paid_redeployment"):
+            payment = frame.context["air_payment"]
+            marker = opportunity(state, "air-opportunity-" + country)
+            if marker is None or payment not in state.positions[zone(country, "HAND")]:
+                return outcome_failure(kind, "Paid air redeployment is no longer available"), False
+            engine.executor.transfer(state, payment, zone(country, "DISCARD"), result)
+            engine.executor.transfer(state, marker.token_id, zone(country, "RESPONSE"), result)
+            engine.executor.transfer(state, attacker, target, result)
+            return result, True
         if action == "deploy":
             engine.executor.transfer(state, state.positions[zone(force, "RESERVE_AIR")][0], target, result)
         elif action == "marshal":
             engine.executor.transfer(state, attacker, target, result)
         event = {"type": "AIR_ACTION_FINISHED", "air_action": action, "force": force,
                  "target": target, "attacker_token": attacker, "victim": victim,
-                 "air_origin": state.tokens[attacker].position_id if attacker else None}
+                 "air_origin": origin if rules.settings.get("paid_air_redeployment") else
+                 state.tokens[attacker].position_id if attacker else None}
         frame.remaining_operations.append(event)
         if action == "superiority" and victim:
             frame.remaining_operations.append({"type": "ELIMINATE", "target_token": victim,

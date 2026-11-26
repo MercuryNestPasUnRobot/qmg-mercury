@@ -144,6 +144,8 @@ class Workbench:
                 options.append(button("human", f'响应 {token_name(command["card"])}', i))
             elif command["type"] == "USE_AIR":
                 options.append(button("human", f'空军行动 {COUNTRY_NAMES.get(command["force"], command["force"])}', i))
+            elif command["type"] == "MOVE_AIR":
+                options.append(button("human", f'弃置 {token_name(command["card"])} · 移动空军', i))
             elif command["type"] == "REALLOCATE":
                 cost = view.get("reallocation", {}).get("cost", 3)
                 options.append(button("human", f"调配资源 · 弃 {cost} 找 1", i))

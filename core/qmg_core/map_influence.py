@@ -62,7 +62,8 @@ class ScoringRoutes:
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections,
                                               construction_rules="expansion_preference" in weights,
-                                              stacked_sites=weights.get("stacked_site_scoring", False))
+                                              stacked_sites=weights.get("stacked_site_scoring", False),
+                                              regional_defense=weights.get("regional_defense_scoring", False))
                          if self.weights.get("action_distance_scoring") else None)
 
     def _site_route(self, paths, force, start, end):
@@ -388,11 +389,11 @@ class ScoringRoutes:
         fixed = self.capture_value(force, region) if not battle and self.units.enabled else 0
         return fixed + future
 
-    def move_value(self, force, region, token_id=None):
+    def move_value(self, force, region, token_id=None, *, air=False):
         old = self.state.tokens.get(token_id)
-        previous = (self.position.value(force, old.position_id, excluded=token_id)
+        previous = (self.position.value(force, old.position_id, excluded=token_id, air=air)
                     if old and old.position_id in self.rules.regions else 0)
-        value = self.position.value(force, region, excluded=token_id) - previous
+        value = self.position.value(force, region, excluded=token_id, air=air) - previous
         if old and self.units.supply_stability:
             moved = self.move_projection(token_id, region)
             value += SupplyStability(self.rules, moved, self.units.supply_stability).value(force) - self.supply_stability.value(force)
@@ -411,7 +412,8 @@ class ScoringRoutes:
             return self.removal_value(victim) if victim else 0
         if token is None and self.units.supply_stability:
             token = next(iter(self.state.positions[zone(force, "RESERVE_AIR")]), None)
-        return self.move_value(force, region, token)
+        value = self.move_value(force, region, token, air=True)
+        return value + (self.units.action if action == "deploy" and self.position.regional_defense else 0)
 
     def protection_value(self, force, region=None, *, token=None):
         return (self.position.value(force, region, construction=True, excluded=token)

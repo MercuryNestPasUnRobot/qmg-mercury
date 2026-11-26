@@ -1,5 +1,5 @@
 """Player operations built from existing choices, transfers and settlement."""
-from .air import opportunity
+from .air import opportunity, phase_air_effect
 from .model import TURN_ORDER, zone
 from .operations import outcome, outcome_failure
 from .rules import RuleModifierResolver
@@ -58,15 +58,21 @@ def begin_action(engine, state, command):
     from .engine import CardInterpreter
     country = command["actor"]
     result = outcome(command["type"])
-    if command["type"] == "USE_AIR":
+    if command["type"] in ("USE_AIR", "MOVE_AIR"):
         force = command["force"]
-        marker = opportunity(state, "air-opportunity-" + force)
-        engine.executor.transfer(state, marker.token_id, zone(country, "RESPONSE"), result)
-        engine.executor.transfer(state, command["card"], "RESOLUTION", result)
-        state.stack.append(CardInterpreter.frame(state, country, command["card"], [
-            {"type": "CARD_EFFECT", "effect": {"type": "air-action", "force": force,
-                                               "actions": ["deploy", "marshal", "superiority"]}}],
-            context={"origin": zone(country, "HAND"), "failure_policy": "stop"}))
+        paid = command["type"] == "MOVE_AIR"
+        context = {"origin": zone(country, "HAND"), "failure_policy": "stop"}
+        if paid:
+            context["air_payment"] = command["card"]
+        else:
+            marker = opportunity(state, "air-opportunity-" + force)
+            engine.executor.transfer(state, marker.token_id, zone(country, "RESPONSE"), result)
+            engine.executor.transfer(state, command["card"], "RESOLUTION", result)
+            if engine.rules.settings.get("paid_air_redeployment"):
+                context["phase_air_power"] = True
+        state.stack.append(CardInterpreter.frame(state, country, None if paid else command["card"], [
+            {"type": "CARD_EFFECT", "effect": phase_air_effect(force, paid=paid)}],
+            context=context))
     else:
         state.stack.append(CardInterpreter.frame(state, country, None, [{"type": "REALLOCATION_REQUEST", "selected": []}],
                                                  context={"reallocation": True}))
@@ -102,7 +108,9 @@ def execute_action(engine, state, frame, op):
     branches = [{"label": "deck", "effects": [
         {"type": "search-deck", "min": 1, "max": 1, "kinds": list(BASIC_KINDS)}, {"type": "shuffle-deck"}]}]
     if allow_discard:
-        branches.append({"label": "discard", "effects": [{"type": "recover-discard", "target": "self",
-                                                            "kinds": list(BASIC_KINDS), "count": 1}]})
+        recovery = [{"type": "recover-discard", "target": "self", "kinds": list(BASIC_KINDS), "count": 1}]
+        if rules.settings.get("shuffle_after_reallocation"):
+            recovery.append({"type": "shuffle-deck"})
+        branches.append({"label": "discard", "effects": recovery})
     frame.remaining_operations.append(instruction({"type": "choose-one", "options": branches}))
     return result, True

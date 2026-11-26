@@ -250,7 +250,8 @@ class ScoreEvaluator:
         return self.units.card if self.units.enabled else self.hand_slot_cost
 
     def action_cost(self, kind, phase):
-        if self.action_opportunity and (kind == "USE_AIR" or (phase == "Play" and kind in PLAY_OPPORTUNITY_COMMANDS)):
+        if self.action_opportunity and (kind in ("USE_AIR", "MOVE_AIR") or
+                                        (phase == "Play" and kind in PLAY_OPPORTUNITY_COMMANDS)):
             return self.units.linked("play_opportunity", self.units.action)
         return 0
 
@@ -261,7 +262,7 @@ class ScoreEvaluator:
         return weight * use["played"] / use["total"] if use else 0.0
 
     def short_term(self, rules, state, country, card, legal, economy, *, estimate_draw=True):
-        from .air import air_options
+        from .air import air_options, phase_air_effect, phase_air_forces
         from .content_effects import condition_met
 
         if card.get("implementation", {}).get("status") == "blocked":
@@ -270,8 +271,7 @@ class ScoreEvaluator:
         if kind == "air-power":
             if not rules.settings.get("air_phase"):
                 return 0.0
-            actions = ("deploy", "marshal", "superiority")
-            effects = [{"type": "air-action", "force": force, "actions": actions} for force in rules.controlled_forces(country)]
+            effects = [phase_air_effect(force) for force in phase_air_forces(rules, country)]
             if self.action_opportunity and economy:
                 return max((economy.routes.tactical_effect(country, {"type": "CARD_EFFECT", "effect": effect})
                             for effect in effects), default=0)
@@ -938,6 +938,13 @@ class OneStepPlanner:
         signature = (decision.decision_type, decision.continuation["type"], sorted(decision.legal_options))
         client = CoreAPI(processor, (actor,))
         commands = client.legal_commands()
+        if (self.evaluator.weights.get("regional_defense_scoring") and
+                state.stack[-1].context.get("phase_air_power") and decision.continuation["type"] == "AIR_ACTION_SELECTED"):
+            from .air import defensive_air_options
+
+            force = decision.continuation["effect"].get("force", actor)
+            options = defensive_air_options(processor.rules, state, force, decision.legal_options)
+            commands = [c for c in commands if c["type"] != "CHOOSE" or c["option"] in options]
         width = self.evaluator.weights.get("construction_search_width", 0)
         if self.evaluator.marginal_opportunity and decision.decision_type == "ORDER_DECK":
             from .ai_match_policy import RulePolicy

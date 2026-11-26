@@ -112,6 +112,7 @@ def settlement(rules, records, before, after):
 
 class PolicyClient:
     def __init__(self, core, rules, config):
+        self.legacy_policy = config.get("version", "current") != "current"
         self.process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--policy", core],
             cwd=core, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
         try:
@@ -134,8 +135,11 @@ class PolicyClient:
 
     def decide(self, client, country):
         view = client.observe(include_history=False)
+        commands = client.legal_commands()
+        if getattr(self, "legacy_policy", False):
+            commands = [command for command in commands if command["type"] != "MOVE_AIR"]
         result = self.exchange({"view": {**view, "game_id": "debug-projection"},
-                                "commands": client.legal_commands(), "country": country})
+                                "commands": commands, "country": country})
         return result["command"], result["row"]
 
     def close(self):

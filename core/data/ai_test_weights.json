@@ -1,5 +1,5 @@
 {
-  "profile": "ai-test-v1.27-capitals",
+  "profile": "ai-test-v1.28-regional-defense",
   "scoring_units": {"vp": 1, "card": 1, "action": 2, "capture_rounds": 2, "supply_stability": 1,
                     "home_importance": 2, "auxiliary_home_importance": 1},
   "scoring_overrides": {},
@@ -11,6 +11,7 @@
   "response_timing_scoring": true,
   "expansion_preference": 0.25,
   "stacked_site_scoring": true,
+  "regional_defense_scoring": true,
   "mirrored_attacks": true,
   "construction_search_width": 3,
   "basic_usage_cost": 1.2,

@@ -12,14 +12,19 @@ from .score_units import STANDARD_SITE_VP
 
 class ActionDistanceScoring:
     def __init__(self, rules, state, pieces, locations, units, nearest_sites, *,
-                 include_connections=True, construction_rules=False, stacked_sites=False):
+                 include_connections=True, construction_rules=False, stacked_sites=False, regional_defense=False):
         self.rules = rules
         self.state = state
         self.units = units
         self.stacked_sites = stacked_sites
+        self.regional_defense = regional_defense
         self.layers = {layer.key: layer for layer in active_hidden_sites(rules, state)
                        if layer.award.mode != "absence" and layer.active(rules, state)}
         self.locations = {**locations, **{key: set(layer.spaces) for key, layer in self.layers.items()}}
+        self.sites_by_region = defaultdict(list)
+        for site, places in self.locations.items():
+            for place in places:
+                self.sites_by_region[place].append(site)
         self.unit_definitions = {unit["kind"]: key for key, unit in rules.units.items()}
         self.nearest_sites = nearest_sites
         self.pieces = tuple(t for t in pieces if rules.units[t.definition_id]["kind"] != "AIR")
@@ -121,15 +126,20 @@ class ActionDistanceScoring:
             self.construction_paths[key] = self.construction_networks[force].distance(region)
         return self.construction_paths[key]
 
-    def site_values(self, force, region, *, excluded=None, construction=False, distance_offset=0):
+    def site_values(self, force, region, *, excluded=None, construction=False, distance_offset=0,
+                    air=False, enemy_attraction=True):
         """Value each chosen score layer after distance and unit adjustments."""
         construction = construction and self.construction_rules
-        key = force, region, excluded, construction, distance_offset
+        key = force, region, excluded, construction, distance_offset, air, enemy_attraction
         if key in self.sites_by_position:
             return self.sites_by_position[key]
         from_start = self.distances(force, region)
         practical = self.construction_distances(force, region) if construction else from_start
         penalty = 2 if construction and force in self.rules.auxiliary_forces else 1
+        if self.regional_defense:
+            values = self.regional_values(force, region, excluded, distance_offset, practical, penalty, air, enemy_attraction)
+            self.sites_by_position[key] = values
+            return values
         team = self.rules.team(force)
         routes = []
         for site, locations in self.locations.items():
@@ -189,6 +199,61 @@ class ActionDistanceScoring:
         self.sites_by_position[key] = scores
         return scores
 
+    def regional_values(self, force, region, excluded, offset, practical, rate, air, enemy_attraction):
+        team = self.rules.team(force)
+        friends, enemies = [], []
+        for unit in self.pieces:
+            if unit.token_id != excluded:
+                if self.rules.team(unit.owner_country) != team:
+                    enemies.append(unit)
+                elif air or unit.position_id != region or unit.owner_country != force:
+                    friends.append(unit)
+        # A score source spanning alternatives counts at its nearest eligible location.
+        distances = self.distances(force, region)
+        grouped = defaultdict(dict)
+        occupied = defaultdict(list)
+        if enemy_attraction:
+            for unit in enemies:
+                occupied[unit.position_id].append(unit)
+        taken = set()
+        for end in sorted(self.sites_by_region.keys() & practical.keys(), key=lambda end: (practical[end], end)):
+            for site in self.sites_by_region[end]:
+                if site in taken:
+                    continue
+                base = self.site_base(force, end, site, distance_offset=offset)
+                enemy_base = sum(self.site_base(unit.owner_country, end, site, distance_offset=offset)
+                                 for unit in occupied[end])
+                if base or enemy_base:
+                    grouped[end][site] = base + enemy_base
+                    taken.add(site)
+        result = {}
+        selected = 0
+        for end, layers in grouped.items():
+            distance = practical[end] + offset
+            total = sum(layers.values())
+            value = total - self.units.distance_score(rate * distance)
+            if value < 0:
+                continue
+            if selected == self.nearest_sites:
+                break
+            selected += 1
+            from_end = self.distances(force, end)
+            if any(unit.position_id == end for unit in friends):
+                value += self.units.action_score(sum(from_end.get(unit.position_id) == 1 for unit in enemies))
+            for unit in friends:
+                d = from_end.get(unit.position_id, inf)
+                if d > distances.get(end, inf):
+                    continue
+                base = sum(self.site_base(unit.owner_country, end, site, distance_offset=offset) for site in layers)
+                value -= self.distance_value(base, d + offset) / 2
+                if d == 0:
+                    value -= base / 2
+            # Allocate the single regional estimate to its sources for the existing
+            # income ledger, which keeps each source's actual VP and eligibility.
+            for site, base in layers.items():
+                result[site] = distance, max(0, value) * base / total
+        return result
+
     def home_values(self, force, region, *, construction=False, distance_offset=0, local_only=False):
         if not self.homes:
             return {}
@@ -218,13 +283,19 @@ class ActionDistanceScoring:
         return {"home:" + owner: best[owner, team] - best[owner, enemy]
                 for owner in dict.fromkeys(owner for owner, _ in best)}
 
-    def value(self, force, region, *, excluded=None, construction=False, distance_offset=0):
-        sites = self.site_values(force, region, excluded=excluded, construction=construction, distance_offset=distance_offset)
+    def value(self, force, region, *, excluded=None, construction=False, distance_offset=0, air=False,
+              enemy_attraction=True):
+        sites = self.site_values(force, region, excluded=excluded, construction=construction,
+                                 distance_offset=distance_offset, air=air, enemy_attraction=enemy_attraction)
         homes = self.home_values(force, region, construction=construction, distance_offset=distance_offset)
         return sum(value for _, value in sites.values()) + sum(homes.values())
 
     def best_adjacent_site(self, force, regions):
         regions = set(regions)
+        if self.regional_defense:
+            return max((self.distance_value(sum(self.site_base(force, end, site) for site in sites), 1)
+                        for end, sites in self.sites_by_region.items()
+                        if any(self.distances(force, end).get(region) == 1 for region in regions)), default=0)
         return max((self.distance_value(self.site_base(force, end, site), 1)
                     for site, locations in self.locations.items() for end in locations
                     if any(self.distances(force, end).get(region) == 1 for region in regions)), default=0)
@@ -236,7 +307,8 @@ class ActionDistanceScoring:
             force, region = token.owner_country, token.position_id
             team = self.rules.team(force)
             seat = self.rules.force_controllers[force]
-            for site, (distance, score) in self.site_values(force, region, excluded=token.token_id).items():
+            for site, (distance, score) in self.site_values(force, region, excluded=token.token_id,
+                                                          enemy_attraction=False).items():
                 key = site, team
                 if distance == 0:
                     beneficiary = self.layers[site].owner if site in self.layers else seat

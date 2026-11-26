@@ -7,6 +7,7 @@ from conftest import card, choose, make, move_initial, play
 from qmg_core import CommandProcessor, CoreAPI, CoreError, OperationLogger, RuleSet, SaveRepository
 from qmg_core.catalog import ContentCatalog
 from qmg_core.content_effects import instruction
+from qmg_core.map_variants import match_rules
 from qmg_core.migration import compile_transcriptions
 from qmg_core.rules import active_unit_rule
 from qmg_core.model import TURN_ORDER
@@ -305,6 +306,30 @@ def test_foreign_chooser_waits_for_its_seat_and_resumes_source(data):
     choose(p, "H")
     assert p.state.tokens["italy-army-0"].position_id == "H"
     assert p.state.scores["axis"] == 2 and p.state.tokens["g-chain"].position_id == "germany:DISCARD"
+
+
+def test_murmansk_optional_build_is_handed_to_the_soviet_seat(data):
+    data["cards"].append({"id": "us-murmansk-convoy", "country": "united-states", "type": "EVENT",
+                          "failure_policy": "stop", "abilities": [], "effects": [
+        instruction({"type": "recruit", "force": "soviet-union", "kind": "army", "space": "G"}),
+        instruction({"type": "choose-space", "force": "soviet-union", "kind": "army", "action": "build", "optional": True}),
+    ]})
+    data["initial_tokens"].append({"token_id": "convoy", "definition_id": "us-murmansk-convoy", "token_type": "CARD",
+                                   "owner_country": "united-states", "position_id": "united-states:HAND"})
+    move_initial(data, "soviet-union-army-0", "soviet-union:RESERVE_ARMY")
+    data["connections"].append({"id": "convoy-land", "a": "G", "b": "D"})
+    base = CommandProcessor.create(match_rules(RuleSet(data)))
+    state = base.state
+    state.turn.country_index = TURN_ORDER.index("united-states")
+    p = CommandProcessor(base.rules, state)
+    us = CoreAPI(p, ("united-states",))
+    us.apply(next(c for c in us.legal_commands() if c.get("card") == "convoy"))
+    assert p.state.decision.required_country == "soviet-union"
+    assert not us.legal_commands()
+    choose(p, "D")
+    assert p.state.tokens["convoy"].position_id == "united-states:DISCARD"
+    assert {r["operation_type"]: r["actor"] for r in p.records
+            if r["operation_type"] in ("RECRUIT", "BUILD_ARMY")} == {"RECRUIT": "united-states", "BUILD_ARMY": "soviet-union"}
 
 
 def test_revealed_discard_plays_one_card_and_returns_only_unused_originals(data):

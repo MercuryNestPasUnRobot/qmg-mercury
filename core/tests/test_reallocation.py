@@ -7,7 +7,7 @@ from test_air_and_content_actions import end_phase, marker
 from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import CandidateView, RulePolicy, SeatPolicy
 from qmg_core.evaluation import OneStepPlanner
-from qmg_core.model import TURN_ORDER, zone
+from qmg_core.model import TURN_ORDER, shuffle, zone
 
 
 def add_card(data, seat, suffix, position, *, kind="other", effects=()):
@@ -52,7 +52,9 @@ def test_all_six_seats_can_pay_three_and_take_one_non_air_basic_at_opening(data)
         choose(p, "confirm")
         choose(p, "0")
         assert p.state.decision.legal_options == [seat + "-basic", seat + "-basic-2"]
+        previous = len(p.records)
         choose(p, seat + "-basic")
+        assert sum(r["operation_type"] == "SHUFFLE_DECK" for r in p.records[previous:]) == 1
         assert p.state.tokens[seat + "-basic"].position_id == hand
         assert len(p.state.positions[hand]) == before_hand - 2
         assert p.state.turn.plays_remaining == p.rules.settings["plays_per_turn"]
@@ -88,8 +90,10 @@ def test_cancelling_is_free_and_normal_play_closes_exchange_window(data):
     assert not any(c["type"] == "REALLOCATE" for c in client.legal_commands())
 
 
-def test_discard_recovery_status_enforces_a_funded_target_even_with_no_basic_in_deck(data):
+@pytest.mark.parametrize("shuffle_after", [False, True])
+def test_discard_recovery_status_enforces_a_funded_target_even_with_no_basic_in_deck(data, shuffle_after):
     enable(data, ("germany",))
+    data["settings"]["shuffle_after_reallocation"] = shuffle_after
     card(data, "g-build")["legacy_kind"] = "build-army"
     card(data, "g-status")["modifiers"] = [{"kind": "reallocate_discard", "scope": "all", "country": "germany"}]
     move_initial(data, "g-status", "germany:STATUS")
@@ -106,7 +110,8 @@ def test_discard_recovery_status_enforces_a_funded_target_even_with_no_basic_in_
     deck, rng = p.state.positions["germany:DECK"], p.state.rng
     choose(p, "g-build")
     assert p.state.tokens["g-build"].position_id == "germany:HAND"
-    assert (p.state.positions["germany:DECK"], p.state.rng) == (deck, rng)
+    assert (p.state.positions["germany:DECK"], p.state.rng) == (shuffle(deck, rng) if shuffle_after else (deck, rng))
+    assert sum(r["operation_type"] == "SHUFFLE_DECK" for r in p.records) == int(shuffle_after)
 
 
 def test_exchange_scores_same_observation_and_only_the_payer_sees_search_targets(data, weights):

@@ -8,7 +8,8 @@ from .model import CoreError
 from .rules import initialize
 
 
-CURRENT_BOARD_RULES = {"round_end_victory": True, "occupied_home_blocks_scoring": True, "discard_phase_penalty": 1}
+CURRENT_BOARD_RULES = {"round_end_victory": True, "occupied_home_blocks_scoring": True, "discard_phase_penalty": 1,
+                       "paid_air_redeployment": True, "shuffle_after_reallocation": True}
 
 
 def correct_saved_connections(connections, regions, uses_key):
@@ -37,20 +38,26 @@ def map_layout(rules):
             "unit_positions": {t.token_id: t.position_id for t in rules.inventory.values() if t.token_type == "UNIT"}}
 
 
+def review_card_effects(card, regions):
+    if card["id"] == "germany-conscription" and "germany" in regions:
+        for step in card["effects"]:
+            effect = step.get("effect", {})
+            if effect.get("type") == "choose-space" and effect.get("action") == "recruit":
+                effect.pop("spaces", None)
+                effect["near"] = {"space": "germany", "maxDistance": 1}
+    if card["id"] == "us-murmansk-convoy":
+        # The fixed recruitment resolves as printed; the Soviets choose their optional build.
+        for step in card["effects"]:
+            effect = step.get("effect", {})
+            if effect.get("type") == "choose-space" and effect.get("force") == "soviet-union":
+                effect["chooser"] = "soviet-union"
+
+
 def match_rules(base, layout=None):
     data = deepcopy(base.data)
     data["settings"].update(CURRENT_BOARD_RULES)
-    # The legacy transcription uses four fixed locations. The card specifies
-    # Germany and its neighbors, which can change with the selected map.
-    if "germany" in base.regions:
-        for card in data["cards"]:
-            if card["id"] == "germany-conscription":
-                for step in card["effects"]:
-                    effect = step.get("effect", {})
-                    if effect.get("type") == "choose-space" and effect.get("action") == "recruit":
-                        effect.pop("spaces", None)
-                        effect["near"] = {"space": "germany", "maxDistance": 1}
-                break
+    for card in data["cards"]:
+        review_card_effects(card, base.regions)
     if layout is None:
         correct_saved_connections(data["connections"], base.regions, "movement_or_supply_tags")
         return RuleSet(data)

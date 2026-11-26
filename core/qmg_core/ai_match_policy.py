@@ -400,7 +400,7 @@ class RulePolicy:
                 return economy.routes.move_value(view["tokens"][token]["owner_country"], option, token)
             if op == "AIR_REBASE_SELECTED":
                 token = decision["air_rebase_token"]
-                return economy.routes.move_value(view["tokens"][token]["owner_country"], option, token)
+                return economy.routes.move_value(view["tokens"][token]["owner_country"], option, token, air=True)
         if op == "AIR_ACTION_SELECTED" and economy and self.evaluator.action_distance and economy.status_weights:
             action, _, region, victim = json.loads(option)
             if victim:
@@ -408,6 +408,8 @@ class RulePolicy:
             if action in ("deploy", "marshal"):
                 position = (economy.routes.air_value(decision.get("air_force", seat), option)
                             if self.evaluator.action_opportunity else 0)
+                if decision.get("paid_air_redeployment"):
+                    return position
                 return position + max((economy.statuses.program(seat, seat, t.definition_id, region, committed=True)
                             for t in economy.visible_state().tokens.values() if t.token_type == "ABILITY" and
                             t.owner_country == seat and t.position_id == zone(seat, "ABILITY_READY") and
@@ -489,6 +491,19 @@ class RulePolicy:
                       if economy and self.evaluator.marginal_opportunity and "deck_order" in decision else {})
         forecasts = {}
         options = [c["option"] for c in commands if c["type"] == "CHOOSE"]
+        defensible = {}
+        air_choices = None
+        if (economy and self.rules.settings.get("paid_air_redeployment") and
+                self.evaluator.weights.get("regional_defense_scoring") and
+                (decision.get("phase_air_power") or any(c["type"] == "USE_AIR" for c in commands))):
+            from .air import air_options, defensive_air_options, phase_air_effect
+
+            state = economy.visible_state()
+            for force in {c["force"] for c in commands if c["type"] == "USE_AIR"}:
+                valid = air_options(self.rules, state, seat, phase_air_effect(force))
+                defensible[force] = defensive_air_options(self.rules, state, force, valid)
+            if decision.get("phase_air_power"):
+                air_choices = set(defensive_air_options(self.rules, state, decision.get("air_force", seat), options))
         if economy and economy.map_weights and decision.get("map_force"):
             regions = {option: option.split("|", 1)[-1] for option in options}
             region_scores = {option: economy.routes.target_value(decision["map_force"], region,
@@ -524,6 +539,8 @@ class RulePolicy:
             kind = command["type"]
             if kind == "CHOOSE":
                 option = command["option"]
+                if air_choices is not None and air_choices and option not in air_choices:
+                    return -100
                 if option in deck_order:
                     return deck_order[option]
                 if option in responses:
@@ -569,10 +586,19 @@ class RulePolicy:
                         net = estimate["immediate"] - (estimate["wait"]["net"] if estimate["wait"] else 0)
                         return net if net > 0 else -101
                 return -101
-            if kind == "USE_AIR":
+            if kind in ("USE_AIR", "MOVE_AIR"):
                 if economy and self.evaluator.action_opportunity:
-                    return economy.routes.tactical_effect(seat, {"type": "CARD_EFFECT", "effect": {
-                        "type": "air-action", "force": command["force"], "actions": ("deploy", "marshal", "superiority")}}) - card_cost
+                    from .air import phase_air_effect
+
+                    paid = kind == "MOVE_AIR"
+                    key = command["card"]
+                    payment = (-self.discard_value(self.rules.cards[view["tokens"][key]["definition_id"]],
+                                                   seat, economy, view, key=key) if paid else card_cost)
+                    if not paid and command["force"] in defensible:
+                        return max((economy.routes.air_value(command["force"], option)
+                                    for option in defensible[command["force"]]), default=-100) - payment
+                    return economy.routes.tactical_effect(seat, {"type": "CARD_EFFECT",
+                        "effect": phase_air_effect(command["force"], paid=paid)}) - payment
                 return self.units.action_score(0.5) - card_cost
             token = view["tokens"][command["card"]]
             card = self.rules.cards[token["definition_id"]]
@@ -608,6 +634,8 @@ class RulePolicy:
                 row["reallocation"] = plan
                 if self.evaluator and (cost := self.evaluator.action_cost("PLAY_CARD", "Play")):
                     row["action_cost"] = -cost
+            if command["type"] == "USE_AIR" and defensible.get(command["force"]) == []:
+                row["no_air_target"] = True
             key = command.get("option", command.get("card"))
             if key in retention and command["type"] in ("DISCARD_CARD", "CHOOSE"):
                 row["retention"] = {**retention[key], "replacement_available": replacement_available,
@@ -862,9 +890,9 @@ class SeatPolicy:
             else:
                 self.plan = []
                 eligible = [r["command"] for r in preferred
-                            if r["command"]["type"] != "ACTIVATE_CARD" and
+                            if r["command"]["type"] != "ACTIVATE_CARD" and not r.get("no_air_target") and
                             (r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE" or
-                             (r.get("action_cost") and r["command"]["type"] == "USE_AIR") or
+                             (r.get("action_cost") and r["command"]["type"] in ("USE_AIR", "MOVE_AIR")) or
                              (mandatory and r["command"]["type"] in ("PLAY_CARD", "USE_STATUS")))]
                 if len(eligible) > 1 or (mandatory and any(c["type"] in ("PLAY_CARD", "USE_STATUS") for c in eligible)):
                     tried = eligible[:self.width]
