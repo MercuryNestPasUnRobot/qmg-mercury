@@ -101,7 +101,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         eventually(lambda: status().get("error"))
         assert status()["step"] == paused_at and status()["weights_revision"] == 1
         assert status()["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 1
-        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "distance_weights.1": 0.9})})
+        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "scoring_units.supply_stability": 0.9})})
         eventually(lambda: status()["weights_revision"] == 2)
         assert status()["step"] == paused_at and status()["state"] == "paused"
         initial = panel.board(run_id, 1)
@@ -135,7 +135,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         params = [json.loads(line) for line in (directory / "parameters.jsonl").read_text(encoding="utf-8").splitlines()]
         assert params[-1]["after_decision"] == paused_at
         assert params[-2]["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 2
-        assert params[-2]["configs"]["axis"]["weights"]["distance_weights"][1] == 0.9
+        assert params[-2]["configs"]["axis"]["weights"]["scoring_units"]["supply_stability"] == 0.9
         assert params[-1]["configs"]["axis"]["weights"]["scoring_units"]["action"] == 2.4
         assert params[-1]["configs"]["allies"] == params[0]["configs"]["allies"]
         assert rows[paused_at]["weights_digest"] == params[-1]["configs"][row["config_slot"]]["weights_digest"]
