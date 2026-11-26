@@ -13,7 +13,7 @@ const states = {idle: "待开始", starting: "准备中", running: "运行中", 
   stop: "停止中", run: "继续中", completed: "已完成", stopped: "已停止", failed: "出错", interrupted: "已中断"};
 const modes = {single: "单局", paired: "换边两局", continuous: "连续换边"};
 const actions = {END_PHASE: "结束阶段", PLAY_CARD: "出牌", DISCARD_CARD: "弃牌", FORFEIT_PLAY: "无牌可弃",
-  CHOOSE: "选择", USE_STATUS: "发动状态牌", USE_AIR: "空军行动", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应"};
+  CHOOSE: "选择", USE_STATUS: "发动状态牌", USE_AIR: "空军行动", MOVE_AIR: "弃牌移动空军", REALLOCATE: "调配资源", ACTIVATE_CARD: "主动响应"};
 const basic = {"build-army": "建设陆军", "build-navy": "建设海军", "land-battle": "发起陆战", "sea-battle": "发起海战"};
 const choices = {use: "发动", decline: "放弃", pass: "跳过", confirm: "确认", cancel: "取消", done: "完成"};
 const units = {ARMY: "陆军", NAVY: "海军", AIR: "空军"};

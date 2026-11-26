@@ -117,7 +117,7 @@ class Tape:
                 public["card"] = command["card"]
                 if "play_as" in command:
                     public["play_as"] = command["play_as"]
-            elif key and not own and command["type"] != "DISCARD_CARD":
+            elif key and not own and command["type"] not in ("DISCARD_CARD", "MOVE_AIR"):
                 public["type"] = "PRIVATE_OPERATION"
             if command.get("option") in rules.regions:
                 public["option"] = command["option"]

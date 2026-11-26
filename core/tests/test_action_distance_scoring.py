@@ -81,7 +81,7 @@ def test_allied_unit_on_site_or_closer_along_path_is_charged_once(data):
     map_with_sites(data, [("A", "B"), ("B", "C"), ("B", "D"), ("C", "E"), ("C", "F"), ("F", "D")],
                    ("C", "D"))
     move_initial(data, "japan-army-0", zone("japan", "RESERVE_ARMY"))
-    weights = {**profile(), "stacked_site_scoring": False}
+    weights = {**profile(), "stacked_site_scoring": False, "regional_defense_scoring": False}
     original = forecast(data, weights=weights).routes.position
     assert original.site_values("germany", "A") == {"C": (2, 0), "D": (2, 4)}
     move_initial(data, "italy-army-0", "B")

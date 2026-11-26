@@ -99,12 +99,13 @@ def test_a_route_influence_prices_each_army_using_its_own_score_rate(data, owner
     after = position.value(other, "C", excluded=token)
     assert after == before
     if owner == "germany":
-        # Full points share their payout, so an ally's own bonus increases the deduction.
+        # The ally's increased payout counts both at the site and at distance zero.
         data["score_sites"][0].update(scoring="regular", vp=2)
         position = forecast(data).routes.position
-        assert position.value("italy", "C") == pytest.approx(1)
+        assert position.value("italy", "C") == 0
     else:
-        assert position.value(other, "C") == baseline.value(other, "C")
+        bonus = position.site_base(owner, "C", "C") - baseline.site_base(owner, "C", "C")
+        assert position.value(other, "C") == baseline.value(other, "C") + bonus
 
 
 def test_a_attack_denies_the_enemy_status_and_b_counts_it_once_per_window(data):

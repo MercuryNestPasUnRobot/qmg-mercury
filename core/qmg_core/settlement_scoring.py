@@ -225,6 +225,7 @@ class SettlementScorer:
                     value = self.units.site_score(amount) if site.startswith("hidden:") else self.units.vp_score(amount)
                     site_values[site] += sign(seat) * value
         air_support = 0
+        landing_attraction = 0
         if self.location_weights and not state.winner:
             from .map_influence import ScoringRoutes
             position = ScoringRoutes(rules, state, pieces, self.location_weights).position
@@ -236,16 +237,26 @@ class SettlementScorer:
                 force = piece.owner_country
                 if rules.units[piece.definition_id]["kind"] == "AIR":
                     # Air support uses its position even when the basing unit already holds the site.
-                    air_support += sign(force) * position.value(force, piece.position_id, excluded=piece.token_id)
+                    air_support += sign(force) * (
+                        position.value(force, piece.position_id, excluded=piece.token_id, air=True) +
+                        (self.units.action if position.regional_defense else 0))
                     continue
                 airdrop = piece.token_id in landed
-                for site, (distance, value) in position.site_values(force, piece.position_id, excluded=piece.token_id,
-                                                                  construction=airdrop,
-                                                                  distance_offset=air_distance if airdrop else 0).items():
+                offset = air_distance if airdrop else 0
+                surface = position.site_values(force, piece.position_id, excluded=piece.token_id,
+                                               construction=airdrop, distance_offset=offset, enemy_attraction=False)
+                if position.regional_defense and (piece.token_id in constructed or piece.token_id in recruited):
+                    with_attraction = position.site_values(force, piece.position_id, excluded=piece.token_id,
+                                                          construction=airdrop, distance_offset=offset)
+                    # A hostile-held point attracts a new approach without granting its income to our side.
+                    landing_attraction += sign(force) * (sum(value for _, value in with_attraction.values()) -
+                                                        sum(value for _, value in surface.values()))
+                for site, (distance, value) in surface.items():
                     if site in rules.sites:
                         key = site, rules.team(force)
                         if distance == 0 and rules.sites[site].get("scoring") == PER_UNIT_SITE:
-                            held_per_unit[key] += value
+                            held_per_unit[key] += position.site_base(force, piece.position_id, site) if (
+                                position.regional_defense) else value
                         else:
                             next_income[key] = max(next_income[key], value)
             for key, value in held_per_unit.items():
@@ -268,7 +279,8 @@ class SettlementScorer:
         stability_pieces = [t for t in board if t.token_id not in vanished_placements]
         stability = (SupplyStability(rules, stability_state, self.units.supply_stability, pieces=stability_pieces).value(country)
                      if not state.winner else 0)
-        map_value = stock + sum(site_values.values()) + expansion_score + self.units.site_score(temporary_vp) + air_support + stability
+        map_value = (stock + sum(site_values.values()) + expansion_score + self.units.site_score(temporary_vp) +
+                     air_support + landing_attraction + stability)
         resources = 0
         if self.economy_factory and not state.winner:
             economy = self.economy_factory(rules, state)

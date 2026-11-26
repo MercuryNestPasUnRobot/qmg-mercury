@@ -31,10 +31,40 @@ def test_same_equal_distance_ally_deducts_at_every_site_and_never_below_zero(dat
     assert position.site_values("germany", "A") == {"C": (1, 1), "D": (1, 1)}
     move_initial(data, "united-kingdom-army-1", "C")
     position = forecast(data).routes.position
-    assert position.site_values("germany", "A") == {"C": (1, 1), "D": (1, 1)}
+    assert position.site_values("germany", "A") == {"C": (1, 5), "D": (1, 1)}
     move_initial(data, "united-kingdom-army-1", zone("united-kingdom", "RESERVE_ARMY"))
     move_initial(data, "italy-army-0", "C")
     assert forecast(data).routes.position.site_values("germany", "A")["C"] == (1, 0)
+
+
+def test_stacked_position_pays_one_distance_cost_and_off_route_friendly_penalty(data):
+    map_with_sites(data, [("A", "B"), ("B", "C"), ("D", "C"), ("E", "C")])
+    data["score_sites"].append({**data["score_sites"][0], "id": "second"})
+    move_initial(data, "germany-army-0", "H")
+    position = forecast(data).routes.position
+    assert position.value("germany", "A") == 4  # Combined 8, minus two steps.
+    move_initial(data, "italy-army-0", "D")
+    position = forecast(data).routes.position
+    assert position.distances("germany", "A")["D"] == 3
+    assert position.value("germany", "A") == 1  # The closer, off-route ally deducts half of 8 - 2.
+
+
+def test_occupants_use_their_own_entitlements_and_defenders_get_threat_bonus(data):
+    map_with_sites(data, [("C", "E")], rounds=2)
+    data["score_sites"].append({**data["score_sites"][0], "id": "half", "vp": 1,
+                                "scoring": "per-unit", "countries": ["germany"]})
+    move_initial(data, "germany-army-0", "H")
+    move_initial(data, "united-kingdom-army-0", zone("united-kingdom", "RESERVE_ARMY"))
+    move_initial(data, "italy-army-0", "C")
+    position = forecast(data).routes.position
+    assert position.value("germany", "C") == 2  # 6 - Italy's 2 for distance and 2 for occupation.
+    move_initial(data, "united-kingdom-army-0", "E")
+    assert forecast(data).routes.position.value("germany", "C") == 4
+    move_initial(data, "soviet-union-army-0", "E")
+    assert forecast(data).routes.position.value("germany", "C") == 6
+    move_initial(data, "italy-army-0", "H")
+    move_initial(data, "united-kingdom-army-0", "C")
+    assert forecast(data).routes.position.value("germany", "C") == 10
 
 
 def test_printed_half_and_multiple_statuses_stack_in_core_and_b_and_one_route_slot_in_a(data):

@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 
 from .board_connections import PRINTED_REGIONS, apply_half_sites, corrected_edges, corrected_straits, edge_pairs
-from .map_variants import CURRENT_BOARD_RULES
+from .map_variants import CURRENT_BOARD_RULES, review_card_effects
 from .catalog import ContentCatalog
 from .content_effects import instruction, supported_effect
 from .content_triggers import supported_trigger
@@ -206,6 +206,9 @@ def compile_transcriptions(export):
         abilities.append({"id": key, "activation_mode": "AUTO", "after": "delete", "priority": 50000 + index,
                           "trigger": {"operation_type": "TURN_END"}, "effects": [], "on_settle": [
                               {"type": "TRANSFER", "token": "$object", "destination": "$owner_ready"}]})
+    region_ids = {row["id"] for row in regions}
+    for card in cards:
+        review_card_effects(card, region_ids)
     rules = RuleSet({
         "ruleset_version": (f"transcribed-{pack['id']}-v{pack['version']}"
                             + ("-board-reviewed" if printed_board else "") + "-mandatory-play-supply-v2-shared-sites"

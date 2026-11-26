@@ -20,7 +20,7 @@ from .replay import COUNTRIES, ReplayBatch, replay_game
 TERMINAL = {"completed", "stopped", "failed"}
 UNIT_NAMES = {"ARMY": "陆军", "NAVY": "海军", "AIR": "空军"}
 ACTION_NAMES = {"PLAY_CARD": "打出", "USE_STATUS": "发动状态牌", "ACTIVATE_CARD": "主动响应",
-                "DISCARD_CARD": "弃置", "USE_AIR": "空军行动", "END_PHASE": "结束阶段",
+                "DISCARD_CARD": "弃置", "USE_AIR": "空军行动", "MOVE_AIR": "弃牌移动空军", "END_PHASE": "结束阶段",
                 "FORFEIT_PLAY": "无牌可弃，扣 1 VP", "BUILD_ARMY": "建设陆军", "BUILD_NAVY": "建设海军",
                 "LAND_BATTLE": "陆战", "SEA_BATTLE": "海战"}
 CHOICE_NAMES = {"use": "发动", "decline": "放弃", "pass": "跳过", "confirm": "确认", "cancel": "取消",
@@ -80,8 +80,12 @@ def command_description(rules, view, command):
             return {"label": "跳过额外征召"}
         target = option.rsplit("|", 1)[-1]
         if decision.get("operation_type") == "AIR_ACTION_SELECTED":
-            action, _, target, _ = json.loads(option)
+            action, unit, target, _ = json.loads(option)
             label = {"deploy": "部署空军", "marshal": "调动空军", "superiority": "争夺制空"}.get(action, "空军行动")
+            if action == "marshal" and unit in view["tokens"]:
+                origin = view["tokens"][unit]["position_id"]
+                return {"label": f"{label} · {rules.regions[origin].get('name', origin)} → "
+                                 f"{rules.regions[target].get('name', target)}", "region": target}
         elif target in rules.regions:
             label = ("空降至" if option in decision.get("map_airdrop_options", ()) else
                      "攻击" if decision.get("map_battle") else

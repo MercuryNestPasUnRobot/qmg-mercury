@@ -374,16 +374,23 @@ class CommandProcessor:
             commands.extend({"type": "DISCARD_CARD", "actor": country, "expected_version": s.version, "card": key}
                             for key in s.positions[zone(country, "HAND")])
         if s.turn.phase == "Air":
-            from .air import air_options, opportunity
-            for force in self.rules.controlled_forces(country):
+            from .air import air_options, opportunity, phase_air_effect, phase_air_forces
+            hand = s.positions[zone(country, "HAND")]
+            for force in phase_air_forces(self.rules, country):
                 if not opportunity(s, "air-opportunity-" + force):
                     continue
-                if not air_options(self.rules, s, country, {"force": force, "actions": ["deploy", "marshal", "superiority"]}):
+                if not air_options(self.rules, s, country, phase_air_effect(force)):
                     continue
-                for token_id in s.positions[zone(country, "HAND")]:
+                for token_id in hand:
                     if self.rules.cards[s.tokens[token_id].definition_id].get("legacy_kind") == "air-power":
                         commands.append({"type": "USE_AIR", "actor": country, "expected_version": s.version,
                                          "card": token_id, "force": force})
+            if (self.rules.settings.get("paid_air_redeployment") and hand and
+                    opportunity(s, "air-opportunity-" + country)):
+                for force in self.rules.controlled_forces(country):
+                    if air_options(self.rules, s, country, phase_air_effect(force, paid=True)):
+                        commands.extend({"type": "MOVE_AIR", "actor": country, "expected_version": s.version,
+                                         "card": token_id, "force": force} for token_id in hand)
         if s.turn.phase == "Play":
             from .content_actions import reallocation_available
             if reallocation_available(self.rules, s, country):
@@ -442,7 +449,7 @@ class CommandProcessor:
                           else {"type": "GAIN_VP", "amount": -1})
                 s.stack.append(CardInterpreter.frame(s, command["actor"], None, [effect]))
                 return outcome(command["type"])
-            if command["type"] in ("USE_AIR", "REALLOCATE"):
+            if command["type"] in ("USE_AIR", "MOVE_AIR", "REALLOCATE"):
                 from .content_actions import begin_action
                 return begin_action(self, s, command)
             if command["type"] == "ACTIVATE_CARD":
