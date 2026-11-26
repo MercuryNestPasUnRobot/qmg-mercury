@@ -4,8 +4,9 @@ import pytest
 
 from conftest import card, make, move_initial
 from qmg_core import CoreAPI, ScoreEvaluator
-from qmg_core.ai_match_policy import RulePolicy, SeatPolicy
+from qmg_core.ai_match_policy import CandidateView, RulePolicy, SeatPolicy
 from qmg_core.content_effects import instruction
+from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import zone
 from test_action_distance_scoring import map_with_sites
 from test_ai_match import profile
@@ -41,13 +42,17 @@ def test_staging_scores_full_base_minus_standard_site_vp_per_turn(data):
     source = response(data, "play-phase-start", {"type": "points", "amount": 5, "side": "self"}, in_hand=True)
     source["content_condition"] = {"type": "unit-count", "min": 1,
                                    "filter": {"kind": "navy", "force": "self", "spaces": ["T"]}}
+    rejected = make(data)
+    assert evaluator(rejected).economic_from_view(CoreAPI(rejected, ("germany",)).observe()).responses.staging(
+        "germany", "g-status")["activations"] == 0
+    source.pop("content_condition")
     game = make(data)
     client = CoreAPI(game, ("germany",))
     scorer = evaluator(game)
     policy = RulePolicy(game.rules, scorer)
     forecast = scorer.economic_from_view(client.observe()).responses
     assert forecast.staging("germany", "g-status") == {
-        "base": 5, "wait_turns": 1, "time_cost": 2, "net": 3, "window_remaining": True}
+        "base": 5, "wait_turns": 1, "time_cost": 2, "net": 3, "window_remaining": True, "activations": 1}
     assert forecast.time_cost(2) == 4
     assert policy.card_value(game.rules.cards["g-status"], "germany", forecast.economy) == 3
 
@@ -61,6 +66,56 @@ def test_two_consecutive_battles_cannot_score_the_same_victim_twice(data):
     game = make(data)
     forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses
     assert forecast.staging("germany", "g-status")["base"] == 2
+
+
+def test_single_use_basic_response_gets_one_legal_opening_without_the_trigger_card(data):
+    map_with_sites(data, [("A", "B")], ())
+    hand_only(data)
+    response(data, "after-build", {"type": "points", "amount": 4, "side": "self"}, in_hand=True)
+    ability = next(a for a in data["abilities"] if a["id"] == "g-extra")
+    trigger = ability["trigger"]["card_trigger"]
+    trigger.update(kind="army", builder="self", spaces=["B"])
+    game = make(data)
+    forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses
+    assert forecast.staging("germany", "g-status")["activations"] == 1
+    assert forecast.staging("germany", "g-status")["base"] == 4
+    trigger["spaces"] = ["E"]
+    game = make(data)
+    forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses
+    assert forecast.staging("germany", "g-status")["activations"] == 0
+
+
+def test_nonbasic_economic_trigger_requires_a_visible_playable_card(data):
+    hand_only(data)
+    response(data, "economic-play", {"type": "points", "amount": 4, "side": "self"}, bolster=True, in_hand=True)
+    card(data, "g-noop")["legacy_kind"] = "economic"
+    for present in (False, True):
+        move_initial(data, "g-deck-2", zone("germany", "HAND" if present else "DECK"))
+        game = make(data)
+        forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses
+        assert forecast.staging("germany", "g-status")["activations"] == int(present)
+
+
+def test_remote_response_recruit_uses_shifted_position_without_supply_proof(data):
+    map_with_sites(data, [("B", "C")], ("C",))
+    data["settings"]["free_recruit"] = True
+    hand_only(data)
+    response(data, "any-time", {"type": "recruit", "kind": "army", "space": "B"})
+    game = make(data)
+    economy = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe())
+    routes = economy.routes
+    assert not routes.placement_supplied("germany", "B")
+    shifted = routes.position.value("germany", "B", construction=True, distance_offset=1)
+    assert shifted > 0
+    assert economy.responses.staging("germany", "g-status")["base"] == shifted
+    client = CoreAPI(game, ("germany",))
+    activate = next(c for c in client.legal_commands() if c["type"] == "ACTIVATE_CARD")
+    planned, = OneStepPlanner(game.rules, profile()).rank(CandidateView(client.observe(), [activate]), "germany")
+    assert planned["complete"] and planned["map_delta"] == shifted
+    move_initial(data, "united-kingdom-army-1", "B")
+    game = make(data)
+    forecast = evaluator(game).economic_from_view(CoreAPI(game, ("germany",)).observe()).responses
+    assert forecast.staging("germany", "g-status")["base"] == 0
 
 
 @pytest.mark.parametrize("bolster", [False, True])

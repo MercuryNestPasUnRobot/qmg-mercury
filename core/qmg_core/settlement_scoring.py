@@ -161,7 +161,7 @@ class SettlementScorer:
         return fixed
 
     def value(self, processor, country, *, initial_units=None, direct_removals=(), constructed=(), recruited=(), played_card=None,
-              card_event_value=0, deadline=None):
+              card_event_value=0, deadline=None, airdrops=None):
         state, rules = processor.state, processor.rules
         own = rules.team(country)
         enemy = "allies" if own == "axis" else "axis"
@@ -177,7 +177,11 @@ class SettlementScorer:
         cards = self.units.card_score(cards) + card_event_value
         terminal = 2 if state.winner == own else -2 if state.winner == enemy else 0
 
-        still_on_board = {t.token_id for t in board_units(rules, state)}
+        board = board_units(rules, state)
+        still_on_board = {t.token_id for t in board}
+        landed = {t.token_id: t for t in board if (airdrops or {}).get(t.token_id) == t.position_id and not any(
+            enemy.position_id == t.position_id and rules.team(enemy.owner_country) != rules.team(t.owner_country)
+            for enemy in board)}
         pieces, supplies, closing_income = self.surviving_board(rules, state, deadline, recruited)
         survivors = tuple((t.token_id, t.owner_country) for t in pieces)
         stock = 0 if self.location_weights else self.units.action_score(sum(sign(owner) for _, owner in survivors))
@@ -218,14 +222,19 @@ class SettlementScorer:
             from .map_influence import ScoringRoutes
             position = ScoringRoutes(rules, state, pieces, self.location_weights).position
             held_per_unit = defaultdict(float)
+            surviving_ids = {key for key, _ in survivors}
+            air_distance = self.location_weights.get("status_forecast", {}).get("projected_distance_offset", 1)
             # A regular site contributes the best durable surface position or next income once per side.
-            for piece in pieces:
+            for piece in (*pieces, *(t for key, t in landed.items() if key not in surviving_ids)):
                 force = piece.owner_country
                 if rules.units[piece.definition_id]["kind"] == "AIR":
                     # Air support uses its position even when the basing unit already holds the site.
                     air_support += sign(force) * position.value(force, piece.position_id, excluded=piece.token_id)
                     continue
-                for site, (distance, value) in position.site_values(force, piece.position_id, excluded=piece.token_id).items():
+                airdrop = piece.token_id in landed
+                for site, (distance, value) in position.site_values(force, piece.position_id, excluded=piece.token_id,
+                                                                  construction=airdrop,
+                                                                  distance_offset=air_distance if airdrop else 0).items():
                     if site in rules.sites:
                         key = site, rules.team(force)
                         if distance == 0 and rules.sites[site].get("scoring") == PER_UNIT_SITE:
@@ -248,6 +257,14 @@ class SettlementScorer:
         if self.economy_factory and not state.winner:
             economy = self.economy_factory(rules, state)
             resources = -sum(sign(seat) * economy.future_loss(seat) for seat in TURN_ORDER)
+            if economy.known_abilities and any(state.positions[zone(seat, "RESPONSE")] for seat in TURN_ORDER):
+                responses = economy.responses
+                if responses:
+                    for seat in TURN_ORDER:
+                        for key in state.positions[zone(seat, "RESPONSE")]:
+                            card = rules.cards.get(state.tokens[key].definition_id)
+                            if card and not card.get("simulation_unknown"):
+                                cards += sign(seat) * max(0, responses.staging(seat, card["id"])["net"])
             if economy.status_weights and any(state.positions[zone(seat, "STATUS")] for seat in TURN_ORDER):
                 status = economy.statuses
                 cards += sum(sign(seat) * sum(status.residual(seat).values()) for seat in TURN_ORDER)

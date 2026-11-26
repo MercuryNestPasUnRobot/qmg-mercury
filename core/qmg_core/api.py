@@ -145,6 +145,15 @@ def observation(processor, controlled_countries, *, include_history=True):
             if action["type"] in BATTLES | CONSTRUCTION:
                 decision.update(map_force=action.get("force", s.decision.required_country),
                                 map_battle=action["type"] in BATTLES)
+                if not decision["map_battle"]:
+                    from .status_scoring import ability_airdrop
+
+                    ability = s.tokens.get(s.stack[-1].context.get("ability_token"))
+                    airdrops = [option for option in s.decision.legal_options
+                                if (region := option.split("|", 1)[-1]) in rules.regions and
+                                ability_airdrop(rules, s, ability, action, region)]
+                    if airdrops:
+                        decision["map_airdrop_options"] = airdrops
             if action["type"] == "REBUILD_UNIT":
                 decision["redeploy_token"] = action["token"]
             if action["type"] == "AIR_ACTION_SELECTED":

@@ -63,6 +63,10 @@ class EconomicForecast:
         return bool(self.map_weights and all(self.map_weights.get(key) for key in (
             "action_distance_scoring", "action_opportunity_scoring", "marginal_opportunity_scoring")))
 
+    @property
+    def known_abilities(self):
+        return self.marginal and self.map_weights.get("known_ability_scoring", False)
+
     @cached_property
     def routes(self):
         from .map_influence import ScoringRoutes

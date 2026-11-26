@@ -4,21 +4,18 @@ from functools import lru_cache
 import json
 
 from .air import air_options
-from .content_effects import (action_for, available_options, condition_met, event_effect, filtered_units,
+from .content_effects import (action_for, available_options, can_begin, condition_met, event_effect, filtered_units,
                               force_id, point_award, target_regions)
 from .content_triggers import matches_trigger
 from .definitions import BATTLES, CONSTRUCTION
 from .model import CoreError, ResolutionFrame, TURN_ORDER, Token, ZoneRegistry, zone
 from .operations import OperationExecutor, outcome
 from .positional_scoring import STANDARD_SITE_VP
-from .rules import LegalActionGenerator, SupplyResolver, board_units, unit_rule_matches
-from .status_scoring import trigger_of
+from .rules import LegalActionGenerator, SupplyResolver, board_units, status_enabled, unit_rule_matches
+from .status_scoring import BASIC_WINDOWS, FIXED_WINDOWS, air_placement, placement_value, trigger_of
 
 
-PHASE_WINDOWS = {
-    "turn-start": "Play", "play-phase-start": "Play", "air-phase-start": "Air",
-    "victory-start": "Victory", "during-victory": "Victory", "discard-start": "Discard",
-}
+PHASE_WINDOWS = FIXED_WINDOWS
 ACTION_WINDOWS = {"after-build", "battle-space", "unit-activity", "after-unit-removal"}
 AIR_WINDOWS = {"after-air-action", "after-air-superiority", "after-air-superiority-removal"}
 MILITARY_EFFECTS = {"build", "recruit", "choose-space", "battle"}
@@ -86,13 +83,155 @@ class ResponseForecast:
         rows = []
         for key in card.get("abilities", ()):
             ability = self.rules.abilities[key]
-            base = self.program(owner, ability, baseline=True, estimate_draw=estimate_draw)
-            turns = self.delay(owner, trigger_of(ability), card.get("legacy_kind"))
-            cost = self.time_cost(turns)
-            rows.append({"base": base, "wait_turns": turns, "time_cost": cost, "net": base - cost,
-                         "window_remaining": self.within_game(owner, turns)})
+            if self.economy.known_abilities:
+                rows.extend(self.known_staging(owner, card, ability, estimate_draw))
+            else:
+                base = self.program(owner, ability, baseline=True, estimate_draw=estimate_draw)
+                turns = self.delay(owner, trigger_of(ability), card.get("legacy_kind"))
+                rows.append(self.opening_value(owner, base, turns))
         return max(rows, key=lambda row: (row["window_remaining"], row["net"]),
-                   default={"base": 0, "wait_turns": 0, "time_cost": 0, "net": 0, "window_remaining": False})
+                   default={"base": 0, "wait_turns": 0, "time_cost": 0, "net": 0, "window_remaining": False,
+                            **({"activations": 0} if self.economy.known_abilities else {})})
+
+    def opening_value(self, owner, base, turns, *, window_remaining=None):
+        cost = self.time_cost(turns)
+        if window_remaining is None:
+            window_remaining = self.within_game(owner, turns)
+        row = {"base": base, "wait_turns": turns, "time_cost": cost, "net": base - cost,
+               "window_remaining": window_remaining}
+        if self.economy.known_abilities:
+            row["activations"] = int(row["window_remaining"])
+        return row
+
+    def known_staging(self, owner, card, ability, estimate_draw):
+        if not condition_met(self.rules, self.state, owner, card.get("content_condition")):
+            return
+        area = (zone(owner, "HAND"), zone(owner, "RESPONSE"))
+        source = next((key for p in area for key in self.state.positions[p]
+                       if self.state.tokens[key].definition_id == card["id"]), None)
+        trigger = trigger_of(ability)
+        name, kind = trigger["type"], card.get("legacy_kind")
+        staged = source and self.state.tokens[source].position_id == zone(owner, "RESPONSE")
+        if name in PHASE_WINDOWS or name == "any-time":
+            turns = self.delay(owner, trigger, kind)
+            if name == "any-time" and trigger.get("ownTurnOnly") and self.active != owner:
+                turns = 1
+            if (kind != "bolster" and name in ("turn-start", "play-phase-start") and self.active == owner
+                    and self.turn.phase == "Setup"):
+                turns = 1  # It can only be staged after the opening of the Play phase.
+            value = self.program(owner, ability, source=source, estimate_draw=estimate_draw, check_conditions=True)
+            if value is not None:
+                yield self.opening_value(owner, value, turns)
+            return
+        for actor, event, moves, state in self.known_events(owner, card, source, trigger):
+            phase = "Air" if name in AIR_WINDOWS else "Discard" if name == "discard-stage-card" else "Play"
+            turns = self.turns_to(actor, phase, remaining_play=True, next_window=phase == "Play")
+            if phase == "Play" and kind != "bolster" and not staged:
+                turns = max(1, turns)  # Playing the response consumes the present Play opportunity.
+            if not self.within_game(actor, turns):
+                continue
+            value = self.program(owner, ability, source=source, event=event, moves=moves, economy=self.on_board(state),
+                                 estimate_draw=estimate_draw, check_conditions=True)
+            if value is not None:
+                yield self.opening_value(owner, value, turns, window_remaining=True)
+
+    def known_events(self, owner, card, source, trigger):
+        """Yield rule-checked stimuli from visible cards and one legal basic-action assumption."""
+        name = trigger["type"]
+        listener = Token("", "", "ABILITY", owner, "", source or "forecast:source:" + card["id"])
+        if source is None:
+            token = Token(listener.source_token_id, card["id"], "CARD", owner, zone(owner, "OBJECT_POOL"))
+        else:
+            token = None
+        for actor in TURN_ORDER:
+            relation = trigger.get("actor", trigger.get("builder", "any"))
+            same_team = self.rules.team(actor) == self.rules.team(owner)
+            if (relation == "self" and actor != owner or relation == "enemy" and same_team or
+                    relation == "team" and not same_team or relation in TURN_ORDER and actor != relation or
+                    trigger.get("ownTurnOnly") and actor != owner):
+                continue
+            for event, moves, state, context in self.event_candidates(actor, owner, source, trigger):
+                if token:
+                    state = replace(state, tokens={**state.tokens, token.token_id: token})
+                result = {**outcome(event["type"]), "changes": moves, "context": context}
+                source_card = state.tokens.get(event.get("source_token_id"))
+                if name == "after-card-use" and not source_card:
+                    continue
+                if matches_trigger(self.rules, state, listener, trigger, event, result):
+                    yield actor, event, moves, state
+
+    def event_candidates(self, actor, owner, source, trigger):
+        name = trigger["type"]
+        if name in BASIC_WINDOWS | AIR_WINDOWS and name != "play-army-card":
+            if name in AIR_WINDOWS and name != "after-air-superiority-removal" and actor != owner:
+                return
+            phase = "Air" if name in AIR_WINDOWS else "Play"
+            for card, target, event, key, destination, phase in self.projections(actor, source, trigger, phase,
+                                                                                 assume_basic=name in BASIC_WINDOWS):
+                original = self.state.tokens[key]
+                move = {"token_id": key, "from": original.position_id, "to": destination}
+                before = name in ("before-battle-removal", "before-any-removal")
+                state = self.projected_move(actor, card, None if before else key, destination, phase)
+                context = {"attacked_units": [key]}
+                if before:
+                    announcement = "forecast:announcement"
+                    event = {**event, "announced_type": event["type"], "type": "ANNOUNCE", "target_token": key,
+                             "announcement_id": announcement}
+                    state = replace(state, announcements={**state.announcements, announcement: {"cancelled": False}})
+                elif name == "after-unit-removal" and trigger.get("suppliedOnly"):
+                    context["removed_supplied"] = {key: key in SupplyResolver(self.rules).supplied(self.state, original.owner_country)}
+                yield event, [] if before else [move], state, context
+            return
+        phase = "Discard" if name == "discard-stage-card" else "Play"
+        state = self.projected_move(actor, None, None, None, phase)
+        if name in ("before-card-effect", "after-card-effect") and trigger["kind"] == "status":
+            for key in state.positions[zone(actor, "STATUS")]:
+                t = state.tokens[key]
+                definition = self.rules.cards[t.definition_id]
+                if status_enabled(self.rules, state, t) and condition_met(self.rules, state, actor, definition.get("content_condition")) and any(
+                        self.rules.abilities[a]["effects"] for a in definition.get("abilities", ())):
+                    yield {"type": "CARD_DECLARED" if name == "before-card-effect" else "CARD_EFFECT_FINISHED",
+                           "actor_country": actor, "source_token_id": key, "declared_kind": "status"}, [], state, {}
+            return
+        for key, card in self.hand(actor, source):
+            kind = card.get("legacy_kind")
+            event = {"actor_country": actor, "source_token_id": key}
+            moves = []
+            if name == "discard-stage-card" and kind == trigger["kind"]:
+                event["type"] = "DISCARD"
+                moves = [{"token_id": key, "from": zone(actor, "HAND"), "to": zone(actor, "DISCARD")}]
+            elif name in ("before-card-effect", "after-card-effect") and kind == trigger["kind"] == "bolster":
+                # A visible, legal scheduled bolster supplies a known declared effect.
+                if not any(trigger_of(self.rules.abilities[a])["type"] in PHASE_WINDOWS for a in card.get("abilities", ())):
+                    continue
+                event.update(type="CARD_DECLARED" if name == "before-card-effect" else "CARD_EFFECT_FINISHED", declared_kind=kind)
+            elif not self.legal.can_start_card(state, actor, card):
+                continue
+            elif name in ("economic-play", "economic-target") and kind == "economic":
+                event["type"] = "ECONOMIC_PLAY" if name == "economic-play" else "ECONOMIC_TARGET"
+                if name == "economic-target":
+                    if not self.economic_targets(actor, card, owner):
+                        continue
+                    event["target_country"] = owner
+            elif name == "after-card-use" and actor == owner and card["type"] != "STATUS":
+                event.update(type="OBJECT_SETTLED", settled_definition=card["id"])
+            elif name == "play-army-card" and actor == owner and (kind == "build-army" or "BUILD_ARMY" in card.get("play_as", ())):
+                event.update(type="PLAY_CARD", play_as="BUILD_ARMY")
+            else:
+                continue
+            yield event, moves, state, {}
+
+    def economic_targets(self, actor, card, owner):
+        for step in card["effects"]:
+            effect = step.get("effect", {})
+            if not condition_met(self.rules, self.state, actor, effect.get("when")):
+                continue
+            if effect.get("type") == "choose-country" and effect.get("action") == "discard-top":
+                if owner in available_options(self.rules, self.state, actor, effect):
+                    return True
+            if effect.get("type") in ("discard-top", "discard-top-per-unit") and force_id(effect.get("target"), actor) == owner:
+                return True
+        return False
 
     def on_board(self, state):
         from .economic_scoring import EconomicForecast
@@ -103,7 +242,8 @@ class ResponseForecast:
                                 map_weights=self.economy.map_weights, units=self.units,
                                 hand_average=self.economy.hand_average)
 
-    def program(self, owner, ability, *, source=None, event=None, moves=(), baseline=False, economy=None, estimate_draw=True):
+    def program(self, owner, ability, *, source=None, event=None, moves=(), baseline=False, economy=None,
+                estimate_draw=True, check_conditions=False):
         economy = self.economy if economy is None else economy
         state = economy.visible_state()
         event = event or {}
@@ -113,7 +253,7 @@ class ResponseForecast:
                       t.definition_id == ability["id"]), None) if source else None
         cost = self.executor.activation_cost(state, token) if token else ability.get("discard_cost", 0)
         if not baseline and cost > len(self.hand(owner, source, state)):
-            return 0
+            return None if check_conditions else 0
 
         def effects_value(steps, current_economy):
             net = -self.units.card_score(cost)
@@ -137,6 +277,7 @@ class ResponseForecast:
                         net += self.defense_value(owner, ability, current_economy, event, baseline)
                     continue
                 effect = op["effect"]
+                air_effect = effect if current_economy.known_abilities else None
                 airdrop = current_economy.marginal and (effect.get("nearAirAction") or effect.get("atAirAction"))
                 offset = (current_economy.map_weights.get("status_forecast", {}).get("projected_distance_offset", 1)
                           if airdrop else 0)
@@ -150,7 +291,7 @@ class ResponseForecast:
                         effect = event_effect(effect, frame)
                     except CoreError:
                         if not effect.get("optional"):
-                            break
+                            return None if check_conditions else net
                         continue
                 if not condition_met(self.rules, current_state, effect.get("chooser", owner), effect.get("when")):
                     continue
@@ -159,17 +300,20 @@ class ResponseForecast:
                     choices = [k for k, card in self.hand(owner, source, current_state) if k not in paid and
                                (not effect.get("kinds") or card.get("legacy_kind") in effect["kinds"])]
                     if not baseline and len(choices) < effect["count"] and effect.get("strict"):
-                        return 0
+                        return None if check_conditions else 0
                     paid.update(choices[:effect["count"]])
                     net -= self.units.card_score(effect["count"] if baseline else min(len(choices), effect["count"]))
                 elif kind == "choose-one":
                     branches = [[{"type": "CARD_EFFECT", "effect": e} for e in branch["effects"]]
                                 for branch in effect["options"]]
-                    net += max((effects_value(branch, current_economy) for branch in branches), default=0)
+                    values = [v for branch in branches if (v := effects_value(branch, current_economy)) is not None]
+                    if check_conditions and not values and not effect.get("optional"):
+                        return None
+                    net += max(values, default=0)
                     net += self.units.card_score(cost)
-                elif kind in MILITARY_EFFECTS and index < len(steps) - 1:
+                elif kind in MILITARY_EFFECTS and (check_conditions or index < len(steps) - 1):
                     value, placement, playable = self.first_military_step(owner, ability, effect, current_economy,
-                                                                          distance_offset=offset)
+                                                                          distance_offset=offset, air_effect=air_effect)
                     net += value
                     if placement:
                         token, target, is_build = placement
@@ -178,14 +322,19 @@ class ResponseForecast:
                         if is_build:
                             frame.context["last_built_region"] = target
                     elif not playable and not effect.get("optional"):
-                        break
+                        return None if check_conditions else net
                 else:
-                    net += self.effect_value(owner, ability, effect, current_economy, context, baseline, distance_offset=offset)
+                    if check_conditions and not can_begin(self.rules, current_state, effect.get("chooser", owner), effect, context):
+                        if effect.get("optional"):
+                            continue
+                        return None
+                    net += self.effect_value(owner, ability, effect, current_economy, context, baseline,
+                                             distance_offset=offset, air_effect=air_effect)
             return net
 
         return effects_value(ability["effects"], economy)
 
-    def first_military_step(self, owner, ability, effect, economy, *, distance_offset=0):
+    def first_military_step(self, owner, ability, effect, economy, *, distance_offset=0, air_effect=None):
         state = economy.visible_state()
         kind = effect.get("kind", "army")
         if kind == "same":
@@ -198,6 +347,10 @@ class ResponseForecast:
             force = action["force"]
             battle = action["type"] in BATTLES
             for region in target_regions(self.rules, state, owner, effect):
+                airborne = air_effect is not None and air_placement(self.rules, state, force, region, air_effect)
+                if airborne and any(t.position_id == region and self.rules.team(t.owner_country) != self.rules.team(force)
+                                    for t in economy.routes.pieces):
+                    continue
                 playable = True
                 if battle:
                     enemy = economy.routes._removable_targets(force, region)
@@ -207,9 +360,12 @@ class ResponseForecast:
                         dest = zone(victim.owner_country, "RESERVE_" + variant.upper())
                         if value > best:
                             best, placement = value, (victim.token_id, dest, False)
-                elif economy.routes.placement_supplied(force, region):
-                    value = (economy.routes.position.value(force, region, construction=True, distance_offset=distance_offset)
-                             if distance_offset else self.placement_base + economy.routes.target_value(force, region, construction=True))
+                elif airborne or economy.routes.placement_supplied(force, region):
+                    if air_effect is not None:
+                        value = placement_value(economy, force, region, airdrop=airborne)
+                    else:
+                        value = (economy.routes.position.value(force, region, construction=True, distance_offset=distance_offset)
+                                 if distance_offset else self.placement_base + economy.routes.target_value(force, region, construction=True))
                     if value > best:
                         key = state.positions[zone(force, "RESERVE_" + variant.upper())][0]
                         best, placement = value, (key, region, True)
@@ -236,7 +392,7 @@ class ResponseForecast:
                                          event.get("target_token", t.token_id) == t.token_id)))]
         return max(values, default=0)
 
-    def effect_value(self, owner, ability, effect, economy, context, baseline, *, distance_offset=0):
+    def effect_value(self, owner, ability, effect, economy, context, baseline, *, distance_offset=0, air_effect=None):
         from .ai_match_policy import effect_priority
 
         rules, state = self.rules, economy.visible_state()
@@ -244,8 +400,9 @@ class ResponseForecast:
         if kind in MILITARY_EFFECTS:
             if effect.get("kind") == "same":
                 effect = {**effect, "kind": trigger_of(ability).get("kind", "either")}
-            if distance_offset:
-                return self.first_military_step(owner, ability, effect, economy, distance_offset=distance_offset)[0]
+            if distance_offset or air_effect is not None:
+                return self.first_military_step(owner, ability, effect, economy,
+                                                distance_offset=distance_offset, air_effect=air_effect)[0]
             return economy.routes.best_action_bonus(owner, {"type": "CARD_EFFECT", "effect": effect},
                                                     placement_base=0 if kind == "battle" else self.placement_base)
         if kind in ("prevent-removal", "protect-unit-this-turn"):
@@ -339,7 +496,7 @@ class ResponseForecast:
                 ZoneRegistry.transfer(state, key, target)
         return state
 
-    def projections(self, owner, source, trigger, phase):
+    def projections(self, owner, source, trigger, phase, *, assume_basic=False):
         name = trigger["type"]
         if name in AIR_WINDOWS:
             card = next((key for key, c in self.hand(owner, source) if c.get("legacy_kind") == "air-power"), None)
@@ -354,13 +511,21 @@ class ResponseForecast:
                 else:
                     token, destination = attacker or self.state.positions[zone(owner, "RESERVE_AIR")][0], target
                 event = {"type": "AIR_ACTION_FINISHED", "actor_country": owner, "force": owner, "target": target,
-                         "air_action": action, "removed_force": self.state.tokens[victim].owner_country if victim else None}
+                         "air_action": action, "attacker_token": attacker,
+                         "removed_force": self.state.tokens[victim].owner_country if victim else None}
                 yield card, target, event, token, destination, "Air"
             return
-        for card, action, effect in self.hand_actions(owner):
+        actions = self.hand_actions(owner)
+        if assume_basic:
+            assumed = ("BUILD_ARMY", "BUILD_NAVY", "LAND_BATTLE", "SEA_BATTLE")
+            actions = actions + [(None, {"type": kind}, None) for kind in assumed
+                                 if not any(action["type"] == kind and action.get("force", owner) == owner and effect is None
+                                            for _, action, effect in actions)]
+        for card, action, effect in actions:
             kind, force = action["type"], action.get("force", owner)
             battle = kind in BATTLES
-            if card == source or (name == "after-build" and battle) or (name in ("battle-space", "after-unit-removal") and not battle):
+            if (source is not None and card == source or name == "after-build" and battle or
+                    name in ("battle-space", "after-unit-removal", "before-battle-removal", "before-any-removal") and not battle):
                 continue
             targets = (target_regions(self.rules, self.state, owner, effect) if effect else
                        self.legal.targets(self.state, owner, action))
@@ -375,8 +540,11 @@ class ResponseForecast:
                               not unit_rule_matches(self.rules, self.state, t, "protection")]
                     if not pieces:
                         continue
-                    token = pieces[0].token_id
-                    destination = zone(pieces[0].owner_country, "RESERVE_" + unit)
+                    victims = pieces if assume_basic else pieces[:1]
+                    event = {"type": kind, "actor_country": owner, "force": force, "target": target, "unit_kind": unit}
+                    for victim in victims:
+                        yield card, target, event, victim.token_id, zone(victim.owner_country, "RESERVE_" + unit), phase
+                    continue
                 else:
                     token = self.state.positions[zone(force, "RESERVE_" + unit)][0]
                     destination = target
@@ -415,7 +583,10 @@ class ResponseForecast:
             else:
                 signal, moves = {}, []
             economy = self.on_board(state)
-            value = self.program(owner, ability, source=source, event=signal, moves=moves, economy=economy)
+            value = self.program(owner, ability, source=source, event=signal, moves=moves, economy=economy,
+                                 check_conditions=self.economy.known_abilities)
+            if value is None:
+                continue
             net = value - self.time_cost(turns)
             if net > max(0, best):
                 best = net

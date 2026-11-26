@@ -39,18 +39,18 @@ def test_deployment_counts_only_windows_after_placement(data):
     engine = make(data)
     forecast = view_forecast(engine)
     initial = forecast.report("germany", "g-status")
-    assert initial["windows"] == 2 and initial["future"] == pytest.approx(1.8)
-    assert forecast.report("germany", "g-status", held=True)["future"] == pytest.approx(.8 * .55)
+    assert initial["windows"] == 2 and initial["future"] == 2
+    assert forecast.report("germany", "g-status", held=True)["future"] == .55
     client = CoreAPI(engine, ("germany",))
     policy = RulePolicy(engine.rules, ScoreEvaluator(engine.rules, profile()))
     row = next(r for r in policy.rank(client.observe(), client.legal_commands())
                if r["command"].get("card") == "g-status")
     assert row["status_forecast"] == initial
-    assert row["rule_score"] == pytest.approx(1.8 - 2)
+    assert row["rule_score"] == 0
 
     scoring_status(data, phase="turn-start")
     forecast = view_forecast(make(data))
-    assert forecast.report("germany", "g-status")["future"] == pytest.approx(.8)
+    assert forecast.report("germany", "g-status")["future"] == 1
 
 
 def test_b_moves_settled_vp_out_of_future_value(data):
@@ -89,8 +89,8 @@ def test_competing_primary_responses_count_only_the_better_choice(data):
     data["cards"].append(dict(card(data, "g-status"), id="second", abilities=["second-trigger"]))
     forecast = view_forecast(make(data))
     report = forecast.report("germany", "second")
-    assert report["gross"] == pytest.approx(3.6)
-    assert report["competition"] == report["future"] == pytest.approx(1.8)
+    assert report["gross"] == 4
+    assert report["competition"] == report["future"] == 2
 
 
 def test_hidden_order_and_opposing_hand_identities_do_not_change_paper_score(data):

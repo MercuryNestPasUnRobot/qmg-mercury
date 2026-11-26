@@ -100,7 +100,7 @@ def test_ordering_follows_the_predicted_play_instead_of_always_putting_strength_
     assert scores["good"] > scores["weak"]
 
 
-def test_conditional_points_use_matching_cards_plus_one_without_probability(data):
+def test_conditional_points_use_known_basic_count_or_one_without_probability(data):
     ability = scoring_status(data, phase="after-build")
     ability["trigger"]["card_trigger"].update(kind="army", builder="self")
     map_with_sites(data, [("A", "B")], ())
@@ -108,7 +108,7 @@ def test_conditional_points_use_matching_cards_plus_one_without_probability(data
     hand_only(data, "g-build")
     move_initial(data, "g-status", zone("germany", "STATUS"))
     values = forecast(data).statuses.portfolio("germany", True)
-    assert len(values) == 2 and list(values.values()) == [1, 1]
+    assert list(values.values()) == [1]
     observer = forecast(data, "united-kingdom").statuses
     assert list(observer.portfolio("germany", True).values()) == [1]
 
@@ -138,3 +138,19 @@ def test_temporary_supply_only_values_the_before_after_difference(data):
     assert routes.temporary_supply_value("germany", effect) == routes.protection_value("germany", "B", token="germany-army-1") > 0
     effect["filter"]["spaces"] = ["A"]
     assert routes.temporary_supply_value("germany", effect) == 0
+
+
+def test_turn_start_home_recruit_prices_one_ordinary_build_at_the_capital(data):
+    ability = scoring_status(data, phase="turn-start")
+    ability["effects"] = [instruction({"type": "recruit", "kind": "army", "space": "A"})]
+    map_with_sites(data, [("A", "B")], ("B",), rounds=10)
+    move_initial(data, "germany-army-0", zone("germany", "RESERVE_ARMY"))
+    economy = forecast(data)
+    routes = economy.routes
+    ordinary = routes.target_value("germany", "A", construction=True)
+    shifted = routes.position.value("germany", "A", construction=True, distance_offset=1)
+    assert ordinary > shifted
+    actual = economy.statuses.report("germany", "g-status")
+    assert actual["windows"] == 1 and actual["future"] == ordinary
+    move_initial(data, "germany-army-0", "A")
+    assert forecast(data).statuses.report("germany", "g-status")["windows"] == 0

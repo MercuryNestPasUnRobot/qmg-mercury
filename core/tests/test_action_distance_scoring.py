@@ -89,7 +89,7 @@ def test_both_a_and_b_credit_one_action_for_a_certain_removal(data):
     assert row["continuations"][0]["option"] == "B"
 
 
-def test_status_uses_visible_attacks_plus_one_times_gain_less_payment(data):
+def test_status_uses_visible_attacks_with_a_floor_of_one_times_gain_less_payment(data):
     ability = scoring_status(data, phase="battle-space")
     data["settings"]["max_rounds"] = 8
     ability["trigger"]["card_trigger"]["kind"] = "army"
@@ -100,8 +100,8 @@ def test_status_uses_visible_attacks_plus_one_times_gain_less_payment(data):
             "token_type": "CARD", "owner_country": "germany", "position_id": zone("germany", "HAND")})
     own = forecast(data).statuses
     assert own.extra_reaction("germany", "g-extra") == (4, 1)
-    assert own.report("germany", "g-status")["future"] == 4
-    assert len(own.entries("germany", "g-status", None, True)) == 4
+    assert own.report("germany", "g-status")["future"] == 3
+    assert len(own.entries("germany", "g-status", None, True)) == 3
     foreign = forecast(data, "united-kingdom").statuses
     assert foreign.extra_reaction("germany", "g-extra") == (1, 1)
     data["settings"]["max_rounds"] = 2
@@ -118,9 +118,13 @@ def test_airdrop_and_deck_top_use_their_separate_bases(data):
     ability["effects"] = [instruction({"type": "choose-space", "kind": "army",
                                        "action": "build", "nearAirAction": True})]
     assert forecast(data).statuses.program("germany", "germany", "g-extra", "A", committed=True) == 2
+    assert forecast(data).statuses.report("germany", "g-status")["future"] == 0
+    card(data, "g-noop")["legacy_kind"] = "air-power"
+    hand_only(data, "g-deck-2")
     assert forecast(data).statuses.report("germany", "g-status")["future"] == 2
     ability["trigger"]["card_trigger"]["type"] = "play-phase-start"
     ability["effects"] = [instruction({"type": "order-deck-top", "count": 3})]
+    card(data, "g-noop").pop("legacy_kind")
     hand_only(data, "g-deck-2")
     assert forecast(data).statuses.report("germany", "g-status")["future"] == 3
     data["settings"]["max_rounds"] = 2
