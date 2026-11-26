@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import card, make, move_initial
-from qmg_core import CoreAPI, ScoreEvaluator
+from qmg_core import CoreAPI, ScoreEvaluator, ScoreResolver
 from qmg_core.ai_match_policy import CandidateView, RulePolicy
 from qmg_core.api import simulation_from_observation
 from qmg_core.content_effects import instruction
@@ -187,11 +187,12 @@ def test_air_uses_position_value_and_pays_once_without_earning_site_vp(data):
     assert settled["actual_vp_delta"] == 0
 
 
-def test_b_preserves_each_units_half_site_value_without_awarding_unit_stock(data):
+def test_b_applies_friendly_penalties_to_half_site_forecast_while_core_pays_per_unit(data):
     map_with_sites(data, [], ("A",), rounds=4)
     data["score_sites"][0].update(vp=1, scoring=PER_UNIT_SITE)
     data["settings"]["supply_revision"] = 2
     values = []
+    actual_income = []
     for region in ("H", "A"):
         move_initial(data, "italy-army-0", region)
         game = make(data)
@@ -200,4 +201,7 @@ def test_b_preserves_each_units_half_site_value_without_awarding_unit_stock(data
         projected = simulation_from_observation(evaluator.rules, sight, search_projection=True)
         score = evaluator.settlement.value(projected, "germany")
         values.append(score.map_value - score.supply_stability)
-    assert values == [4, 8]
+        resolver = ScoreResolver(game.rules)
+        actual_income.append(sum(resolver.sites(game.state, force).get("A", 0) for force in ("germany", "italy")))
+    assert values == [4, 2]
+    assert actual_income == [1, 2]

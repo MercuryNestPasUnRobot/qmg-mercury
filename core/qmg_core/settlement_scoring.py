@@ -254,9 +254,9 @@ class SettlementScorer:
                 for site, (distance, value) in surface.items():
                     if site in rules.sites:
                         key = site, rules.team(force)
-                        if distance == 0 and rules.sites[site].get("scoring") == PER_UNIT_SITE:
-                            held_per_unit[key] += position.site_base(force, piece.position_id, site) if (
-                                position.regional_defense) else value
+                        if (not position.regional_defense and distance == 0 and
+                                rules.sites[site].get("scoring") == PER_UNIT_SITE):
+                            held_per_unit[key] += value
                         else:
                             next_income[key] = max(next_income[key], value)
             for key, value in held_per_unit.items():
