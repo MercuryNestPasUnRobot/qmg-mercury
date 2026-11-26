@@ -5,6 +5,9 @@ const countries = {germany: "德国", "united-kingdom": "英国", japan: "日本
   italy: "意大利", "united-states": "美国"};
 const phases = {Setup: "开局", Play: "出牌", Air: "空军", Supply: "补给", Victory: "计分", Discard: "弃牌", Draw: "摸牌"};
 const teams = {axis: "轴心", allies: "同盟", draw: "平局"};
+const sides = ["axis", "allies"];
+const opposite = {axis: "allies", allies: "axis"};
+const configFormat = "qmg-ai-config/v1";
 const states = {idle: "待开始", starting: "准备中", running: "运行中", pause: "暂停中", paused: "已暂停",
   step: "单步执行中", stepping: "单步执行中",
   stop: "停止中", run: "继续中", completed: "已完成", stopped: "已停止", failed: "出错", interrupted: "已中断"};
@@ -34,7 +37,7 @@ const errors = {"Basic reserve must exceed the hand slot cost": "基础牌储备
 
 const app = {
   versions: new Map(), live: null, viewed: null, runId: "", game: 0, followGame: true,
-  cursor: null, next: null, draft: new Map(), fields: new Map(), profile: null,
+  cursor: null, next: null, drafts: null, editTeam: "axis", fields: new Map(),
   pinnedRevision: "", pageKey: "", busy: false, refreshing: false,
   board: null, boardKey: "", region: "", artReady: false, awaitingStep: null,
 };
@@ -60,20 +63,36 @@ async function api(path, payload) {
 function message(text, isError = false) {
   $("message").hidden = !text;
   $("message").dataset.error = String(isError);
-  $("message").textContent = errors[text] || text || "";
+  const prefix = /^(轴心|同盟) · /.exec(text || "")?.[0] || "";
+  $("message").textContent = prefix + (errors[(text || "").slice(prefix.length)] || (text || "").slice(prefix.length));
 }
 
-function syncFields(version, weights) {
-  const profile = app.versions.get(version);
-  if (!profile) return;
-  app.profile = profile;
-  app.draft = new Map(profile.fields.map(field => [
-    field.key, weights ? field.path.reduce((part, key) => part[key], weights) : field.value,
-  ]));
-  $("version").value = version;
-  $("version-meta").textContent = [profile.catalog, profile.commit?.slice(0, 8)].filter(Boolean).join(" · ");
+const slot = team => app.live?.status.match?.swapped ? opposite[team] : team;
+const draftFor = team => app.drafts[slot(team)];
+const caption = draft => draft ? `${draft.version === "current" ? "当前工作区" : draft.version} · ${draft.policy}` : "";
+
+function preset(version, policy, weights) {
+  const fields = app.versions.get(version).fields;
+  return {version, policy, values: Object.fromEntries(fields.map(field => [field.key,
+    weights ? field.path.reduce((part, key) => part[key], weights) : field.value]))};
+}
+
+function renderTeamLabels() {
+  for (const team of sides) {
+    $("edit-" + team).setAttribute("aria-pressed", String(app.editTeam === team));
+    $(team + "-profile").textContent = caption(draftFor(team));
+  }
+}
+
+function renderEditor() {
+  if (!app.drafts) return;
+  const draft = draftFor(app.editTeam);
+  const profile = app.versions.get(draft.version);
+  renderTeamLabels();
+  $("version").value = draft.version;
+  $("policy").value = draft.policy;
   if (app.fields.size && [...app.fields.keys()].join() === profile.fields.map(f => f.key).join()) {
-    for (const [key, input] of app.fields) input.value = String(app.draft.get(key));
+    for (const [key, input] of app.fields) input.value = Number.isFinite(draft.values[key]) ? draft.values[key] : "";
     return;
   }
   const groups = new Map();
@@ -97,9 +116,9 @@ function syncFields(version, weights) {
       input.min = "0";
       input.max = "1000000";
       input.required = true;
-      input.value = String(app.draft.get(field.key));
+      input.value = Number.isFinite(draft.values[field.key]) ? draft.values[field.key] : "";
       input.title = field.key;
-      input.addEventListener("input", () => app.draft.set(field.key, input.valueAsNumber));
+      input.addEventListener("input", () => { draftFor(app.editTeam).values[field.key] = input.valueAsNumber; });
       app.fields.set(field.key, input);
       label.append(input);
       controls.append(label);
@@ -118,21 +137,26 @@ function renderControls() {
   const paused = status?.state === "paused" && !status?.requested;
   const pending = Boolean(status?.requested) || ["starting", "stepping"].includes(status?.state);
   $("primary").textContent = locked ? (paused ? "继续测试" : "暂停测试") : "开始测试";
-  $("primary").disabled = app.busy || pending || !app.profile;
+  $("primary").disabled = app.busy || pending || !app.drafts;
   $("stop").hidden = !locked;
   $("stop").disabled = app.busy || status?.requested === "stop";
   $("step").hidden = !paused && ![status?.state, status?.requested].some(value => ["step", "stepping"].includes(value));
   $("step").disabled = app.busy || !paused;
-  for (const id of ["version", "seed", "mode", "team"]) $(id).disabled = locked || app.busy || !app.profile;
-  const editable = (!locked || paused) && !app.busy && Boolean(app.profile);
+  for (const id of ["seed", "mode"]) $(id).disabled = locked || app.busy || !app.drafts;
+  const editable = (!locked || paused) && !app.busy && Boolean(app.drafts);
+  for (const id of ["version", "policy", "reset", "paste-profile"]) $(id).disabled = !editable;
+  for (const id of ["edit-axis", "edit-allies", "copy-side", "copy-both"]) $(id).disabled = !app.drafts;
   for (const input of app.fields.values()) input.disabled = !editable;
-  $("reset").disabled = !editable;
   $("apply-area").hidden = !paused;
   $("apply").disabled = !paused || app.busy;
-  $("parameter-note").textContent = paused ? "修改后可直接单步执行或继续测试。" :
-    "开跑前可以调整。对局中先暂停，再修改。";
-  $("mode-note").textContent = {single: "本局结束后自动停止。", paired: "同一种子让 A、B 换边，两局后停止。",
+  $("parameter-note").textContent = paused ? "两方改动会在应用、单步或续跑时一并生效。" :
+    locked ? "先暂停测试，再调整任一方的配置。" : "每方独立设置版本、策略和评分参数。";
+  $("mode-note").textContent = {single: "本局结束后自动停止。", paired: "同一种子交换双方整套配置，两局后停止。",
     continuous: "同一种子换边两局，再用下一个种子继续，直到手动停止。"}[$("mode").value];
+}
+
+function matchSide(game) {
+  return game.swapped === undefined ? `B 执${teams[game.search_team]}` : game.swapped ? "双方换边" : "首局配置";
 }
 
 function renderOverview() {
@@ -142,7 +166,8 @@ function renderOverview() {
   const state = status?.requested || status?.state || "idle";
   $("state").dataset.state = state;
   $("state").textContent = states[state] || state;
-  $("run-context").textContent = run ? [run.version_label, modes[run.mode], run.catalog].join(" · ") :
+  const lineup = status?.configs ? sides.map(team => `${teams[team]} ${caption(status.configs[status.match?.swapped ? opposite[team] : team])}`).join(" / ") : run?.version_label;
+  $("run-context").textContent = run ? [lineup, modes[run.mode], run.catalog].join(" · ") :
     "选择版本与参数后，即可开始测试。";
   $("completed").textContent = status?.completed || 0;
   $("round").textContent = status?.round ?? "—";
@@ -150,7 +175,7 @@ function renderOverview() {
   $("allies").textContent = status?.scores?.allies ?? "—";
   const match = status?.match;
   $("position").textContent = match ? [
-    `第 ${match.number} 局`, `种子 ${match.seed}`, `B 执${teams[match.search_team]}`,
+    `第 ${match.number} 局`, `种子 ${match.seed}`, matchSide(match),
     countries[status.country], phases[status.phase], `第 ${status.step} 步`,
   ].filter(Boolean).join(" · ") : "等待启动";
   $("revision").textContent = status?.weights_revision ? `参数 ${status.weights_revision} · B 预算 3 秒` : "B 决策预算 3 秒";
@@ -308,6 +333,7 @@ function showDecision(row, button) {
   $("decision").hidden = false;
   $("decision-title").textContent = `第 ${row.decision_index} 步 · ${commandName(row.command, row, row.selected_reallocation)}`;
   $("decision-meta").textContent = [countries[row.country], row.policy + " 策略",
+    row.ai_version === "current" ? "当前工作区" : row.ai_version,
     "参数 " + row.weights_revision, reasons[row.search_status] || row.search_status,
     `${number(row.elapsed_ms)} ms`, row.selected_q == null ? "" : "采用评分 " + number(row.selected_q)]
     .filter(Boolean).join(" · ");
@@ -347,9 +373,9 @@ function clearLog() {
 function renderGameSelect() {
   const games = app.viewed?.games || [];
   const current = app.viewed?.status.match;
-  const entries = games.map(game => [game.number, `第 ${game.number} 局 · ${game.seed} · B 执${teams[game.search_team]}`]);
+  const entries = games.map(game => [game.number, `第 ${game.number} 局 · ${game.seed} · ${matchSide(game)}`]);
   if (current && !games.some(game => game.number === current.number)) {
-    entries.push([current.number, `第 ${current.number} 局 · ${current.seed} · B 执${teams[current.search_team]}`]);
+    entries.push([current.number, `第 ${current.number} 局 · ${current.seed} · ${matchSide(current)}`]);
   }
   const selected = app.followGame || !entries.some(([game]) => game === app.game) ? (entries.at(-1)?.[0] || 0) : app.game;
   if (selected !== app.game) clearLog();
@@ -391,7 +417,7 @@ async function loadLog() {
     button.dataset.step = row.decision_index;
     button.addEventListener("click", () => showDecision(row, button));
     cell.append(button);
-    tr.append(cell, node("td", countries[row.country] || row.country), node("td", phases[row.phase] || row.phase),
+    tr.append(cell, node("td", `${countries[row.country] || row.country} · ${row.policy}`), node("td", phases[row.phase] || row.phase),
       node("td", commandName(row.command, row, row.selected_reallocation)), node("td", row.weights_revision),
       node("td", number(row.elapsed_ms) + " ms", "timing"));
     return tr;
@@ -411,16 +437,19 @@ function acceptLive(detail) {
   if (app.live?.run.id !== detail.run.id) {
     $("seed").value = detail.run.seed;
     $("mode").value = detail.run.mode;
-    $("team").value = detail.run.first_team;
   }
-  const key = detail.run.id + ":" + status.weights_revision;
+  app.live = detail;
+  const key = [detail.run.id, status.weights_revision, status.match?.swapped].join(":");
   if (app.pinnedRevision !== key && !status.requested && !status.error) {
-    syncFields(detail.run.version, status.weights);
+    if (status.configs) app.drafts = Object.fromEntries(sides.map(team => {
+      const config = status.configs[team];
+      return [team, preset(config.version, config.policy, config.weights)];
+    }));
+    renderEditor();
     app.pinnedRevision = key;
   }
   if (status.error) message(status.error, true);
   else if (status.state === "paused" && !status.requested) message("");
-  app.live = detail;
 }
 
 async function refresh() {
@@ -439,8 +468,10 @@ async function refresh() {
     if (live) acceptLive(live);
     else {
       if (app.live && !viewed) message("");
+      const wasSwapped = app.live?.status.match?.swapped;
       app.live = null;
       app.pinnedRevision = "";
+      if (wasSwapped) renderEditor();
     }
     if (browsing === app.runId) {
       app.viewed = viewed || live;
@@ -466,37 +497,122 @@ async function refresh() {
   }
 }
 
-function values() {
-  for (const input of app.fields.values()) {
-    if (!input.checkValidity()) {
-      for (let detail = input.closest("details"); detail; detail = detail.parentElement.closest("details")) {
-        detail.open = true;
-      }
-      input.reportValidity();
+const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function checkedProfile(raw) {
+  const version = app.versions.get(raw?.version);
+  if (!version || !["A", "B"].includes(raw?.policy) || !record(raw.values)) {
+    throw new Error("配置中的 AI 版本、策略或评分参数无效。");
+  }
+  const result = preset(raw.version, raw.policy);
+  const fields = new Map(version.fields.map(field => [field.key, field]));
+  for (const [key, value] of Object.entries(raw.values)) {
+    const field = fields.get(key);
+    if (!field) throw new Error(`此版本没有参数 ${key}。`);
+    if (!Number.isFinite(value) || value < 0 || value > 1e6 || (field.integer && !Number.isInteger(value))) {
+      throw new Error(`${field.label}的数值无效。`);
+    }
+    result.values[key] = value;
+  }
+  return result;
+}
+
+function profileNotice(text) {
+  $("profile-notice").textContent = text;
+  $("profile-notice").hidden = !text;
+}
+
+function selectTeam(team) {
+  app.editTeam = team;
+  renderEditor();
+  renderControls();
+}
+
+function requestConfigs() {
+  const configs = {};
+  for (const team of sides) {
+    try {
+      configs[slot(team)] = checkedProfile(draftFor(team));
+    } catch (error) {
+      selectTeam(team);
+      profileNotice(`${teams[team]} · ${error.message}`);
       return null;
     }
   }
-  return Object.fromEntries(app.draft);
+  return configs;
+}
+
+function configDialog(text) {
+  const copying = text !== undefined;
+  $("config-title").textContent = copying ? "复制 AI 配置" : "粘贴 AI 配置";
+  $("config-label").textContent = copying ? "复制下方文本" : `粘贴配置文本，单方配置会载入${teams[app.editTeam]}`;
+  $("config-text").readOnly = copying;
+  $("config-text").value = text || "";
+  $("config-error").hidden = true;
+  $("confirm-paste").hidden = copying;
+  $("config-dialog").showModal();
+  $("config-text").focus();
+  if (copying) $("config-text").select();
+}
+
+async function copyConfig(both) {
+  const data = {format: configFormat};
+  try {
+    if (both) data.sides = Object.fromEntries(sides.map(team => [team, checkedProfile(draftFor(team))]));
+    else data.profile = checkedProfile(draftFor(app.editTeam));
+  } catch (error) {
+    profileNotice(error.message);
+    return;
+  }
+  const text = JSON.stringify(data, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    profileNotice(both ? "已复制双方 AI 配置。" : `已复制${teams[app.editTeam]} AI 配置。`);
+  } catch {
+    configDialog(text);
+  }
+}
+
+function pasteConfig() {
+  try {
+    let data;
+    try { data = JSON.parse($("config-text").value); }
+    catch { throw new Error("配置文本无法读取，请粘贴完整内容。"); }
+    if (data?.format !== configFormat || Boolean(data.sides) === Boolean(data.profile)) {
+      throw new Error("请选择从调试台复制的 AI 配置文本。");
+    }
+    const paired = data.sides;
+    const replacements = paired ? sides.map(team => [slot(team), checkedProfile(paired[team])]) :
+      [[slot(app.editTeam), checkedProfile(data.profile)]];
+    for (const [team, profile] of replacements) app.drafts[team] = profile;
+    $("config-dialog").close();
+    renderEditor();
+    renderControls();
+    profileNotice(paired ? "已载入双方 AI 配置。" : `已载入${teams[app.editTeam]} AI 配置。`);
+  } catch (error) {
+    $("config-error").textContent = error.message;
+    $("config-error").hidden = false;
+  }
 }
 
 async function act(action) {
   if (app.busy) return;
   const payload = {};
   if (["start", "weights", "resume", "step"].includes(action)) {
-    payload.values = values();
-    if (!payload.values) return;
+    payload.configs = requestConfigs();
+    if (!payload.configs) return;
   }
   let url = "/api/runs";
   if (action === "start") {
     if (!$("seed").reportValidity()) return;
-    Object.assign(payload, {version: $("version").value, seed: $("seed").valueAsNumber, mode: $("mode").value,
-      first_team: $("team").value});
+    Object.assign(payload, {seed: $("seed").valueAsNumber, mode: $("mode").value});
   } else if (app.live) {
     url += "/" + app.live.run.id + "/" + action;
   } else return;
   app.busy = true;
   renderControls();
   message("");
+  profileNotice("");
   try {
     const previous = app.live?.status.last_step?.revision || 0;
     const result = await api(url, payload);
@@ -531,8 +647,20 @@ $("board-fit").addEventListener("click", event => {
 $("board-art").addEventListener("load", () => { app.artReady = true; paintBoard(); });
 $("board-art").src = "/board-map.png";
 $("stop").addEventListener("click", () => act("stop"));
-$("reset").addEventListener("click", () => { syncFields($("version").value); renderControls(); });
-$("version").addEventListener("change", () => { syncFields($("version").value); renderControls(); });
+for (const team of sides) $("edit-" + team).addEventListener("click", () => selectTeam(team));
+function changeVersion(version) {
+  app.drafts[slot(app.editTeam)] = preset(version, $("policy").value);
+  renderEditor();
+  renderControls();
+  profileNotice("");
+}
+$("reset").addEventListener("click", () => changeVersion($("version").value));
+$("version").addEventListener("change", () => changeVersion($("version").value));
+$("policy").addEventListener("change", () => { draftFor(app.editTeam).policy = $("policy").value; renderTeamLabels(); });
+$("copy-side").addEventListener("click", () => copyConfig(false));
+$("copy-both").addEventListener("click", () => copyConfig(true));
+$("paste-profile").addEventListener("click", () => configDialog());
+$("confirm-paste").addEventListener("click", pasteConfig);
 $("mode").addEventListener("change", renderControls);
 $("runs").addEventListener("change", () => {
   app.runId = $("runs").value;
@@ -563,8 +691,11 @@ $("newest").addEventListener("click", () => {
     const data = await api("/api/versions");
     if (!data.length) throw new Error("找不到当前工作区的 AI 版本。");
     app.versions = new Map(data.map(version => [version.id, version]));
-    setOptions($("version"), data.map(version => [version.id, version.label]), data[0].id, "");
-    syncFields(data[0].id);
+    const current = app.versions.get("current");
+    $("version-meta").textContent = `对局规则 · ${current.catalog}`;
+    setOptions($("version"), data.map(version => [version.id, version.label]), current.id, "");
+    app.drafts = {axis: preset(current.id, "B"), allies: preset(current.id, "A")};
+    renderEditor();
     renderControls();
     await refresh();
   } catch (error) {

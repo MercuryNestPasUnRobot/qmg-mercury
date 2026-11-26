@@ -35,16 +35,8 @@
         <section class="panel settings">
           <h2>测试设置</h2>
           <div class="setting-body">
-            <label class="field">AI 版本
-              <select id="version" aria-describedby="version-meta" disabled></select>
-            </label>
             <p class="muted meta" id="version-meta"></p>
-            <div class="two">
-              <label class="field">种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="31" required></label>
-              <label class="field">B 首局执方
-                <select id="team"><option value="axis">轴心</option><option value="allies">同盟</option></select>
-              </label>
-            </div>
+            <label class="field">种子<input id="seed" type="number" min="0" max="4294967295" step="1" value="31" required></label>
             <label class="field">运行方式
               <select id="mode">
                 <option value="single">单局测试</option>
@@ -57,11 +49,25 @@
         </section>
         <section class="panel parameters">
           <div class="section-head">
-            <h2>评分参数</h2>
+            <h2>双方 AI 配置</h2>
             <button class="text-button" id="reset" type="button" disabled>恢复版本默认</button>
+          </div>
+          <div class="team-switch" aria-label="选择配置的阵营">
+            <button class="team-choice" id="edit-axis" type="button" aria-pressed="true"><strong>轴心</strong><small id="axis-profile"></small></button>
+            <button class="team-choice" id="edit-allies" type="button" aria-pressed="false"><strong>同盟</strong><small id="allies-profile"></small></button>
+          </div>
+          <div class="two profile-selectors">
+            <label class="field">AI 版本<select id="version" disabled></select></label>
+            <label class="field">策略<select id="policy" disabled><option value="A">A · 规则</option><option value="B">B · 搜索</option></select></label>
           </div>
           <p class="muted parameter-note" id="parameter-note">开跑前可以调整。对局中先暂停，再修改。</p>
           <div id="fields"></div>
+          <div class="profile-tools" aria-label="复制与粘贴 AI 配置">
+            <button class="text-button" id="copy-side" type="button" disabled>复制本方</button>
+            <button class="text-button" id="copy-both" type="button" disabled>复制双方</button>
+            <button class="text-button" id="paste-profile" type="button" disabled>粘贴配置</button>
+          </div>
+          <p class="meta muted" id="profile-notice" role="status" hidden></p>
           <div class="parameter-footer" id="apply-area" hidden>
             <button class="button secondary" id="apply" type="button" disabled>应用参数</button>
           </div>
@@ -144,5 +150,18 @@
       </div>
     </div>
   </main>
+  <dialog id="config-dialog" aria-labelledby="config-title">
+    <form method="dialog">
+      <h2 id="config-title"></h2>
+      <label class="field config-text-label"><span id="config-label">配置文本</span>
+        <textarea id="config-text" rows="9" spellcheck="false" maxlength="65536"></textarea>
+      </label>
+      <p class="message" id="config-error" data-error="true" role="alert" hidden></p>
+      <div class="config-controls">
+        <button class="button quiet" type="submit">关闭</button>
+        <button class="button secondary" id="confirm-paste" type="button">载入配置</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

@@ -27,6 +27,7 @@ ASSETS = Path(__file__).with_name("ai_debug_web")
 BOARD_ASSETS = Path(__file__).with_name("replay_web")
 BOARD_ART = ROOT / "local-content" / "replays" / "board" / "map.png"
 OUTPUT = ROOT / "local-content" / "ai-debug"
+TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
@@ -261,27 +262,50 @@ class DebugPanel:
         except FileNotFoundError:
             return None
 
+    def configurations(self, supplied, previous=None):
+        if not isinstance(supplied, dict) or set(supplied) != set(TEAMS):
+            raise RequestError("请提供轴心和同盟各自的 AI 配置。")
+        configs = {}
+        for team in TEAMS:
+            config = supplied[team]
+            if not isinstance(config, dict):
+                raise RequestError("阵营配置格式有误。")
+            version, policy = config.get("version"), config.get("policy")
+            if not isinstance(version, str) or version not in self.versions.options or policy not in ("A", "B"):
+                raise RequestError("请选择有效的 AI 版本和 A／B 策略。")
+            option = self.versions.options[version]
+            old = previous[team] if previous else None
+            base = old["weights"] if old and old["version"] == version else option["defaults"]
+            configs[team] = {"version": version, "label": option["label"], "commit": option["commit"],
+                             "policy": policy, "weights": edited_weights(base, config.get("values", {}))}
+        return configs
+
+    def policy_paths(self, configs):
+        return {version: str(self.versions.core(version))
+                for version in dict.fromkeys(config["version"] for config in configs.values())}
+
     def start(self, data):
         if self.active and self.active[1].poll() is None:
             raise RequestError("已有测试正在运行。请先结束它。", HTTPStatus.CONFLICT)
-        version = data.get("version")
-        seed, mode, side = data.get("seed"), data.get("mode"), data.get("first_team")
-        if (not isinstance(version, str) or version not in self.versions.options or type(seed) is not int or
-                not 0 <= seed < 2 ** 32 or mode not in ("single", "paired", "continuous") or side not in ("axis", "allies")):
-            raise RequestError("请选择有效的版本、种子、运行方式和阵营。")
-        option = self.versions.options[version]
-        weights = edited_weights(option["defaults"], data.get("values", {}))
-        core = self.versions.core(version)
+        seed, mode = data.get("seed"), data.get("mode")
+        if type(seed) is not int or not 0 <= seed < 2 ** 32 or mode not in ("single", "paired", "continuous"):
+            raise RequestError("请选择有效的种子和运行方式。")
+        configs = self.configurations(data.get("configs"))
+        paths = self.policy_paths(configs)
+        option = self.versions.options["current"]
+        core = self.versions.core("current")
         catalog = option["catalog"] or str(core / "data" / "architecture_fixture.json")
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:8]
         directory = self.output / run_id
         directory.mkdir(parents=True)
-        write_json(directory / "run.json", {"id": run_id, "version": version, "version_label": option["label"],
-            "commit": option["commit"], "seed": seed, "mode": mode, "first_team": side, "created_at": timestamp(),
-            "catalog": "本地六席卡库" if option["catalog"] else "合成测试场景", "rules_digest": option["rules_digest"]})
         write_json(directory / "status.json", {"state": "starting", "control_revision": 0, "weights_revision": 0,
-            "step": 0, "completed": 0, "match": None, "weights": weights})
-        write_json(directory / "control.json", {"action": "run", "revision": 1, "weights": weights})
+            "step": 0, "completed": 0, "match": None, "configs": configs})
+        write_json(directory / "control.json", {"action": "run", "revision": 1, "configs": configs, "paths": paths})
+        write_json(directory / "run.json", {"id": run_id, "seed": seed, "mode": mode, "created_at": timestamp(),
+            "version_label": "轴心 " + configs["axis"]["version"] + " " + configs["axis"]["policy"] +
+                " / 同盟 " + configs["allies"]["version"] + " " + configs["allies"]["policy"],
+            "referee_commit": option["commit"], "catalog": "本地六席卡库" if option["catalog"] else "合成测试场景",
+            "rules_digest": option["rules_digest"]})
         try:
             with (directory / "worker.log").open("ab") as output:
                 worker = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ai_debug_worker.py")),
@@ -310,8 +334,10 @@ class DebugPanel:
         if action in ("resume", "weights", "step"):
             if status["state"] != "paused" or "requested" in status:
                 raise RequestError("请等测试暂停后再修改参数或单步执行。", HTTPStatus.CONFLICT)
-            default = self.versions.options[read_json(directory / "run.json")["version"]]["defaults"]
-            request["weights"] = edited_weights(status.get("weights") or default, data.get("values", {}))
+            configs = status["configs"]
+            if "configs" in data:
+                configs = self.configurations(data["configs"], configs)
+            request.update(configs=configs, paths=self.policy_paths(configs))
         request.update(action={"pause": "pause", "resume": "run", "weights": "pause", "stop": "stop", "step": "step"}[action],
                        revision=request["revision"] + 1)
         write_json(directory / "control.json", request)

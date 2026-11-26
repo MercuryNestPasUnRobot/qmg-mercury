@@ -13,7 +13,11 @@ import pytest
 
 from qmg_core import ai_debug
 from qmg_core.ai_debug import DebugPanel, RequestError, VersionRegistry, edited_weights, handler_for, log_window
+from qmg_core.ai_debug_worker import PolicyClient
+from qmg_core.api import CoreAPI
 from qmg_core.definitions import RuleSet
+from qmg_core.engine import CommandProcessor
+from qmg_core.model import zone
 
 
 def eventually(predicate):
@@ -33,22 +37,51 @@ class SyntheticVersion:
         catalog.write_text(json.dumps(rules.data), encoding="utf-8")
         self.defaults = json.loads(Path("data/ai_test_weights.json").read_text(encoding="utf-8"))
         self.defaults["max_simulation_nodes"] = 16
-        self.options = {"v1-test": {"label": "验证版本", "defaults": self.defaults, "catalog": str(catalog),
-                                    "commit": None, "rules_digest": rules.fingerprint}}
+        self.options = {version: {"label": version, "defaults": self.defaults, "catalog": str(catalog),
+                                  "commit": version, "rules_digest": rules.fingerprint}
+                        for version in ("current", "v1-test")}
 
     def public(self):
         return [{"id": "v1-test", "label": "验证版本"}]
 
     def core(self, version):
-        assert version == "v1-test"
+        assert version in self.options
         return Path.cwd()
+
+
+def configs(axis=None, allies=None):
+    return {"axis": {"version": "current", "policy": "A", "values": axis or {}},
+            "allies": {"version": "v1-test", "policy": "B", "values": allies or {}}}
+
+
+def test_policy_input_contains_only_the_acting_seats_observation(data):
+    processor = CommandProcessor.create(RuleSet(data), seed=31, game_id="seed-31")
+    client = CoreAPI(processor, ("germany",))
+    sent = {}
+    policy = PolicyClient.__new__(PolicyClient)
+
+    def exchange(payload):
+        sent.update(payload)
+        return {"command": payload["commands"][0], "row": {}}
+
+    policy.exchange = exchange
+    policy.decide(client, "germany")
+    assert sent["view"]["game_id"] == "debug-projection"
+    assert sent["view"]["history"] == []
+    assert sent["commands"] == client.legal_commands()
+    positions = sent["view"]["positions"]
+    assert positions[zone("germany", "HAND")]["tokens"]
+    assert "tokens" not in positions[zone("united-kingdom", "HAND")]
+    assert positions[zone("united-kingdom", "HAND")]["count"] > 0
+    assert "tokens" not in positions[zone("germany", "DECK")]
+    assert set(processor.state.positions[zone("united-kingdom", "HAND")]).isdisjoint(sent["view"]["tokens"])
 
 
 def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path, data):
     data["settings"].update(max_rounds=20, victory_margin=100000)
     panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
     try:
-        result = panel.start({"version": "v1-test", "seed": 31, "mode": "continuous", "first_team": "axis", "values": {}})
+        result = panel.start({"seed": 31, "mode": "continuous", "configs": configs()})
         run_id = result["run"]["id"]
         directory = panel.directory(run_id)
 
@@ -64,17 +97,20 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         eventually(lambda: status()["state"] == "paused")
         paused_at = status()["step"]
         assert paused_at >= 1
-        panel.control(run_id, "weights", {"values": {"scoring_units.vp": 0}})
+        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 3}, {"scoring_units.vp": 0})})
         eventually(lambda: status().get("error"))
         assert status()["step"] == paused_at and status()["weights_revision"] == 1
-        panel.control(run_id, "weights", {"values": {"scoring_units.vp": 2, "distance_weights.1": 0.9}})
+        assert status()["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 1
+        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "distance_weights.1": 0.9})})
         eventually(lambda: status()["weights_revision"] == 2)
         assert status()["step"] == paused_at and status()["state"] == "paused"
         initial = panel.board(run_id, 1)
         assert initial["step"] == paused_at and initial["regions"]
         assert len(initial["seats"]) == 6
         assert all(set(zones) == {"HAND", "STATUS", "DISABLED_STATUS", "RESPONSE"} for zones in initial["seats"].values())
-        panel.control(run_id, "step", {"values": {"scoring_units.action": 2.4}})
+        edited = configs({"scoring_units.action": 2.4})
+        edited["axis"].update(version="v1-test", policy="B")
+        panel.control(run_id, "step", {"configs": edited})
         stepped = eventually(lambda: status().get("last_step"))
         assert stepped["step"] == paused_at + 1
         sleep(0.25)
@@ -86,6 +122,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         assert row["settlement"]["scores_after"] == board["scores"]
         assert row["settlement"]["events"]
         assert row["weights_revision"] == 3
+        assert row["ai_version"] == "v1-test" and row["policy"] == "B"
         panel.control(run_id, "resume", {})
         eventually(lambda: status()["step"] > stepped["step"])
         panel.control(run_id, "stop", {})
@@ -97,10 +134,11 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         assert rows[paused_at]["version"] > rows[paused_at - 1]["version"]
         params = [json.loads(line) for line in (directory / "parameters.jsonl").read_text(encoding="utf-8").splitlines()]
         assert params[-1]["after_decision"] == paused_at
-        assert params[-1]["weights"]["scoring_units"]["vp"] == 2
-        assert params[-1]["weights"]["distance_weights"][1] == 0.9
-        assert params[-1]["weights"]["scoring_units"]["action"] == 2.4
-        assert rows[paused_at]["weights_digest"] == params[-1]["weights_digest"]
+        assert params[-2]["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 2
+        assert params[-2]["configs"]["axis"]["weights"]["distance_weights"][1] == 0.9
+        assert params[-1]["configs"]["axis"]["weights"]["scoring_units"]["action"] == 2.4
+        assert params[-1]["configs"]["allies"] == params[0]["configs"]["allies"]
+        assert rows[paused_at]["weights_digest"] == params[-1]["configs"][row["config_slot"]]["weights_digest"]
         assert DebugPanel(panel.output, panel.versions).list_runs()["runs"][0]["state"] == "stopped"
     finally:
         panel.close()
@@ -128,7 +166,7 @@ def test_continuous_run_switches_sides_before_incrementing_the_seed(tmp_path, da
     data["settings"].update(max_rounds=1, victory_margin=100000)
     panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
     try:
-        created = panel.start({"version": "v1-test", "seed": 31, "mode": "continuous", "first_team": "allies"})
+        created = panel.start({"seed": 31, "mode": "continuous", "configs": configs({"scoring_units.vp": 2.5})})
         key = created["run"]["id"]
 
         def games():
@@ -138,8 +176,12 @@ def test_continuous_run_switches_sides_before_incrementing_the_seed(tmp_path, da
 
         eventually(lambda: panel.detail(key)["status"]["state"] != "starting")
         results = eventually(games)
-        assert [(game["seed"], game["search_team"]) for game in results[:3]] == [
-            (31, "allies"), (31, "axis"), (32, "allies")]
+        assert [(game["seed"], game["swapped"]) for game in results[:3]] == [(31, False), (31, True), (32, False)]
+        folder = panel.directory(key)
+        rows = [log_window(folder / f"game-{number}.jsonl", limit=1000)["rows"][-1] for number in (1, 2, 3)]
+        assert [(row["team"], row["config_slot"], row["ai_version"], row["policy"]) for row in rows] == [
+            ("axis", "axis", "current", "A"), ("axis", "allies", "v1-test", "B"), ("axis", "axis", "current", "A")]
+        assert rows[0]["weights_digest"] == rows[2]["weights_digest"] != rows[1]["weights_digest"]
         panel.control(key, "stop", {})
         eventually(lambda: panel.detail(key)["status"]["state"] == "stopped")
     finally:

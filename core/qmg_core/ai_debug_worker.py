@@ -1,11 +1,15 @@
-"""Run a debug session in its selected Core version, isolated from the control panel."""
+"""Run a debug match with an authoritative Core and isolated versioned policies."""
 
+from dataclasses import fields
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 from time import perf_counter, sleep
 
+
+OPPONENT = {"axis": "allies", "allies": "axis"}
 
 def timestamp():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -106,14 +110,99 @@ def settlement(rules, records, before, after):
             "winner": after["winner"]}
 
 
+class PolicyClient:
+    def __init__(self, core, rules, config):
+        self.process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--policy", core],
+            cwd=core, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        try:
+            self.exchange({"rules": {**rules.data, "initial_tokens": []}, "weights": config["weights"],
+                           "policy": config["policy"]})
+        except (OSError, ValueError, RuntimeError):
+            self.close()
+            raise
+
+    def exchange(self, payload):
+        log_row(self.process.stdin, payload)
+        self.process.stdin.flush()
+        response = self.process.stdout.readline()
+        if not response:
+            raise RuntimeError("AI 决策进程意外退出。")
+        result = json.loads(response)
+        if "error" in result:
+            raise ValueError(result["error"])
+        return result
+
+    def decide(self, client, country):
+        view = client.observe(include_history=False)
+        result = self.exchange({"view": {**view, "game_id": "debug-projection"},
+                                "commands": client.legal_commands(), "country": country})
+        return result["command"], result["row"]
+
+    def close(self):
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdout.close()
+
+
+class SeatObservation:
+    def __init__(self, view, commands):
+        self.view = view
+        self.commands = commands
+
+    def observe(self, *, include_history=False):
+        return self.view
+
+    def legal_commands(self):
+        return self.commands
+
+
+def serve_policy(core):
+    sys.path.insert(0, core)
+    from qmg_core.ai_match_policy import DeadlineSearch, SeatPolicy
+    from qmg_core.definitions import RuleSet
+    from qmg_core.evaluation import ScoreEvaluator
+    from qmg_core.model import CoreError, TurnClock
+
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+    init = json.loads(sys.stdin.readline())
+    try:
+        rules = RuleSet(init["rules"], projected=True)
+        evaluator = ScoreEvaluator(rules, init["weights"])
+    except CoreError as error:
+        log_row(sys.stdout, {"error": str(error)})
+        return
+    search = DeadlineSearch(rules, init["weights"]) if init["policy"] == "B" else None
+    policies = {}
+    turn_fields = {field.name for field in fields(TurnClock)}
+    log_row(sys.stdout, {"ready": True})
+    try:
+        for line in sys.stdin:
+            request = json.loads(line)
+            country, view = request["country"], request["view"]
+            # Older simulators use the subset of the public clock they understand.
+            view["turn"] = {key: value for key, value in view["turn"].items() if key in turn_fields}
+            if country not in policies:
+                policies[country] = SeatPolicy(rules, evaluator=evaluator, search=search, width=3, budget_ms=3000)
+            client = SeatObservation(view, request["commands"])
+            command, row = policies[country].decide(client, country)
+            log_row(sys.stdout, {"command": command, "row": row})
+    finally:
+        if search is not None:
+            search.close()
+
+
 class DebugRun:
     def __init__(self, directory, rules):
         self.directory = directory
         self.rules = rules
         self.meta = read_json(directory / "run.json")
         self.progress = read_json(directory / "status.json")
-        self.weights = None
-        self.search = None
+        self.configs = None
         self.policies = {}
         self.error = None
 
@@ -121,41 +210,51 @@ class DebugRun:
         self.progress.update(changes)
         write_json(self.directory / "status.json", self.progress)
 
-    def install_weights(self, weights):
-        from qmg_core.ai_match_policy import DeadlineSearch, SeatPolicy
-        from qmg_core.evaluation import ScoreEvaluator
-        from qmg_core.model import TURN_ORDER, digest
+    def install_configs(self, request):
+        from qmg_core.model import digest
 
-        # Validate the whole profile in the exact version that will execute it.
-        evaluator = ScoreEvaluator(self.rules, weights)
-        if self.search is not None:
-            self.search.close()
-        self.search = DeadlineSearch(self.rules, weights)
-        self.policies = {seat: SeatPolicy(self.rules, evaluator=evaluator,
-            search=self.search if self.rules.team(seat) == self.progress["match"]["search_team"] else None,
-            width=3, budget_ms=3000) for seat in TURN_ORDER}
-        if self.weights != weights:
-            self.weights = weights
+        configs = request["configs"]
+        staged = {}
+        for team, config in configs.items():
+            if team in self.policies and self.configs[team] == config:
+                continue
+            try:
+                staged[team] = PolicyClient(request["paths"][config["version"]], self.rules, config)
+            except (OSError, ValueError, RuntimeError) as error:
+                for policy in staged.values():
+                    policy.close()
+                actual_team = OPPONENT[team] if self.progress["match"]["swapped"] else team
+                raise ValueError(("轴心" if actual_team == "axis" else "同盟") + " · " + str(error)) from error
+        for team, policy in staged.items():
+            if team in self.policies:
+                self.policies[team].close()
+            self.policies[team] = policy
+        if configs != self.configs:
+            self.configs = configs
             self.progress["weights_revision"] += 1
-            self.progress["weights"] = weights
+            self.progress["configs"] = configs
             with (self.directory / "parameters.jsonl").open("a", encoding="utf-8") as stream:
                 log_row(stream, {"at": timestamp(), "revision": self.progress["weights_revision"],
                     "game": self.progress["match"]["number"], "after_decision": self.progress["step"],
-                    "weights_digest": digest(weights), "weights": weights})
+                    "configs": {team: {**config, "weights_digest": digest(config["weights"])}
+                                for team, config in configs.items()}})
+
+    def close_policies(self):
+        for policy in self.policies.values():
+            policy.close()
+        self.policies.clear()
 
     def before_decision(self):
-        from qmg_core.model import CoreError
-
         while True:
             request = read_json(self.directory / "control.json")
             if request["action"] == "stop":
                 self.publish(state="stopped", control_revision=request["revision"], ended_at=timestamp())
                 return False
             if request["revision"] != self.progress["control_revision"]:
-                if request["weights"] != self.weights or self.search is None:
+                if request["configs"] != self.configs or not self.policies:
                     try:
-                        self.install_weights(request["weights"])
-                    except CoreError as error:
+                        self.install_configs(request)
+                    except ValueError as error:
                         self.error = str(error)
                     else:
                         self.error = None
@@ -165,17 +264,18 @@ class DebugRun:
                              state="paused" if request["action"] == "pause" or self.error else
                              "stepping" if request["action"] == "step" else "running")
             if self.progress["state"] != "paused":
-                if self.search is None:
-                    self.install_weights(self.weights)
+                if not self.policies:
+                    self.install_configs(request)
                 return True
             sleep(0.1)
 
-    def match(self, number, seed, side):
+    def match(self, number, seed):
         from qmg_core.api import CoreAPI
         from qmg_core.engine import CommandProcessor
         from qmg_core.model import CoreError, TURN_ORDER, digest
 
-        self.publish(match={"number": number, "seed": seed, "search_team": side}, step=0, round=1,
+        swapped = number % 2 == 0
+        self.publish(match={"number": number, "seed": seed, "swapped": swapped}, step=0, round=1,
                      phase="Setup", country=None, scores={"axis": 0, "allies": 0})
         started = perf_counter()
         game_id = f"{self.meta['id']}-{number}"
@@ -197,15 +297,19 @@ class DebugRun:
                 if self.progress["step"] >= 10000:
                     raise CoreError("本局超过 10000 步，已保留调试日志。")
                 client = clients[actor]
-                command, row = self.policies[actor].decide(client, actor)
+                team = self.rules.team(actor)
+                slot = OPPONENT[team] if swapped else team
+                config = self.configs[slot]
+                command, row = self.policies[slot].decide(client, actor)
                 before = view
                 cursor = len(processor.records)
                 client.apply(command)
                 view = judge.observe(include_history=False)
                 step = self.progress["step"] + 1
-                row.update(decision_index=step, policy="B" if self.rules.team(actor) == side else "A",
+                row.update(decision_index=step, team=team, config_slot=slot, policy=config["policy"],
+                           ai_version=config["version"], ai_commit=config["commit"],
                            active_country=active, seed=seed, game_id=game_id, names=decision_names(self.rules, row),
-                           weights_revision=self.progress["weights_revision"], weights_digest=digest(self.weights),
+                           weights_revision=self.progress["weights_revision"], weights_digest=digest(config["weights"]),
                            scores=view["scores"], settlement=settlement(self.rules, processor.records[cursor:], before, view))
                 log_row(stream, row)
                 write_json(board_file, board_snapshot(self.rules, view, number, step))
@@ -225,25 +329,21 @@ class DebugRun:
 
     def run(self):
         seed = self.meta["seed"]
-        side = self.meta["first_team"]
         try:
             number = 1
-            while self.match(number, seed, side):
+            while self.match(number, seed):
                 if self.meta["mode"] == "single" or (self.meta["mode"] == "paired" and number == 2):
                     self.publish(state="completed", ended_at=timestamp())
                     break
                 if not self.before_decision():
                     break
                 # New games get fresh plans, even when the scoring weights are unchanged.
-                self.search.close()
-                self.search = None
+                self.close_policies()
                 number += 1
-                side = "allies" if side == "axis" else "axis"
                 if number % 2 == 1:
                     seed = (seed + 1) % (2 ** 32)
         finally:
-            if self.search is not None:
-                self.search.close()
+            self.close_policies()
 
 
 def main():
@@ -267,4 +367,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1] == "--policy":
+        serve_policy(sys.argv[2])
+    else:
+        main()
