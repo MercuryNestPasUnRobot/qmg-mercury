@@ -20,6 +20,7 @@ from .response_scoring import is_delayed
 from .status_scoring import STATUS_FORECAST_DEFAULTS, ability_airdrop, is_airdrop, is_status, verify_status
 from .rules import LegalActionGenerator, MapGraph, SupplyResolver, board_units
 from .score_units import ACTION_SUPPORT_EFFECTS, PLAY_OPPORTUNITY_COMMANDS, ScoreUnits, VALUED_ACTIONS, equivalent_action
+from .search_cache import SearchCache, army_reserve_heads, board_dependencies, cached_score, card_dependencies
 from .settlement_scoring import PositionValue, SettlementScorer
 
 
@@ -318,9 +319,35 @@ class ScoreEvaluator:
         survivors = tuple((piece.token_id, piece.owner_country) for piece in pieces)
         if state.winner:
             return PositionValue(actual, 0, 0, 0, self.units.vp_score(actual), terminal, (), (), 0, 0, survivors)
-
+        if deadline is not None and perf_counter() >= deadline:
+            raise TimeoutError("Projected search exceeded its deadline")
         economy = self.economic_from_state(rules, state)
-        routes = economy.routes
+        cache = rules.search_cache
+        board_key = map_key = cards_key = resources_key = None
+        if cache is not None:
+            board_key = own, board_dependencies(rules, state, pieces)
+            map_key = (board_key, state.turn.round_id, state.turn.phase, army_reserve_heads(rules, state),
+                       frozenset((airdrops or {}).items()), frozenset(placements))
+            if not state.stack and state.decision is None:
+                cards_key = own, card_dependencies(state)
+            resources_key = (own, economy.horizon, state.turn.round_id, state.turn.country_index,
+                             state.turn.phase, state.turn.plays_remaining,
+                             tuple((economy.count(seat, "HAND"), economy.count(seat, "DECK")) for seat in TURN_ORDER))
+        map_score, points, influences = cached_score(
+            cache.map_scores if cache is not None else None, map_key,
+            lambda: self.map_terms(rules, pieces, economy.routes, sign, airdrops, placements, deadline))
+        stability = cached_score(cache.supply_scores if cache is not None else None, board_key,
+                                 lambda: economy.routes.supply_stability.value(country))
+        cards = cached_score(cache.card_scores if cards_key is not None else None, cards_key,
+                              lambda: self.card_score(rules, state, economy, sign, deadline))
+        resources = cached_score(cache.resource_scores if cache is not None else None, resources_key,
+                                  lambda: -sum(sign(seat) * economy.future_loss(seat) for seat in TURN_ORDER))
+        map_value = map_score + stability
+        return PositionValue(actual, map_value, cards, resources,
+                             self.units.vp_score(actual) + map_value + cards + resources, terminal,
+                             points, influences, 0, 0, survivors, supply_stability=stability)
+
+    def map_terms(self, rules, pieces, routes, sign, airdrops, placements, deadline):
         points, influences = defaultdict(float), []
         air_stock = placement_value = 0
         for piece in pieces:
@@ -338,11 +365,12 @@ class ScoreEvaluator:
                 placement_value += sign(owner) * (sum(tactical.values()) - sum(terms.values()))
             if rules.units[piece.definition_id]["kind"] == "AIR":
                 air_stock += sign(owner) * self.units.action
-        stability = routes.supply_stability.value(country)
-        map_value = sum(points.values()) + air_stock + placement_value + stability
+        return (sum(points.values()) + air_stock + placement_value,
+                tuple({"site": site, "value": value} for site, value in points.items()), tuple(influences))
 
+    def card_score(self, rules, state, economy, sign, deadline):
         legal = LegalActionGenerator(rules)
-        cards, resources = 0.0, 0.0
+        cards = 0.0
         for seat in TURN_ORDER:
             if deadline is not None and perf_counter() >= deadline:
                 raise TimeoutError("Projected search exceeded its deadline")
@@ -363,11 +391,7 @@ class ScoreEvaluator:
             if economy.status_weights and (state.positions[zone(seat, "STATUS")] or
                                            state.positions.get(zone(seat, "DISABLED_STATUS"))):
                 cards += direction * sum(economy.statuses.portfolio(seat, True).values())
-            resources -= direction * economy.future_loss(seat)
-        return PositionValue(actual, map_value, cards, resources,
-                             self.units.vp_score(actual) + map_value + cards + resources, terminal,
-                             tuple({"site": site, "value": value} for site, value in points.items()),
-                             tuple(influences), 0, 0, survivors, supply_stability=stability)
+        return cards
 
     def hand_average(self, rules, state, country, economy):
         hand = state.positions[zone(country, "HAND")]
@@ -686,6 +710,8 @@ class OneStepPlanner:
     def iter_rank(self, client, country, *, deadline=None):
         view = client.observe()
         root = simulation_from_observation(self.evaluator.rules, view, search_projection=True)
+        if self.evaluator.unified_scoring:
+            root.rules.search_cache = SearchCache()
         root_state = root.state
         baseline = root_state
         if self.evaluator.unified_scoring and not baseline.winner:
@@ -807,6 +833,9 @@ class OneStepPlanner:
                 projected["positions"][pool]["tokens"].append(key)
                 projected["positions"][pool]["count"] += 1
             stock = simulation_from_observation(self.evaluator.rules, projected, search_projection=True)
+            if root.rules.search_cache is not None:
+                # The representative card instances do not change the rules of the map.
+                stock.rules.search_cache = root.rules.search_cache
         stock_state = stock.state
         original_board = frozenset(t.token_id for t in board_units(rules, state)) if self.evaluator.settlement else frozenset()
         cycling = self.evaluator.cycle_value(economy, country, view["reallocation"]["cost"], retention) if not marginal else {}
