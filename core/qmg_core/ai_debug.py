@@ -20,6 +20,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from .ai_debug_worker import read_json, timestamp, write_json
+from .ai_match_policy import DEFAULT_BUDGET_MS
 from .definitions import RuleSet
 from .map_variants import correct_saved_connections, map_layout, match_rules
 from .model import CoreError, zone
@@ -273,6 +274,7 @@ class VersionRegistry:
 
     def public(self):
         return [{k: row[k] for k in ("id", "label", "commit", "pinned")} | {
+            "budget_ms": DEFAULT_BUDGET_MS,
             "catalog": "本地六席卡库" if row["catalog"] else "合成测试场景",
             "inactive_fields": [field["key"] for field in numeric_fields(row["defaults"], inactive=True)],
             "fields": numeric_fields(row["defaults"]), "linked_fields": linked_fields(row["defaults"])}
@@ -473,11 +475,16 @@ class DebugPanel:
             "version_label": "轴心 " + configs["axis"]["version"] + " " + configs["axis"]["policy"] +
                 " / 同盟 " + configs["allies"]["version"] + " " + configs["allies"]["policy"],
             "referee_commit": option["commit"], "catalog": "本地六席卡库" if option["catalog"] else "合成测试场景",
-            "rules_digest": rules.fingerprint, "map": {key: selected_map[key] for key in ("id", "name")}})
+            "rules_digest": rules.fingerprint, "budget_ms": DEFAULT_BUDGET_MS,
+            "map": {key: selected_map[key] for key in ("id", "name")}})
         try:
             with (directory / "worker.log").open("ab") as output:
                 worker = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("ai_debug_worker.py")),
-                    str(directory), str(core), str(self.catalog)], stdin=subprocess.DEVNULL, stdout=output, stderr=output, cwd=core)
+                    str(directory), str(core)], stdin=subprocess.PIPE, stdout=output, stderr=output,
+                    cwd=core, text=True, encoding="utf-8")
+                # Both processes use the same reviewed rules and selected map, even if files change.
+                with worker.stdin:
+                    worker.stdin.write(json.dumps(rules.data, ensure_ascii=False, allow_nan=False))
         except OSError:
             status = read_json(directory / "status.json")
             write_json(directory / "status.json", {**status, "state": "failed", "error": "无法启动本地调试进程。"})

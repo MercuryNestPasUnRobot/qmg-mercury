@@ -9,6 +9,7 @@ from threading import Condition, Thread
 from uuid import uuid4
 
 from .ai_debug_worker import PolicyClient, board_snapshot, log_row, write_json
+from .ai_match_policy import DEFAULT_BUDGET_MS
 from .api import CoreAPI
 from .engine import CommandProcessor
 from .evaluation import ScoreEvaluator
@@ -177,10 +178,10 @@ class PlayerGame:
                 "human": self.human, "seats": {self.human: "human", **{seat: cfg["policy"] for seat, cfg in info["configs"].items()}},
                 "decisions_by_seat": dict(counts), "record_head": processor.record_head, "decision_log": log.name}
         note = f"{COUNTRIES[self.human]} · 玩家视角 · {info['map']}"
-        write_json(self.folder / "summary.json", {"rules_digest": self.rules.fingerprint, "games": [game], "budget_ms": 3000,
+        write_json(self.folder / "summary.json", {"rules_digest": self.rules.fingerprint, "games": [game], "budget_ms": DEFAULT_BUDGET_MS,
                   "replay": {"name": info["name"], "ai_version": info["ai_label"], "ai_note": note}})
         batch = ReplayBatch(self.library, self.folder, self.rules, name=info["name"], version=info["ai_label"],
-                            note=note, settings={"budget_ms": 3000})
+                            note=note, settings={"budget_ms": DEFAULT_BUDGET_MS})
         tape = replay_game(self.rules, game, log, perspective=self.human)
         key = batch.add(game, tape)
         return f"/replays/batches/{batch.key}/{key}.html"

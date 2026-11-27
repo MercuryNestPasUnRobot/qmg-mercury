@@ -26,7 +26,7 @@ EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle
                    "battle-series": 1.3, "choose-unit": 1.2, "air-action": 1.0,
                    "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
 BATTLE_BUILD = {"LAND_BATTLE": "BUILD_ARMY", "SEA_BATTLE": "BUILD_NAVY"}
-DEFAULT_BUDGET_MS = 3000
+DEFAULT_BUDGET_MS = 4000
 
 
 def operation_priority(kind, units):
