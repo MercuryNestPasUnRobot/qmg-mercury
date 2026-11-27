@@ -194,7 +194,7 @@ def serve_policy(core):
             # Older simulators use the subset of the public clock they understand.
             view["turn"] = {key: value for key, value in view["turn"].items() if key in turn_fields}
             if country not in policies:
-                policies[country] = SeatPolicy(rules, evaluator=evaluator, search=search, width=3, budget_ms=init["budget_ms"])
+                policies[country] = SeatPolicy(rules, evaluator=evaluator, search=search, budget_ms=init["budget_ms"])
             client = SeatObservation(view, request["commands"])
             command, row = policies[country].decide(client, country)
             log_row(sys.stdout, {"command": command, "row": row})

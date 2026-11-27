@@ -8,7 +8,7 @@ from pathlib import Path
 from statistics import mean, median
 from time import perf_counter
 
-from .ai_match_policy import DEFAULT_BUDGET_MS, DeadlineSearch, SeatPolicy
+from .ai_match_policy import DEFAULT_BUDGET_MS, DEFAULT_MATCH_NODES, DEFAULT_SHORTLIST_WIDTH, DeadlineSearch, SeatPolicy, profile_version
 from .api import CoreAPI
 from .definitions import RuleSet
 from .engine import CommandProcessor
@@ -138,14 +138,14 @@ def main():
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--seeds", type=int, nargs="+", default=[31, 73, 127])
     parser.add_argument("--budget-ms", type=float, default=DEFAULT_BUDGET_MS)
-    parser.add_argument("--width", type=int, default=3)
-    parser.add_argument("--nodes", type=int, default=16)
+    parser.add_argument("--width", type=int, default=DEFAULT_SHORTLIST_WIDTH)
+    parser.add_argument("--nodes", type=int, default=DEFAULT_MATCH_NODES)
     parser.add_argument("--command-limit", type=int, default=10000)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--replay-library", type=Path, default=LIBRARY)
     parser.add_argument("--name", help="Readable batch name in the replay library")
-    parser.add_argument("--ai-version", default="AI 试验版 v1.26")
-    parser.add_argument("--ai-note", default="补给稳定计入建造、征召和攻击，持续规则按局面变化计价。")
+    parser.add_argument("--ai-version", help="Defaults to the workspace scoring profile version")
+    parser.add_argument("--ai-note", default="使用当前工作区的 AI 评分配置。")
     args = parser.parse_args()
     if not isfinite(args.budget_ms) or args.budget_ms <= 0 or args.width < 1 or args.command_limit < 1:
         parser.error("Budget, shortlist width and command limit must be positive")
@@ -154,10 +154,12 @@ def main():
     rules = RuleSet.load(args.catalog or DATA / "architecture_fixture.json")
     weights = json.loads((DATA / "ai_test_weights.json").read_text(encoding="utf-8"))
     weights["max_simulation_nodes"] = args.nodes
+    model = profile_version(weights)
+    version = args.ai_version or (f"AI 试验版 {model}" if model else "当前工作区")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     output = args.output or args.replay_library.parent / "ai-tests" / stamp
     batch = ReplayBatch(args.replay_library, output, rules,
-                        name=args.name or f"六席 AI · {output.name}", version=args.ai_version, note=args.ai_note,
+                        name=args.name or f"六席 AI · {output.name}", version=version, note=args.ai_note,
                         settings={"budget_ms": args.budget_ms, "shortlist_width": args.width,
                                   "nodes_per_candidate": args.nodes, "weights_digest": digest(weights)})
     report = run_matches(rules, weights, seeds=args.seeds, output=output, width=args.width, replay=batch,

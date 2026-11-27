@@ -69,7 +69,8 @@ function message(text, isError = false) {
 
 const slot = team => app.live?.status.match?.swapped ? opposite[team] : team;
 const draftFor = team => app.drafts[slot(team)];
-const caption = draft => draft ? `${draft.version === "current" ? "当前工作区" : draft.version} · ${draft.policy}` : "";
+const caption = draft => draft ? `${draft.label || (draft.version === "current" ?
+  app.versions.get(draft.version)?.label || "当前工作区" : draft.version)} · ${draft.policy}` : "";
 
 function preset(version, policy, weights) {
   const fields = app.versions.get(version).fields;
@@ -138,8 +139,8 @@ function renderEditor() {
       label.htmlFor = input.id = `score-${field.key}`;
       input.type = "number";
       input.step = field.integer ? "1" : "any";
-      input.min = "0";
-      input.max = "1000000";
+      input.min = String(field.min ?? 0);
+      input.max = String(field.max ?? 1000000);
       input.required = true;
       input.title = field.key;
       const link = field.link;
@@ -566,7 +567,9 @@ function checkedProfile(raw) {
     if (version.inactive_fields?.includes(key)) continue;
     const field = fields.get(key);
     if (!field) throw new Error(`此版本没有参数 ${key}。`);
-    if (!Number.isFinite(value) || value < 0 || value > 1e6 || (field.integer && !Number.isInteger(value))) {
+    const lower = field.min ?? 0;
+    if (!Number.isFinite(value) || value < lower || value > (field.max ?? 1e6) ||
+        (field.min_exclusive && value === lower) || (field.integer && !Number.isInteger(value))) {
       throw new Error(`${field.label}的数值无效。`);
     }
     result.values[key] = value;

@@ -7,7 +7,7 @@ from statistics import median
 from time import perf_counter
 
 from .api import CoreAPI
-from .ai_match_policy import CandidateView, RulePolicy
+from .ai_match_policy import DEFAULT_MATCH_NODES, DEFAULT_SHORTLIST_WIDTH, CandidateView, RulePolicy
 from .content_verify import settle_choices
 from .definitions import RuleSet
 from .engine import CommandProcessor
@@ -122,8 +122,8 @@ def main():
     parser.add_argument("--catalog", type=Path)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--cases", type=int, choices=range(1, 7), default=6)
-    parser.add_argument("--nodes", type=int, default=16)
-    parser.add_argument("--width", type=int, default=3)
+    parser.add_argument("--nodes", type=int, default=DEFAULT_MATCH_NODES)
+    parser.add_argument("--width", type=int, default=DEFAULT_SHORTLIST_WIDTH)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.width < 1:
