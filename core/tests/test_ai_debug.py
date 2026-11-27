@@ -13,7 +13,7 @@ import pytest
 
 from qmg_core import ai_debug
 from qmg_core.ai_debug import DebugPanel, RequestError, VersionRegistry, edited_weights, handler_for, log_window
-from qmg_core.ai_debug_worker import PolicyClient
+from qmg_core.ai_debug_worker import PolicyClient, SeatObservation
 from qmg_core.api import CoreAPI
 from qmg_core.definitions import RuleSet
 from qmg_core.engine import CommandProcessor
@@ -62,6 +62,7 @@ def test_policy_input_contains_only_the_acting_seats_observation(data):
     client = CoreAPI(processor, ("germany",))
     sent = {}
     policy = PolicyClient.__new__(PolicyClient)
+    policy.supports_move_air = True
 
     def exchange(payload):
         sent.update(payload)
@@ -78,6 +79,21 @@ def test_policy_input_contains_only_the_acting_seats_observation(data):
     assert positions[zone("united-kingdom", "HAND")]["count"] > 0
     assert "tokens" not in positions[zone("germany", "DECK")]
     assert set(processor.state.positions[zone("united-kingdom", "HAND")]).isdisjoint(sent["view"]["tokens"])
+
+
+@pytest.mark.parametrize("supports_move_air", [False, True])
+def test_pinned_policy_receives_the_air_actions_its_runtime_supports(supports_move_air):
+    policy = PolicyClient.__new__(PolicyClient)
+    policy.supports_move_air = supports_move_air
+    end = {"type": "END_PHASE", "actor": "germany"}
+    move = {"type": "MOVE_AIR", "actor": "germany"}
+
+    def exchange(payload):
+        assert payload["commands"] == ([end, move] if supports_move_air else [end])
+        return {"command": end, "row": {}}
+
+    policy.exchange = exchange
+    policy.decide(SeatObservation({}, [end, move]), "germany")
 
 
 def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path, data):

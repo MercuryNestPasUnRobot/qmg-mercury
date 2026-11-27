@@ -39,6 +39,9 @@ TEAMS = ("axis", "allies")
 DISCARD_CATALOG = "7a65cda6bc6de0beac8b13e53934b247f5c2ed6449201ec0527bb32fb92604df"
 VERSIONS = {
     "current": ("当前工作区", None, DISCARD_CATALOG),
+    "v1.29": ("v1.29 · A/B 统一评分", "09e4db258b4caadcfca38291fe6a9c9cd74ce5d6", DISCARD_CATALOG),
+    "v1.28": ("v1.28 · 区域攻防与空军", "e52d2061ba2984827fed835ebb1e917695a7996d", DISCARD_CATALOG),
+    "v1.27": ("v1.27 · 大本营与分点评分", "53a3ca4ad4ab45b504ed5fd81af72c31b2764810", DISCARD_CATALOG),
     "v1.26": ("v1.26 · 基础值联动", "fc48f21d38cf8df5cf2cf79dbf4267aaab8c73d0", DISCARD_CATALOG),
     "v1.25": ("v1.25 · 持续规则与补给", "9aeaa3f3de6b50576415eee7513fecbcf3541b3f", DISCARD_CATALOG),
     "v1.24": ("v1.24 · 就绪能力时机", "872d7720e5dd3391a63ae5061baef690465051e3", DISCARD_CATALOG),

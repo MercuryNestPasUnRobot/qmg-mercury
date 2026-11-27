@@ -114,12 +114,12 @@ class PolicyClient:
     def __init__(self, core, rules, config):
         from qmg_core.ai_match_policy import DEFAULT_BUDGET_MS
 
-        self.legacy_policy = config.get("version", "current") != "current"
         self.process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--policy", core],
             cwd=core, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
         try:
-            self.exchange({"rules": {**rules.data, "initial_tokens": []}, "weights": config["weights"],
-                           "policy": config["policy"], "budget_ms": DEFAULT_BUDGET_MS})
+            ready = self.exchange({"rules": {**rules.data, "initial_tokens": []}, "weights": config["weights"],
+                                   "policy": config["policy"], "budget_ms": DEFAULT_BUDGET_MS})
+            self.supports_move_air = ready["supports_move_air"]
         except (OSError, ValueError, RuntimeError):
             self.close()
             raise
@@ -138,7 +138,7 @@ class PolicyClient:
     def decide(self, client, country):
         view = client.observe(include_history=False)
         commands = client.legal_commands()
-        if getattr(self, "legacy_policy", False):
+        if not self.supports_move_air:
             commands = [command for command in commands if command["type"] != "MOVE_AIR"]
         result = self.exchange({"view": {**view, "game_id": "debug-projection"},
                                 "commands": commands, "country": country})
@@ -168,6 +168,7 @@ class SeatObservation:
 
 def serve_policy(core):
     sys.path.insert(0, core)
+    from qmg_core import air
     from qmg_core.ai_match_policy import DeadlineSearch, SeatPolicy
     from qmg_core.definitions import RuleSet
     from qmg_core.evaluation import ScoreEvaluator
@@ -185,7 +186,7 @@ def serve_policy(core):
     search = DeadlineSearch(rules, init["weights"]) if init["policy"] == "B" else None
     policies = {}
     turn_fields = {field.name for field in fields(TurnClock)}
-    log_row(sys.stdout, {"ready": True})
+    log_row(sys.stdout, {"ready": True, "supports_move_air": hasattr(air, "phase_air_effect")})
     try:
         for line in sys.stdin:
             request = json.loads(line)
