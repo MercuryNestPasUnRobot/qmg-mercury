@@ -179,7 +179,9 @@ def test_air_uses_position_value_and_pays_once_without_earning_site_vp(data):
     client = CoreAPI(game, ("germany",))
     end_phase(game)
     command = next(c for c in client.legal_commands() if c["type"] == "USE_AIR")
-    paper, settled = score_play(game, client, command, profile())
+    weights = profile()
+    weights["scoring_units"]["supply_stability"] = 0
+    paper, settled = score_play(game, client, command, weights)
     assert paper["action_cost"] == settled["action_cost"] == -2
     assert settled["map_delta"] > 0
     assert paper["rule_score"] == pytest.approx(settled["q"])
@@ -203,5 +205,5 @@ def test_b_applies_friendly_penalties_to_half_site_forecast_while_core_pays_per_
         values.append(score.map_value - score.supply_stability)
         resolver = ScoreResolver(game.rules)
         actual_income.append(sum(resolver.sites(game.state, force).get("A", 0) for force in ("germany", "italy")))
-    assert values == [4, 2]
+    assert values == [4, 0]
     assert actual_income == [1, 2]

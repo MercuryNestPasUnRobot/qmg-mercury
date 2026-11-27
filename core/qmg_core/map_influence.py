@@ -20,6 +20,9 @@ class ScoringRoutes:
         self.rules = rules
         self.state = state
         self.weights = weights
+        self.include_connections = include_connections
+        self.unified_scoring = all(weights.get(key, False) for key in (
+            "unified_scoring", "action_distance_scoring", "action_opportunity_scoring", "settlement_scoring"))
         self.config = weights["route_forecast"]
         self.frontier = weights.get("frontier_scoring")
         self.units = ScoreUnits.from_weights(weights)
@@ -58,6 +61,7 @@ class ScoringRoutes:
         self.removal_routes = {}
         self.stability_changes = {}
         self.anchor_changes = {}
+        self.unit_projections = {}
         self.status_forecast = status_forecast
         self.position = (ActionDistanceScoring(rules, state, pieces, self.locations, self.units,
                                               self.config["nearest_sites"], include_connections=include_connections,
@@ -208,7 +212,8 @@ class ScoringRoutes:
             force = victim.owner_country
             reserve = zone(force, "RESERVE_" + self.rules.units[victim.definition_id]["kind"])
             anchors = self.source_anchor_delta(force, token_id, lambda: self.move_projection(token_id, reserve))
-            position = self.position.value(force, victim.position_id, excluded=token_id)
+            position = (self.unit_position_value(victim) if self.unified_scoring else
+                        self.position.value(force, victim.position_id, excluded=token_id))
             return self.units.linked("unit_removal", self.units.action) + status_value + self.removal_stability(token_id) + position - anchors
         return self._without_unit(token_id).target_value(
             victim.owner_country, victim.position_id, construction=True, local_only=local_only)
@@ -273,6 +278,34 @@ class ScoringRoutes:
                         source: list(self.state.positions[source]), destination: list(self.state.positions[destination])})
         ZoneRegistry.transfer(moved, token_id, destination)
         return moved
+
+    def unit_position_value(self, token, destination=None):
+        return sum(self.unit_position_terms(token, destination).values())
+
+    def unit_position_terms(self, token, destination=None, *, distance_offset=0, enemy_attraction=False):
+        force = token.owner_country
+        kind = self.rules.units[token.definition_id]["kind"]
+        region = destination if destination is not None else token.position_id
+        if region not in self.rules.regions:
+            return {}
+        position = self.position
+        if token.position_id in self.rules.regions:
+            if token.token_id not in self.unit_projections:
+                # Removing the piece also removes its port, strait and presence effects.
+                reserve = zone(force, "RESERVE_" + kind)
+                state = self.move_projection(token.token_id, reserve)
+                pieces = [piece for piece in self.pieces if piece.token_id != token.token_id]
+                self.unit_projections[token.token_id] = ActionDistanceScoring(
+                    self.rules, state, pieces, self.locations, self.units, self.config["nearest_sites"],
+                    include_connections=self.include_connections, construction_rules=position.construction_rules,
+                    stacked_sites=position.stacked_sites, regional_defense=position.regional_defense)
+            position = self.unit_projections[token.token_id]
+        air = kind == "AIR"
+        sites = position.site_values(force, region, construction=not air, distance_offset=distance_offset, air=air,
+                                     enemy_attraction=enemy_attraction)
+        homes = position.home_values(force, region, construction=not air, distance_offset=distance_offset)
+        return {**{site: value for site, (_, value) in sites.items()},
+                **{"home:" + owner: value for owner, value in homes.items()}}
 
     def source_movement_value(self, seat, token, region):
         value = self.position.source_move(seat, token, region)
@@ -391,9 +424,12 @@ class ScoringRoutes:
 
     def move_value(self, force, region, token_id=None, *, air=False):
         old = self.state.tokens.get(token_id)
-        previous = (self.position.value(force, old.position_id, excluded=token_id, air=air)
-                    if old and old.position_id in self.rules.regions else 0)
-        value = self.position.value(force, region, excluded=token_id, air=air) - previous
+        if old and self.unified_scoring:
+            value = self.unit_position_value(old, region) - self.unit_position_value(old)
+        else:
+            previous = (self.position.value(force, old.position_id, excluded=token_id, air=air)
+                        if old and old.position_id in self.rules.regions else 0)
+            value = self.position.value(force, region, excluded=token_id, air=air) - previous
         if old and self.units.supply_stability:
             moved = self.move_projection(token_id, region)
             value += SupplyStability(self.rules, moved, self.units.supply_stability).value(force) - self.supply_stability.value(force)
@@ -410,7 +446,7 @@ class ScoringRoutes:
         action, token, region, victim = json.loads(option)
         if action == "superiority":
             return self.removal_value(victim) if victim else 0
-        if token is None and self.units.supply_stability:
+        if token is None and (self.units.supply_stability or self.unified_scoring):
             token = next(iter(self.state.positions[zone(force, "RESERVE_AIR")]), None)
         value = self.move_value(force, region, token, air=True)
         return value + (self.units.action if action == "deploy" and self.position.regional_defense else 0)

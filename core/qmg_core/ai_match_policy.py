@@ -205,12 +205,16 @@ class RulePolicy:
                 0.35 * sum(self.instructions(a["effects"], seat, economy) for a in abilities if a not in airdrop))
 
     def discard_value(self, card, seat, economy, view, *, key=None):
-        cost = self.evaluator.basic_discard_cost(view, seat, card) if self.evaluator else 0
-        if key and economy and self.evaluator.marginal_opportunity:
-            cost += economy.routes.expansion_discard_cost(seat, (key,))
+        cost = self.evaluator.discard_scarcity(view, seat, card, economy, key) if self.evaluator else 0
         if self.units.enabled:
             cost += self.units.card
-        return -max(0, self.card_value(card, seat, economy)) - cost
+        if economy and self.evaluator and self.evaluator.unified_scoring:
+            state = economy.visible_state()
+            potential = self.evaluator.known_card_potential(
+                self.rules, state, seat, card, LegalActionGenerator(self.rules), economy)
+        else:
+            potential = max(0, self.card_value(card, seat, economy))
+        return -potential - cost
 
     def discard_phase_options(self, view, seat, economy, retention, *, draw_slot, replacement):
         if not retention:
@@ -838,12 +842,14 @@ class SeatPolicy:
         if not commands or any(c["actor"] != country for c in commands):
             raise CoreError("No legal action for the AI seat")
         phase = view["turn"]["phase"]
+        shared = bool(self.rule.evaluator and self.rule.evaluator.unified_scoring)
         compare_exchange = bool(self.search and self.rule.evaluator and self.rule.evaluator.settlement and
                                 phase == "Play" and any(c["type"] == "REALLOCATE" for c in commands))
         ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(2.1, self.budget_ms * 0.00075),
                                 verify_recruitment=not compare_exchange)
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
         preferred = paper_play_choices(ranked, mandatory)
+        shortlist = ranked if shared else preferred
         manual = next((row["command"] for row in ranked if row.get("immediate_response")), None)
         response_choice = any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in ranked)
         chosen = preferred[0]["command"]
@@ -889,9 +895,9 @@ class SeatPolicy:
                 status = "pending-choice"
             else:
                 self.plan = []
-                eligible = [r["command"] for r in preferred
+                eligible = [r["command"] for r in shortlist
                             if r["command"]["type"] != "ACTIVATE_CARD" and not r.get("no_air_target") and
-                            (r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE" or
+                            (shared or r["rule_score"] >= -1 or r["command"]["type"] == "REALLOCATE" or
                              (r.get("action_cost") and r["command"]["type"] in ("USE_AIR", "MOVE_AIR")) or
                              (mandatory and r["command"]["type"] in ("PLAY_CARD", "USE_STATUS")))]
                 if len(eligible) > 1 or (mandatory and any(c["type"] in ("PLAY_CARD", "USE_STATUS") for c in eligible)):
@@ -909,7 +915,7 @@ class SeatPolicy:
                     # Reserve a small part of the total budget for choosing and recording the result.
                     reserve_ms = min(75, self.budget_ms * 0.05)
                     verified = {tuple(sorted(row["command"].items())): row["recruitment_result"]
-                                for row in preferred if "recruitment_result" in row}
+                                for row in shortlist if "recruitment_result" in row}
                     pending = []
                     for command in tried:
                         existing = verified.get(tuple(sorted(command.items())))
@@ -931,7 +937,7 @@ class SeatPolicy:
                     selected = max((row for row in completed if acceptable_play(row, mandatory=mandatory)),
                                    key=candidate_key, default=None)
                     if selected is None and chosen in rejected:
-                        chosen = next(row["command"] for row in preferred if row["command"] not in rejected)
+                        chosen = next((row["command"] for row in shortlist if row["command"] not in rejected), chosen)
                     if selected:
                         mode, chosen = "search", selected["command"]
                         if selected.get("reallocation"):

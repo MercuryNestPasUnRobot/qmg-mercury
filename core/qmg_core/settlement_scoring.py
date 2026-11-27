@@ -35,11 +35,12 @@ class PositionValue:
 
 
 class SettlementScorer:
-    def __init__(self, units, expansion_vp=0, *, location_weights=None, economy_factory=None):
+    def __init__(self, units, expansion_vp=0, *, location_weights=None, economy_factory=None, snapshot_value=None):
         self.units = units
         self.expansion_value = units.linked("expansion", units.vp_score(expansion_vp))
         self.location_weights = location_weights
         self.economy_factory = economy_factory
+        self.snapshot_value = snapshot_value
 
     @staticmethod
     def closing_positions(rules, settled, deadline):
@@ -166,8 +167,12 @@ class SettlementScorer:
         return fixed
 
     def value(self, processor, country, *, initial_units=None, direct_removals=(), constructed=(), recruited=(), played_card=None,
-              card_event_value=0, deadline=None, airdrops=None):
+              card_event_value=0, deadline=None, airdrops=None, project_cleanup=False, played_potential=0):
         state, rules = processor.state, processor.rules
+        if self.snapshot_value:
+            return self.projected_value(rules, state, country, initial_units, direct_removals, constructed,
+                                        recruited, played_card, card_event_value, deadline, airdrops, project_cleanup,
+                                        played_potential)
         own = rules.team(country)
         enemy = "allies" if own == "axis" else "axis"
         actual = state.scores[own] - state.scores[enemy]
@@ -310,3 +315,44 @@ class SettlementScorer:
         return PositionValue(float(actual), map_value, cards, resources, self.units.vp_score(actual) + map_value + cards + resources,
                              terminal, points, (), removal, card_event_value, survivors, expansion, expansion_score,
                              temporary_vp, stability)
+
+    def projected_value(self, rules, state, country, initial_units, direct_removals, constructed, recruited,
+                        played_card, card_event_value, deadline, airdrops, project_cleanup, played_potential):
+        if state.winner or not project_cleanup:
+            return self.snapshot_value(rules, state, country, deadline=deadline)
+
+        board = {t.token_id: t for t in board_units(rules, state)}
+        pieces, supplies, closing_income = self.surviving_board(rules, state, deadline, recruited)
+        surviving = {t.token_id: t.owner_country for t in pieces}
+        team = rules.team(country)
+        sign = lambda owner: 1 if rules.team(owner) == team else -1
+        removal = -self.units.linked("unit_removal", self.units.action) * (
+            sum(sign(owner) for key, owner in (initial_units or {}).items() if key not in surviving) +
+            sum(sign(state.tokens[key].owner_country) for key in direct_removals
+                if key not in (initial_units or {}) and key not in board))
+        temporary_vp = 0
+        active = TURN_ORDER[state.turn.country_index]
+        if recruited and closing_income and state.turn.phase not in ("Victory", "Discard", "Draw"):
+            rates = ScoreResolver(rules).sites(state, active, pieces=pieces, supply_cache=supplies)
+            temporary_vp = sign(active) * sum(max(0, amount - rates.get(site, 0)) for site, amount in closing_income.items())
+        expansion = ()
+        if constructed and self.expansion_value:
+            origins = {t.position_id for t in pieces if t.token_id in constructed and t.owner_country == country}
+            if origins:
+                expansion = ConstructionNetwork(rules, state, country).score_sites(origins)
+
+        for key, region in (airdrops or {}).items():
+            # A response/status airdrop has the same location estimate used by A.
+            if key not in surviving and key in board and board[key].position_id == region:
+                ZoneRegistry.transfer(state, key, region)
+        value = self.snapshot_value(rules, state, country, airdrops=airdrops,
+                                    placements=set(constructed) | set(recruited), deadline=deadline)
+        map_adjustment = removal + self.units.site_score(temporary_vp) + len(expansion) * self.expansion_value
+        card_adjustment = card_event_value
+        if played_card and state.tokens[played_card].position_id != zone(country, "HAND"):
+            card_adjustment += self.units.card + played_potential
+        return replace(value, map_value=value.map_value + map_adjustment,
+                       card_value=value.card_value + card_adjustment, total=value.total + map_adjustment + card_adjustment,
+                       unit_removal_score=removal, card_event_value=card_event_value,
+                       surviving_units=tuple(surviving.items()), expansion_sites=expansion,
+                       expansion_score=len(expansion) * self.expansion_value, temporary_vp=temporary_vp)

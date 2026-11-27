@@ -6,6 +6,7 @@ from qmg_core.ai_match_policy import CandidateView, RulePolicy
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER
 from test_ai_match import profile
+from test_hand_retention import hand_only
 
 
 def test_shared_scoring_settles_one_point_per_allied_seat(data):
@@ -40,8 +41,9 @@ def test_a_and_b_prefer_new_income_over_sharing_an_allied_site(data):
     data["score_sites"] = [site for site in data["score_sites"] if site["id"] == "factory"]
     data["score_sites"].append({**data["score_sites"][0], "id": "open", "region": "B"})
     data["initial_tokens"] = [t for t in data["initial_tokens"] if t["token_type"] != "SCORE_SOURCE"]
-    data["connections"].extend([{"id": "approach", "a": "A", "b": "C"},
-                                 {"id": "threat", "a": "E", "b": "C"}])
+    data["connections"] = [{"id": "approach-open", "a": "A", "b": "B"},
+                           {"id": "approach-held", "a": "A", "b": "C"}]
+    hand_only(data, "g-build")
     move_initial(data, "italy-army-0", "C")
     engine = make(data)
     weights = profile()

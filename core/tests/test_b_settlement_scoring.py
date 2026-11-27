@@ -7,7 +7,6 @@ from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER, zone
 from qmg_core.rules import LegalActionGenerator, MapGraph, SupplyResolver
-from qmg_core.status_scoring import StatusForecast
 from test_action_distance_scoring import map_with_sites
 from test_ai_match import profile
 from test_hand_retention import hand_only
@@ -35,18 +34,23 @@ def paper_rank(processor, client, command):
     return row["rule_score"]
 
 
-def test_b_values_settlement_without_the_a_status_or_board_forecast(data, monkeypatch):
+def test_b_uses_the_shared_evaluator_only_at_the_start_and_end_of_a_candidate(data, monkeypatch):
     map_with_sites(data, [("A", "B"), ("B", "C")], ())
     game, client, play = deploy(data, [{"type": "points", "amount": 1, "side": "self"}])
 
-    def no_forecast(*_args, **_kwargs):
-        raise AssertionError("B should score the settled position using its own evaluator")
+    original = ScoreEvaluator.snapshot_value
+    observed = []
 
-    monkeypatch.setattr(StatusForecast, "portfolio", no_forecast)
-    monkeypatch.setattr(ScoreEvaluator, "_value", no_forecast)
+    def score_snapshot(self, rules, state, country, **kwargs):
+        assert state.decision is None
+        observed.append(state.scores["axis"])
+        return original(self, rules, state, country, **kwargs)
+
+    monkeypatch.setattr(ScoreEvaluator, "snapshot_value", score_snapshot)
     row = rank(game, client, play)
     assert row["actual_vp_delta"] == 1 and row["q"] == -1
     assert row["card_delta"] == row["resource_delta"] == 0
+    assert observed == [0, 1]
     assert game.state.scores["axis"] == 0
 
 
