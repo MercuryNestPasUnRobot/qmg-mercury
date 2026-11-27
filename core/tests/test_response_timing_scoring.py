@@ -211,7 +211,13 @@ def test_after_card_use_forecast_cannot_play_an_opponents_hidden_hand(data):
     response(data, "after-card-use", {"type": "points", "amount": 3, "side": "self"}, in_hand=True)
     game = make(data)
     scorer = evaluator(game)
-    hidden = scorer.economic_from_view(CoreAPI(game, ("germany",)).observe())
-    visible = scorer.economic_from_view(CoreAPI(game, ("germany", "united-kingdom")).observe())
+    hidden_view = CoreAPI(game, ("germany",)).observe()
+    visible_view = CoreAPI(game, ("germany", "united-kingdom")).observe()
+    hidden = scorer.economic_from_view(hidden_view)
+    visible = scorer.economic_from_view(visible_view)
     assert hidden.responses.staging("germany", "g-status")["activations"] == 0
     assert visible.responses.staging("germany", "g-status")["base"] == 3
+    policy = RulePolicy(game.rules, scorer)
+    candidate = game.rules.cards["g-noop"]
+    assert policy.discard_value(candidate, "germany", hidden, hidden_view) > policy.discard_value(
+        candidate, "germany", visible, visible_view)

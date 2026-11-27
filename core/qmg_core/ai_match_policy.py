@@ -211,7 +211,7 @@ class RulePolicy:
         if economy and self.evaluator and self.evaluator.unified_scoring:
             state = economy.visible_state()
             potential = self.evaluator.known_card_potential(
-                self.rules, state, seat, card, LegalActionGenerator(self.rules), economy)
+                economy.rules, state, seat, card, LegalActionGenerator(economy.rules), economy)
         else:
             potential = max(0, self.card_value(card, seat, economy))
         return -potential - cost
@@ -317,23 +317,23 @@ class RulePolicy:
         return None
 
     def deck_order_scores(self, order, seat, economy, view=None):
-        state = economy.visible_state()
+        rules, state = economy.rules, economy.visible_state()
         operations = list(order["known_operations"])
         if TURN_ORDER[state.turn.country_index] == seat and state.turn.phase == "Play" and state.turn.plays_remaining:
-            legal = LegalActionGenerator(self.rules)
+            legal = LegalActionGenerator(rules)
             plays = []
             for key in state.positions[zone(seat, "HAND")]:
                 token = state.tokens[key]
-                card = self.rules.cards.get(token.definition_id)
+                card = rules.cards.get(token.definition_id)
                 if card and legal.can_start_card(state, seat, card):
                     plays.append((self.play_card_value(card, seat, economy, spent_card=key), key, "PLAY_CARD", card["effects"]))
             for key in state.positions[zone(seat, "STATUS")]:
-                ability = self.rules.cards[state.tokens[key].definition_id].get("active_ability")
+                card = rules.cards[state.tokens[key].definition_id]
+                ability = card.get("active_ability")
                 if ability and any(token.source_token_id == key and token.definition_id == ability
                                    for token in (state.tokens[t] for t in state.positions[zone(seat, "ABILITY_READY")])):
-                    effects = self.rules.abilities[ability]["effects"]
-                    if legal.can_start_card(state, seat, {**self.rules.cards[state.tokens[key].definition_id],
-                                                        "effects": effects}, activating=True):
+                    effects = rules.abilities[ability]["effects"]
+                    if legal.can_start_card(state, seat, {**card, "effects": effects}, activating=True):
                         plays.append((self.instructions(effects, seat, economy, closeout=True) - self.units.action, key, "USE_STATUS", effects))
             if plays:
                 def choose_branch(options):
@@ -341,7 +341,7 @@ class RulePolicy:
                 _, key, kind, effects = max(plays, key=lambda play: (play[0], play[1]))
                 projected = self.projected_deck_operations(view, seat, key, kind) if view else None
                 operations.extend(projected if projected is not None else self_deck_operations(
-                    self.rules, state, seat, effects, choose_branch=choose_branch))
+                    rules, state, seat, effects, choose_branch=choose_branch))
         slot = order["selected"]
         discard = False
         for kind, count in operations:
@@ -391,7 +391,7 @@ class RulePolicy:
                     option not in decision["economic_targets_already_used"] and self.rules.team(option) != self.rules.team(seat)):
                 from .rules import RuleModifierResolver
 
-                modifiers = RuleModifierResolver(self.rules).resolve(economy.visible_state(), seat)
+                modifiers = RuleModifierResolver(economy.rules).resolve(economy.visible_state(), seat)
                 count = economy.economic_amount(seat, option, count, modifiers)
             return economy.mill(seat, option, count, ACTION_PRIORITY["GAIN_VP"], closeout=True)
         if option in ("confirm", "air", "discard-top"):
@@ -504,10 +504,10 @@ class RulePolicy:
 
             state = economy.visible_state()
             for force in {c["force"] for c in commands if c["type"] == "USE_AIR"}:
-                valid = air_options(self.rules, state, seat, phase_air_effect(force))
-                defensible[force] = defensive_air_options(self.rules, state, force, valid)
+                valid = air_options(economy.rules, state, seat, phase_air_effect(force))
+                defensible[force] = defensive_air_options(economy.rules, state, force, valid)
             if decision.get("phase_air_power"):
-                air_choices = set(defensive_air_options(self.rules, state, decision.get("air_force", seat), options))
+                air_choices = set(defensive_air_options(economy.rules, state, decision.get("air_force", seat), options))
         if economy and economy.map_weights and decision.get("map_force"):
             regions = {option: option.split("|", 1)[-1] for option in options}
             region_scores = {option: economy.routes.target_value(decision["map_force"], region,
