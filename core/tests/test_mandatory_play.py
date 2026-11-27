@@ -62,19 +62,20 @@ def test_empty_hand_costs_exactly_one_vp_and_consumes_the_play(data):
     assert [c["type"] for c in client.legal_commands()] == ["END_PHASE"]
 
 
-def test_ai_plays_the_highest_paper_card_despite_negative_simulation(data):
+def test_b_still_makes_a_mandatory_play_when_all_searched_options_are_negative(data):
     card(data, "g-vp")["effects"][0]["amount"] = 1
     p, client = start(data, "g-vp", "g-build")
     evaluator = ScoreEvaluator(p.rules, profile())
 
     class Search:
         def run(self, view, commands, country, deadline):
-            assert [(c["type"], c["card"]) for c in commands] == [("PLAY_CARD", "g-build")]
-            return [{"command": commands[0], "complete": True, "q": -0.1,
+            assert [(c["type"], c["card"]) for c in commands] == [("PLAY_CARD", "g-build"), ("PLAY_CARD", "g-vp")]
+            return [{"command": command, "complete": True, "q": score,
                      "terminal_rank": 0, "initial_card_score": -0.55,
-                     "continuations": [], "choice_signatures": []}], "finished"
+                     "continuations": [], "choice_signatures": []}
+                    for command, score in zip(commands, (-0.2, -0.1))], "finished"
 
     a, _ = SeatPolicy(p.rules, evaluator=evaluator).decide(client, "germany")
     b, decision = SeatPolicy(p.rules, evaluator=evaluator, search=Search()).decide(client, "germany")
-    assert a == b and b["card"] == "g-build"
+    assert a["card"] == "g-build" and b["card"] == "g-vp"
     assert decision["selected_q"] == -0.1
