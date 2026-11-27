@@ -1,5 +1,5 @@
 """Strategic site value in VP and action opportunities, on public map data."""
-from collections import defaultdict, deque
+from collections import defaultdict
 from math import inf
 
 from .definitions import PER_UNIT_SITE
@@ -37,6 +37,7 @@ class ActionDistanceScoring:
         self.construction_rules = construction_rules
         self.construction_networks, self.construction_paths = {}, {}
         self.graphs, self.paths, self.bases, self.sites_by_position = {}, {}, {}, {}
+        self.enemy_fronts = {}
         self.income_changes = {}
         self.source_owners = defaultdict(set)
         for token in state.tokens.values():
@@ -47,22 +48,43 @@ class ActionDistanceScoring:
             for seat in TURN_ORDER for token in state.positions.get(zone(seat, "STATUS"), ())
             for m in rules.cards[state.tokens[token].definition_id].get("modifiers", ()))
 
+    def adjacency(self, force):
+        if force not in self.graphs:
+            self.graphs[force] = MapGraph(self.rules).adjacency(
+                self.state, force, include_connection_modifiers=self.include_connections)
+        return self.graphs[force]
+
     def distances(self, force, start):
         key = force, start
         if key not in self.paths:
-            if force not in self.graphs:
-                self.graphs[force] = MapGraph(self.rules).adjacency(
-                    self.state, force, include_connection_modifiers=self.include_connections)
-            adjacent = self.graphs[force]
-            distance, queue = {start: 0}, deque([start])
-            while queue:
-                region = queue.popleft()
-                for neighbor in adjacent[region]:
-                    if neighbor not in distance:
-                        distance[neighbor] = distance[region] + 1
-                        queue.append(neighbor)
-            self.paths[key] = distance
+            self.paths[key] = MapGraph(self.rules).distances_on(start, self.adjacency(force))
         return self.paths[key]
+
+    def nearest_enemy(self, team, region):
+        cache = self.rules.search_cache
+        if cache is None:
+            return min((self.distances(t.owner_country, t.position_id).get(region, inf)
+                        for t in self.pieces if t.position_id != region and self.rules.team(t.owner_country) != team),
+                       default=inf)
+        if team not in self.enemy_fronts:
+            fronts = {}
+            for piece in self.pieces:
+                if self.rules.team(piece.owner_country) != team:
+                    adjacency = self.adjacency(piece.owner_country)
+                    fronts.setdefault(id(adjacency), (adjacency, set()))[1].add(piece.position_id)
+            self.enemy_fronts[team] = [(adjacency, frozenset(places)) for adjacency, places in fronts.values()]
+
+        graph = MapGraph(self.rules)
+        nearest = inf
+        for adjacency, places in self.enemy_fronts[team]:
+            # The graph is undirected. One search from the site covers every unit on this front.
+            key = id(adjacency), region, places
+            if key not in cache.enemy_distances:
+                distances = graph.distances_on(region, adjacency)
+                cache.enemy_distances[key] = min(
+                    (distances.get(place, inf) for place in places if place != region), default=inf)
+            nearest = min(nearest, cache.enemy_distances[key])
+        return nearest
 
     def scoring_rounds(self, seat):
         turn = self.state.turn
@@ -78,9 +100,7 @@ class ActionDistanceScoring:
             team = self.rules.team(force)
             cap = self.units.site_score(vp * self.scoring_rounds(seat))
             # The occupying move has already cleared hostile units on the site itself.
-            nearest = min((self.distances(t.owner_country, t.position_id).get(region, inf) + distance_offset
-                           for t in self.pieces if t.position_id != region and self.rules.team(t.owner_country) != team),
-                          default=inf)
+            nearest = self.nearest_enemy(team, region) + distance_offset
             initial = self.units.site_score(vp * self.units.capture_rounds)
             self.bases[key] = cap if nearest == inf else max(0, min(cap, initial + self.units.distance_score(nearest - 1)))
         return self.bases[key]

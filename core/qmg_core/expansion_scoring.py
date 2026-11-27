@@ -1,11 +1,13 @@
 """Construction routes and reachable scoring sites on a single visible position."""
 from collections import Counter, defaultdict, deque
 from dataclasses import replace
+from functools import cached_property
 from heapq import heappop, heappush
 
 from .model import ZoneRegistry, zone
 from .regional_sites import active_hidden_sites
 from .rules import LegalActionGenerator, MapGraph, RuleModifierResolver, SupplyResolver, board_units
+from .search_cache import board_dependencies
 
 
 BUILD_CARDS = {"build-army": "ARMY", "build-navy": "NAVY"}
@@ -41,53 +43,82 @@ class ConstructionNetwork:
         self.seat = rules.force_controllers[force]
         team = rules.team(force)
         self.land = {key for key, region in rules.regions.items() if region["type"] == "LAND"}
-        board = board_units(rules, state)
+        self.graph = MapGraph(rules).adjacency(state, self.seat, "build")
+        self.board = board = board_units(rules, state)
         self.ports = {t.position_id for t in board if rules.team(t.owner_country) == team and
-                      rules.units[t.definition_id]["kind"] == "ARMY"}
+                      rules.units[t.definition_id]["kind"] == "ARMY" and t.position_id in self.land and
+                      self.graph[t.position_id] - self.land}
         self.occupied = {t.position_id for t in board if rules.team(t.owner_country) != team or
                          (t.owner_country == force and rules.units[t.definition_id]["kind"] != "AIR")}
         self.surface = {t.token_id: t.position_id for t in board if t.owner_country == force
                         and rules.units[t.definition_id]["kind"] != "AIR"}
-        self.graph = MapGraph(rules).adjacency(state, self.seat, "build")
-        self.supply = MapGraph(rules).adjacency(state, force, "supply")
         self.coasts = {region: neighbors & self.land for region, neighbors in self.graph.items()}
         self.needs_port = rules.settings.get("naval_army_base", False)
-        self.land_sites = {r["id"] for r in rules.regions.values()
-                           if r.get("home_country") == force or r.get("supply_source_for") == force}
-        if rules.settings.get("supply_revision") == 2:
-            self.land_sites.update(site["region"] for site in rules.sites.values() if not site.get("dynamic"))
-            self.land_sites.update(t.position_id for t in state.tokens.values()
-                                   if t.token_type == "SCORE_SOURCE" and t.position_id in self.land)
         self.side_ports = None
         self.supplied_origins = None
         self.hand_sites = {}
         self.starting_placements = {}
 
+    @cached_property
+    def supply(self):
+        return MapGraph(self.rules).adjacency(self.state, self.force, "supply")
+
+    @cached_property
+    def land_sites(self):
+        sites = {r["id"] for r in self.rules.regions.values()
+                 if r.get("home_country") == self.force or r.get("supply_source_for") == self.force}
+        if self.rules.settings.get("supply_revision") == 2:
+            sites.update(site["region"] for site in self.rules.sites.values() if not site.get("dynamic"))
+            sites.update(t.position_id for t in self.state.tokens.values()
+                         if t.token_type == "SCORE_SOURCE" and t.position_id in self.land)
+        return sites
+
     def available_side_ports(self):
         if self.side_ports is None:
-            legal = LegalActionGenerator(self.rules)
-            supply = SupplyResolver(self.rules)
-            self.side_ports = set()
-            for place in legal.targets(self.state, self.seat, {"type": "BUILD_ARMY", "force": self.force}):
-                if not any(neighbor not in self.land for neighbor in self.graph[place]):
-                    continue
-                projection, token = project_placement(self.rules, self.state, self.force, place)
-                if token in supply.supplied(projection, self.force):
-                    self.side_ports.add(place)
+            cache = self.rules.search_cache
+            if cache is None:
+                self.side_ports = self.find_side_ports()
+            else:
+                reserve = self.state.positions[zone(self.force, "RESERVE_ARMY")]
+                key = self.force, next(iter(reserve), None), board_dependencies(self.rules, self.state, self.board)
+                if key not in cache.side_ports:
+                    cache.side_ports[key] = self.find_side_ports()
+                self.side_ports = cache.side_ports[key]
         return self.side_ports
+
+    def find_side_ports(self):
+        legal = LegalActionGenerator(self.rules)
+        supply = SupplyResolver(self.rules)
+        ports = set()
+        for place in legal.targets(self.state, self.seat, {"type": "BUILD_ARMY", "force": self.force}):
+            if not any(neighbor not in self.land for neighbor in self.graph[place]):
+                continue
+            projection, token = project_placement(self.rules, self.state, self.force, place)
+            if token in supply.supplied(projection, self.force):
+                ports.add(place)
+        return frozenset(ports)
 
     def distance(self, origin):
         """Count a coastal Army as an action when a future naval hop needs one."""
         if not self.needs_port:
-            result, queue = {origin: 0}, deque([origin])
-            while queue:
-                current = queue.popleft()
-                for target in self.graph[current] - result.keys():
-                    result[target] = result[current] + 1
-                    queue.append(target)
-            return result
+            return MapGraph(self.rules).distances_on(origin, self.graph)
         ports = self.ports | ({origin} if origin in self.land else set())
+        cache = self.rules.search_cache
+        if cache is None:
+            return self.port_distances(origin, ports)[0]
+        routes = cache.construction_distances.setdefault((id(self.graph), origin, frozenset(ports)), {})
+        # Port availability only matters if the route actually examines a missing coastal link.
+        if None in routes:
+            return routes[None]
+        if routes and (side_ports := self.available_side_ports()) in routes:
+            return routes[side_ports]
+        distances, side_ports = self.port_distances(origin, ports)
+        routes[side_ports] = distances
+        return distances
+
+    def port_distances(self, origin, ports):
         result, labels = {}, {}
+        side_ports = None
         queue = [(0, origin, "")]
         while queue:
             distance, current, shore = heappop(queue)
@@ -104,9 +135,11 @@ class ConstructionNetwork:
                 else:
                     # The normal land-to-sea path already pays for its coastal
                     # step. A port built on the existing front is a side step.
-                    for coast in self.coasts[target] & self.available_side_ports():
+                    if side_ports is None:
+                        side_ports = self.available_side_ports()
+                    for coast in self.coasts[target] & side_ports:
                         heappush(queue, (distance + 2, target, coast))
-        return result
+        return result, side_ports
 
     def reachable(self, origin, armies, navies, *, initial_ports=frozenset()):
         """Explore construction chains with separate land and sea card budgets."""

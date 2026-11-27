@@ -34,7 +34,7 @@ class RuleModifierResolver:
     def __init__(self, rules):
         self.rules = rules
 
-    def resolve(self, state, country):
+    def resolve(self, state, country, *, kind=None):
         force = country
         country = self.rules.force_controllers[country]
         result = []
@@ -43,6 +43,8 @@ class RuleModifierResolver:
             token = state.tokens[key]
             if token.token_type == "CARD" and status_enabled(self.rules, state, token):
                 for modifier in self.rules.cards[token.definition_id].get("modifiers", []):
+                    if kind is not None and modifier["kind"] != kind:
+                        continue
                     if self.rules.cards[token.definition_id].get("content_condition"):
                         from .content_effects import condition_met
                         if not condition_met(self.rules, state, token.owner_country,
@@ -69,27 +71,41 @@ class MapGraph:
     def adjacency(self, state=None, country=None, purpose=None, *, include_connection_modifiers=True):
         if purpose is not None and purpose not in CONNECTION_USES:
             raise CoreError("Unknown connection use")
+        straits, modifiers = (), ()
+        if state is not None and country is not None:
+            axis = self.rules.team(country) == "axis"
+            straits = tuple(tuple(sorted(strait["seas"])) for strait in self.rules.settings.get("straits", ())
+                            if axis == any(self.rules.units[token.definition_id]["kind"] == "ARMY" and
+                                           self.rules.team(token.owner_country) == "axis"
+                                           for key in state.positions[strait["land"]]
+                                           if (token := state.tokens[key]).token_type == "UNIT"))
+            if include_connection_modifiers:
+                modifiers = tuple((tuple(sorted((m["a"], m["b"]))), m["enabled"], tags)
+                                  for m in RuleModifierResolver(self.rules).resolve(state, country, kind="connection")
+                                  for tags in (frozenset(m.get("movement_or_supply_tags", CONNECTION_USES)),)
+                                  if purpose is None or purpose in tags)
+        cache = self.rules.search_cache
+        if cache is None:
+            return self.build_adjacency(purpose, straits, modifiers)
+        key = purpose, straits, modifiers
+        if key not in cache.adjacencies:
+            neighbors = self.build_adjacency(purpose, straits, modifiers)
+            cache.adjacencies[key] = {region: frozenset(adjacent) for region, adjacent in neighbors.items()}
+        return cache.adjacencies[key]
+
+    def build_adjacency(self, purpose, straits, modifiers):
         edges = {}
         for connection in self.rules.connections.values():
             edge = tuple(sorted((connection["a"], connection["b"])))
             edges.setdefault(edge, set()).update(connection.get("movement_or_supply_tags", CONNECTION_USES))
-        if state is not None and country is not None:
-            for strait in self.rules.settings.get("straits", []):
-                axis = any(t.position_id == strait["land"] and self.rules.units[t.definition_id]["kind"] == "ARMY"
-                           and self.rules.team(t.owner_country) == "axis" for t in board_units(self.rules, state))
-                if (self.rules.team(country) == "axis") == axis:
-                    edges.setdefault(tuple(sorted(strait["seas"])), set()).update(CONNECTION_USES)
-            if include_connection_modifiers:
-                for m in RuleModifierResolver(self.rules).resolve(state, country):
-                    if m["kind"] != "connection":
-                        continue
-                    edge = tuple(sorted((m["a"], m["b"])))
-                    uses = edges.setdefault(edge, set())
-                    tags = m.get("movement_or_supply_tags", CONNECTION_USES)
-                    if m["enabled"]:
-                        uses.update(tags)
-                    else:
-                        uses.difference_update(tags)
+        for edge in straits:
+            edges.setdefault(edge, set()).update(CONNECTION_USES)
+        for edge, enabled, tags in modifiers:
+            uses = edges.setdefault(edge, set())
+            if enabled:
+                uses.update(tags)
+            else:
+                uses.difference_update(tags)
         neighbors = {region: set() for region in self.rules.regions}
         for (a, b), uses in edges.items():
             if uses and (purpose is None or purpose in uses):
@@ -105,7 +121,13 @@ class MapGraph:
     def distances(self, start, state=None, country=None, purpose=None):
         if start not in self.rules.regions:
             raise CoreError("Unknown region")
-        adjacency = self.adjacency(state, country, purpose)
+        return self.distances_on(start, self.adjacency(state, country, purpose))
+
+    def distances_on(self, start, adjacency):
+        cache = self.rules.search_cache
+        key = id(adjacency), start
+        if cache is not None and key in cache.distances:
+            return cache.distances[key]
         distances, queue = {start: 0}, deque([start])
         while queue:
             p = queue.popleft()
@@ -113,6 +135,8 @@ class MapGraph:
                 if n not in distances:
                     distances[n] = distances[p] + 1
                     queue.append(n)
+        if cache is not None:
+            cache.distances[key] = distances
         return distances
 
 
@@ -134,7 +158,7 @@ def capture_turn_start(rules, state):
 def home_regions(rules, state, force, *, modifiers=None):
     homes = {r["id"] for r in rules.regions.values() if r.get("home_country") == force}
     if modifiers is None:
-        modifiers = RuleModifierResolver(rules).resolve(state, force)
+        modifiers = RuleModifierResolver(rules).resolve(state, force, kind="home")
     for modifier in modifiers:
         if modifier["kind"] == "home":
             homes = {modifier["region"]}

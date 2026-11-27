@@ -19,6 +19,7 @@ class RuleSet:
     def __init__(self, data, *, projected=False):
         self.data = deepcopy(data)
         self.projected = projected
+        self.search_cache = None
         self.version = data["ruleset_version"]
         if not isinstance(self.version, str) or not self.version:
             raise CoreError("Ruleset version required")
