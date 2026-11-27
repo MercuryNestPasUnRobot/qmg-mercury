@@ -20,7 +20,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from .ai_debug_worker import read_json, timestamp, write_json
-from .ai_match_policy import DEFAULT_BUDGET_MS
+from .ai_match_policy import DEFAULT_BUDGET_MS, DEFAULT_MATCH_NODES, profile_version
 from .definitions import RuleSet
 from .map_variants import correct_saved_connections, map_layout, match_rules
 from .model import CoreError, zone
@@ -96,6 +96,18 @@ LABELS = {
 INTEGER = {"scoring_units.capture_rounds", "route_forecast.nearest_sites", "horizon", "construction_search_width",
            "max_simulation_nodes", "status_forecast.extra_trigger_opportunities", "status_forecast.projected_distance_offset",
            "status_forecast.condition_horizon", "status_forecast.unknown_hand_scale", "status_forecast.rule_option_limit"}
+PARAMETER_LIMITS = {
+    "max_simulation_nodes": {"min": 1, "max": 10000},
+    "route_forecast.nearest_sites": {"min": 1},
+    "status_forecast.unknown_hand_scale": {"min": 1},
+    "horizon": {"min": 1, "max": 20},
+    "time_discount": {"max": 1},
+    "status_held_factor": {"max": 1},
+    "economic_forecast.future_shortfall_value": {"max": 1},
+    **{key: {"min_exclusive": True} for key in (
+        "scoring_units.vp", "scoring_units.card", "scoring_units.action",
+        "economic_forecast.lead_vp_per_round", "saturation")},
+}
 LEGACY_CARD_VALUES = {"REDEPLOY", "DRAW", "GAIN_VP", "BUILD_ARMY", "BUILD_NAVY", "RECRUIT", "LAND_BATTLE", "SEA_BATTLE"}
 LEGACY_MAP_GROUPS = {"distance_weights", "frontier_scoring"}
 RETIRED_GROUPS = {"supply_weights", "military_weights", "resource_penalties", "hand_retention"}
@@ -170,7 +182,7 @@ def numeric_fields(weights, *, inactive=False):
             if weights.get("known_ability_scoring") and key == "status_forecast.extra_trigger_opportunities":
                 label = "基础牌相关能力的最低预计次数"
             fields.append({"key": key, "path": path, "value": value, "integer": key in INTEGER,
-                "label": label, "group": group})
+                "label": label, "group": group, "min": 0, "max": 1000000, **PARAMETER_LIMITS.get(key, {})})
 
     for group, value in weights.items():
         if group != "scoring_overrides":
@@ -198,7 +210,8 @@ def edited_weights(weights, updates, *, overrides=None):
         field = permitted.get(key)
         if field is None:
             raise RequestError("此版本没有该评分参数。")
-        if (type(value) not in (int, float) or not 0 <= value <= 1e6 or not isfinite(value) or
+        if (type(value) not in (int, float) or not field["min"] <= value <= field["max"] or not isfinite(value) or
+                (field.get("min_exclusive") and value == field["min"]) or
                 (field["integer"] and (type(value) is not int))):
             raise RequestError(f'{field["label"]}的数值无效。')
         node = edited
@@ -232,7 +245,9 @@ class VersionRegistry:
                     core / "data" / "ai_test_weights.json")
             except (OSError, subprocess.SubprocessError, ValueError):
                 continue
-            source["max_simulation_nodes"] = 16  # Same default as the six-seat batch runner.
+            source["max_simulation_nodes"] = DEFAULT_MATCH_NODES
+            if key == "current" and (version := profile_version(source)):
+                label = f"{label} · {version}"
             try:
                 revision = commit or self.git("rev-parse", "HEAD").decode().strip()
             except (OSError, subprocess.SubprocessError):

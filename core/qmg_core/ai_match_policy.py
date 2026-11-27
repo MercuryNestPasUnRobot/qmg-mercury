@@ -1,6 +1,7 @@
 """Seat-local rule policy and time-bounded, observation-only candidate search."""
 import json
 import multiprocessing
+import re
 from itertools import takewhile
 from time import perf_counter
 
@@ -27,6 +28,14 @@ EFFECT_PRIORITY = {"choose-space": 1.55, "recruit": 1.55, "build": 1.55, "battle
                    "discard-top": 0.25, "play-from-zone": 0.6, "search-deck": 0.35}
 BATTLE_BUILD = {"LAND_BATTLE": "BUILD_ARMY", "SEA_BATTLE": "BUILD_NAVY"}
 DEFAULT_BUDGET_MS = 8000
+DEFAULT_MATCH_NODES = 16
+DEFAULT_SHORTLIST_WIDTH = 3
+
+
+def profile_version(weights):
+    name = weights.get("profile", "")
+    match = re.match(r"ai-test-(v\d+(?:\.\d+)+)(?:-|$)", name) if isinstance(name, str) else None
+    return match[1] if match else None
 
 
 def operation_priority(kind, units):
@@ -781,7 +790,7 @@ class DeadlineSearch:
 
 
 class SeatPolicy:
-    def __init__(self, rules, *, search=None, evaluator=None, width=3, budget_ms=DEFAULT_BUDGET_MS):
+    def __init__(self, rules, *, search=None, evaluator=None, width=DEFAULT_SHORTLIST_WIDTH, budget_ms=DEFAULT_BUDGET_MS):
         self.rule = RulePolicy(rules, evaluator)
         self.search = search
         self.width = width

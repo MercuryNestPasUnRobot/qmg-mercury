@@ -62,7 +62,7 @@ function selectHuman() {
 }
 
 function profileLabel(config) {
-  return (config.version === "current" ? "当前版" : config.version) + " · " + config.policy;
+  return (config.version === "current" ? setup.versions.get(config.version).label : config.version) + " · " + config.policy;
 }
 
 function paintSetup() {
@@ -86,14 +86,16 @@ function paintWeights(profile) {
   const links = schema.linked_fields || [];
   const coefficients = new Set(links.map(link => link.coefficient));
   const inputs = [];
-  function inputField(label, value, minimum, integer, changed, clear) {
-    const wrapper = node("label", label, "field");
+  function inputField(field, value, changed, clear) {
+    const wrapper = node("label", field.label, "field");
     const el = node("input");
     el.type = "number";
-    el.min = minimum;
-    el.max = "1000000";
-    el.step = integer ? "1" : "any";
+    el.min = String(field.min ?? 0);
+    el.max = String(field.max ?? 1000000);
+    el.step = field.integer ? "1" : "any";
     el.value = value ?? "";
+    el.addEventListener("input", () => el.setCustomValidity(field.min_exclusive && el.valueAsNumber === Number(el.min) ?
+      `${field.label}须大于 ${el.min}。` : ""));
     el.addEventListener("change", () => changed(el));
     wrapper.append(el);
     if (clear) wrapper.append(clear);
@@ -102,8 +104,7 @@ function paintWeights(profile) {
   }
   for (const field of fields.values()) {
     if (coefficients.has(field.key)) continue;
-    const base = ["scoring_units.vp", "scoring_units.card", "scoring_units.action"].includes(field.key);
-    const input = inputField(field.label, profile.values[field.key], base ? "0.000001" : "0", field.integer, el => {
+    const input = inputField(field, profile.values[field.key], el => {
       if (!el.reportValidity()) return;
       if (el.value) profile.values[field.key] = el.valueAsNumber;
       else delete profile.values[field.key];
@@ -115,7 +116,7 @@ function paintWeights(profile) {
     const configured = key => profile.values[key] ?? fields.get(key)?.value;
     const linked = configured(link.base) * link.multiplier * (link.coefficient ? configured(link.coefficient) : 1);
     const restore = button("恢复联动", () => { delete profile.overrides[link.key]; paintWeights(profile); }, "text-button");
-    const input = inputField(link.label, profile.overrides[link.key], "0", false, el => {
+    const input = inputField(link, profile.overrides[link.key], el => {
       if (!el.reportValidity()) return;
       if (el.value) profile.overrides[link.key] = el.valueAsNumber;
       else delete profile.overrides[link.key];

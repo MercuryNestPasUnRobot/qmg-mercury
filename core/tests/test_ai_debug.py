@@ -117,8 +117,8 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         eventually(lambda: status()["state"] == "paused")
         paused_at = status()["step"]
         assert paused_at >= 1
-        panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 3}, {"scoring_units.vp": 0})})
-        eventually(lambda: status().get("error"))
+        with pytest.raises(RequestError, match="每 1 VP"):
+            panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 3}, {"scoring_units.vp": 0})})
         assert status()["step"] == paused_at and status()["weights_revision"] == 1
         assert status()["configs"]["axis"]["weights"]["scoring_units"]["vp"] == 1
         panel.control(run_id, "weights", {"configs": configs({"scoring_units.vp": 2, "scoring_units.supply_stability": 0.9})})
@@ -405,3 +405,23 @@ def test_pinned_runtime_installs_only_core_sources_and_marks_a_complete_cache(tm
     assert not (installed / "qmg_core" / "unrelated.txt").exists()
     assert versions.core("pinned") == installed
     assert [args[0] for args in calls] == ["show", "archive"]
+
+
+def test_workspace_selector_reads_the_profile_version_and_effective_limits(tmp_path, monkeypatch):
+    data = tmp_path / "core" / "data"
+    data.mkdir(parents=True)
+    weights = {"profile": "ai-test-v1.31-example", "max_simulation_nodes": 128}
+    (data / "ai_test_weights.json").write_text(json.dumps(weights), encoding="utf-8")
+    monkeypatch.setattr(ai_debug, "VERSIONS", {"current": ("当前工作区", None, "catalog")})
+    monkeypatch.setattr(VersionRegistry, "git", lambda *_args: b"abc123")
+
+    registry = VersionRegistry(tmp_path, tmp_path / "cache")
+    current, = registry.public()
+    nodes, = current["fields"]
+    assert current["label"] == "当前工作区 · v1.31" and current["commit"] == "abc123"
+    assert current["budget_ms"] == 8000
+    assert (nodes["key"], nodes["value"], nodes["min"], nodes["max"]) == ("max_simulation_nodes", 16, 1, 10000)
+    for value in (0, 10001):
+        with pytest.raises(RequestError, match="结算节点上限"):
+            edited_weights(registry.options["current"]["defaults"], {"max_simulation_nodes": value})
+    assert edited_weights(registry.options["current"]["defaults"], {"max_simulation_nodes": 24})["max_simulation_nodes"] == 24
