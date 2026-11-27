@@ -112,12 +112,14 @@ def settlement(rules, records, before, after):
 
 class PolicyClient:
     def __init__(self, core, rules, config):
+        from qmg_core.ai_match_policy import DEFAULT_BUDGET_MS
+
         self.legacy_policy = config.get("version", "current") != "current"
         self.process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--policy", core],
             cwd=core, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
         try:
             self.exchange({"rules": {**rules.data, "initial_tokens": []}, "weights": config["weights"],
-                           "policy": config["policy"]})
+                           "policy": config["policy"], "budget_ms": DEFAULT_BUDGET_MS})
         except (OSError, ValueError, RuntimeError):
             self.close()
             raise
@@ -191,7 +193,7 @@ def serve_policy(core):
             # Older simulators use the subset of the public clock they understand.
             view["turn"] = {key: value for key, value in view["turn"].items() if key in turn_fields}
             if country not in policies:
-                policies[country] = SeatPolicy(rules, evaluator=evaluator, search=search, width=3, budget_ms=3000)
+                policies[country] = SeatPolicy(rules, evaluator=evaluator, search=search, width=3, budget_ms=init["budget_ms"])
             client = SeatObservation(view, request["commands"])
             command, row = policies[country].decide(client, country)
             log_row(sys.stdout, {"command": command, "row": row})
@@ -351,16 +353,14 @@ class DebugRun:
 
 
 def main():
-    directory, core, catalog = map(Path, sys.argv[1:])
+    directory, core = map(Path, sys.argv[1:])
     sys.path.insert(0, str(core))
     from qmg_core.definitions import RuleSet
-    from qmg_core.map_variants import match_rules
     from qmg_core.model import CoreError
 
     try:
-        rules = RuleSet.load(catalog)
-        if (map_file := directory / "map.json").is_file():
-            rules = match_rules(rules, read_json(map_file)["layout"])
+        sys.stdin.reconfigure(encoding="utf-8")
+        rules = RuleSet(json.load(sys.stdin))
         run = DebugRun(directory, rules)
         if run.meta["rules_digest"] and run.meta["rules_digest"] != rules.fingerprint:
             raise CoreError("所选卡库与该版本的校验值不符。")

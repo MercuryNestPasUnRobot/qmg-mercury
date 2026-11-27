@@ -200,3 +200,24 @@ def test_forecast_skips_unrelated_card_that_requires_an_opponents_hidden_hand(da
     command, row = SeatPolicy(game.rules, evaluator=evaluator(game)).decide(client, "germany")
     assert command["option"] == "decline"
     assert any(r.get("response_forecast", {}).get("wait", {}).get("card") == "g-build" for r in row["rule_scores"])
+
+
+def test_after_card_use_forecast_cannot_play_an_opponents_hidden_hand(data):
+    hand_only(data, "g-deck-2")
+    move_initial(data, "uk-hidden", zone("united-kingdom", "HAND"))
+    card(data, "g-noop")["effects"] = [instruction({
+        "type": "choose-one", "options": [{"label": "借用手牌",
+            "effects": [{"type": "play-from-zone", "zone": "hand", "target": "united-kingdom"}]}]})]
+    response(data, "after-card-use", {"type": "points", "amount": 3, "side": "self"}, in_hand=True)
+    game = make(data)
+    scorer = evaluator(game)
+    hidden_view = CoreAPI(game, ("germany",)).observe()
+    visible_view = CoreAPI(game, ("germany", "united-kingdom")).observe()
+    hidden = scorer.economic_from_view(hidden_view)
+    visible = scorer.economic_from_view(visible_view)
+    assert hidden.responses.staging("germany", "g-status")["activations"] == 0
+    assert visible.responses.staging("germany", "g-status")["base"] == 3
+    policy = RulePolicy(game.rules, scorer)
+    candidate = game.rules.cards["g-noop"]
+    assert policy.discard_value(candidate, "germany", hidden, hidden_view) > policy.discard_value(
+        candidate, "germany", visible, visible_view)

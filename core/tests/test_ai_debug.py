@@ -18,7 +18,7 @@ from qmg_core.api import CoreAPI
 from qmg_core.definitions import RuleSet
 from qmg_core.engine import CommandProcessor
 from qmg_core.model import zone
-from qmg_core.map_variants import match_rules
+from qmg_core.map_variants import map_layout, match_rules
 from qmg_core.rules import MapGraph
 from qmg_core.score_units import ScoreUnits
 
@@ -85,6 +85,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
     panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
     try:
         result = panel.start({"seed": 31, "mode": "continuous", "configs": configs()})
+        assert result["run"]["budget_ms"] == 4000
         run_id = result["run"]["id"]
         directory = panel.directory(run_id)
 
@@ -126,6 +127,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         assert row["settlement"]["events"]
         assert row["weights_revision"] == 3
         assert row["ai_version"] == "v1-test" and row["policy"] == "B"
+        assert row["budget_ms"] == 4000
         panel.control(run_id, "resume", {})
         eventually(lambda: status()["step"] > stepped["step"])
         panel.control(run_id, "stop", {})
@@ -163,6 +165,26 @@ def test_log_pages_are_separate_and_preserve_utf8_across_cursors(tmp_path):
             break
     assert actual == list(reversed(range(140)))
     assert not log_window(tmp_path / "game-2.jsonl")["rows"]
+
+
+def test_debug_worker_uses_the_rules_prepared_by_the_panel(tmp_path, data):
+    registry = SyntheticVersion(tmp_path, data)
+    panel = DebugPanel(tmp_path / "runs", registry)
+    layout = map_layout(panel.base_rules)
+    layout["points"]["B"] = 1
+    selected = panel.save_map({"name": "半分点测试地图", "layout": layout})
+    expected = match_rules(panel.base_rules, layout).fingerprint
+    # A long-running panel may have loaded the catalog before local data changed.
+    data["settings"]["max_rounds"] += 1
+    panel.catalog.write_text(json.dumps(data), encoding="utf-8")
+    try:
+        run_id = panel.start({"seed": 31, "mode": "single", "map": selected["id"], "configs": configs()})["run"]["id"]
+        result = eventually(lambda: panel.detail(run_id)["status"].get("rules_digest"))
+        assert result == expected
+        board = eventually(lambda: panel.board(run_id, 1))
+        assert board["regions"]["B"]["vp"] == 1
+    finally:
+        panel.close()
 
 
 def test_continuous_run_switches_sides_before_incrementing_the_seed(tmp_path, data):

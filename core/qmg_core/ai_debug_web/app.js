@@ -230,7 +230,9 @@ function renderOverview() {
     `第 ${match.number} 局`, `种子 ${match.seed}`, matchSide(match),
     countries[status.country], phases[status.phase], `第 ${status.step} 步`,
   ].filter(Boolean).join(" · ") : "等待启动";
-  $("revision").textContent = status?.weights_revision ? `参数 ${status.weights_revision} · B 预算 3 秒` : "B 决策预算 3 秒";
+  const budget = run ? run.budget_ms : app.versions.get("current")?.budget_ms;
+  $("revision").textContent = [status?.weights_revision && `参数 ${status.weights_revision}`,
+    budget && `B 决策预算 ${number(budget / 1000)} 秒`].filter(Boolean).join(" · ");
 }
 
 function setOptions(select, entries, value, empty) {

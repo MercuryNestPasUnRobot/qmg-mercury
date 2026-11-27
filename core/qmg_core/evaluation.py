@@ -1,7 +1,6 @@
 """Deterministic VP-equivalent diagnostics, with bounded within-card choice search."""
 from collections import defaultdict
 from copy import deepcopy
-from functools import cache
 import json
 from math import isfinite
 from pathlib import Path
@@ -159,14 +158,12 @@ class ScoreEvaluator:
         if settings is None:
             return None
 
-        @cache
-        def position():
-            return observed_position(self.rules, view)
-
-        return EconomicForecast(self.rules, settings, view["turn"], view["scores"],
+        # The visible position includes opaque cards defined only in its projected rules.
+        rules, state = observed_position(self.rules, view)
+        return EconomicForecast(rules, settings, view["turn"], view["scores"],
                                 lambda seat, kind: view["positions"][zone(seat, kind)]["count"],
-                                lambda: position()[1], view["winner"], status_weights=self.status_weights, map_weights=self.map_weights,
-                                units=self.units, hand_average=(lambda economy, seat: self.hand_average(*position(), seat, economy))
+                                lambda: state, view["winner"], status_weights=self.status_weights, map_weights=self.map_weights,
+                                units=self.units, hand_average=(lambda economy, seat: self.hand_average(rules, state, seat, economy))
                                 if self.action_opportunity else None)
 
     def economic_from_state(self, rules, state):
