@@ -85,7 +85,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
     panel = DebugPanel(tmp_path / "runs", SyntheticVersion(tmp_path, data))
     try:
         result = panel.start({"seed": 31, "mode": "continuous", "configs": configs()})
-        assert result["run"]["budget_ms"] == 4000
+        assert result["run"]["budget_ms"] == 8000
         run_id = result["run"]["id"]
         directory = panel.directory(run_id)
 
@@ -127,7 +127,7 @@ def test_pause_applies_weights_at_a_decision_boundary_and_keeps_the_log(tmp_path
         assert row["settlement"]["events"]
         assert row["weights_revision"] == 3
         assert row["ai_version"] == "v1-test" and row["policy"] == "B"
-        assert row["budget_ms"] == 4000
+        assert row["budget_ms"] == 8000
         panel.control(run_id, "resume", {})
         eventually(lambda: status()["step"] > stepped["step"])
         panel.control(run_id, "stop", {})
