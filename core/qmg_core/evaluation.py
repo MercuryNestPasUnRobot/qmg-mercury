@@ -800,8 +800,11 @@ class OneStepPlanner:
             return (-self.evaluator.hand_value(rules, state, country, card, legal, economy) -
                     self.evaluator.basic_discard_cost(view, country, card))
 
+        paper = RulePolicy(rules, self.evaluator)
+        choices, direct, costs = paper.reallocation_choices(view, country, economy, position=(rules, state))
         by_definition = {}
         for plan in payment_plans(rules, view, country, payment_cost,
+                                  choices=choices, direct=direct, cost_sources=costs,
                                   expansion_cost=economy.routes.expansion_discard_cost if marginal else None):
             if marginal:
                 plan["discard_usage_cost"] = sum(self.evaluator.basic_discard_cost(view, country,
@@ -810,10 +813,10 @@ class OneStepPlanner:
             if key not in by_definition or plan["discard_score"] > by_definition[key]["discard_score"]:
                 by_definition[key] = plan
         if not by_definition:
-            raise SimulationIncomplete("No exchange plan from the seat's visible inventory")
-        paper = RulePolicy(rules, self.evaluator)
+            raise SimulationIncomplete("No shortlisted basic can be acquired from the seat's visible inventory")
         plans = sorted(by_definition.values(),
-                       key=lambda p: -paper.play_card_value(rules.cards[p["definition"]], country, economy))
+                       key=lambda p: (p.get("payment_only", False),
+                                      -paper.play_card_value(rules.cards[p["definition"]], country, economy)))
         pool = zone(country, "OBJECT_POOL")
         deck_samples = {}
         for plan in plans:
@@ -882,6 +885,17 @@ class OneStepPlanner:
         plays = [c for c in legal_play if c["type"] == "PLAY_CARD" and c.get("card") == target]
         if self.evaluator.settlement:
             initial_units = dict(before.surviving_units)
+            if plan.get("payment_for"):
+                alternate = [c for c in legal_play if c.get("card") != target]
+                if alternate:
+                    ranked = RulePolicy(ordinary.rules, self.evaluator).rank(
+                        client.observe(include_history=False), alternate, verify_recruitment=False)
+                    # Try using the acquisition as a cost for a playable source; a
+                    # passive listener can also resolve during the best ordinary play.
+                    funding = next((row["command"] for row in ranked
+                                    if row["command"]["type"] in ("PLAY_CARD", "USE_STATUS")
+                                    and row["command"].get("card") in plan["payment_for"]), ranked[0]["command"])
+                    plays = [funding] if plan.get("payment_only") else [*plays, funding]
             if not plays and legal_play:
                 ranked = RulePolicy(ordinary.rules, self.evaluator).rank(
                     client.observe(include_history=False), legal_play, verify_recruitment=False)

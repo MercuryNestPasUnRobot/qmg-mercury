@@ -17,7 +17,7 @@ from .recruitment import recruitment_play
 from .response_scoring import is_delayed
 from .rules import LegalActionGenerator
 from .status_scoring import is_airdrop, is_status
-from .reallocation_scoring import acquisitions, extra_refill, payment_plans, planned_options, price
+from .reallocation_scoring import acquisitions, extra_refill, payment_plans, planned_options, price, shortlist_acquisitions
 from .score_units import ACTION_SUPPORT_EFFECTS, ScoreUnits, VALUED_ACTIONS, equivalent_action
 
 
@@ -268,16 +268,27 @@ class RulePolicy:
         delta = economy.direct_points(seat, steps[0].get("operation", steps[0]))
         return (1 if delta > 0 else -1) if delta and economy.closes_game(seat, delta) else 0
 
+    def reallocation_choices(self, view, seat, economy, *, position=None):
+        if position is None:
+            position = (economy.rules, economy.visible_state()) if economy else observed_position(self.rules, view)
+        info = view["reallocation"]
+        choices = ([(info["source"], definition, target) for target, definition in info["targets"].items()]
+                   if "targets" in info else list(acquisitions(self.rules, view, seat, include_payment="sources" not in info)))
+        return shortlist_acquisitions(*position, seat, choices, lambda card: self.play_card_value(card, seat, economy))
+
     def reallocation_plan(self, view, seat, economy):
+        choices, direct, costs = self.reallocation_choices(view, seat, economy)
+        discard_value = lambda card: self.discard_value(card, seat, economy, view)
+        options = {"choices": choices, "direct": direct, "cost_sources": costs}
         if economy and self.evaluator.marginal_opportunity:
-            plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view),
-                                  expansion_cost=economy.routes.expansion_discard_cost)
+            plans = payment_plans(self.rules, view, seat, discard_value,
+                                  expansion_cost=economy.routes.expansion_discard_cost, **options)
             return max((price({**plan, **economy.cycle_value(seat, extra_refill(economy, seat, plan))},
                               self.play_card_value(self.rules.cards[plan["definition"]], seat, economy)) for plan in plans),
                        key=lambda plan: plan["total"], default=None)
         cycling = (self.evaluator.cycle_value(economy, seat, view["reallocation"]["cost"], self.evaluator.retention(view, seat))
                    if self.evaluator and self.evaluator.hand_slot_cost else {})
-        plans = payment_plans(self.rules, view, seat, lambda card: self.discard_value(card, seat, economy, view))
+        plans = payment_plans(self.rules, view, seat, discard_value, **options)
         return max((price({**plan, **cycling}, self.play_card_value(self.rules.cards[plan["definition"]], seat, economy))
                     for plan in plans),
                    key=lambda plan: plan["total"], default=None)
@@ -542,11 +553,13 @@ class RulePolicy:
         info = view.get("reallocation", {})
         plan = (self.reallocation_plan(view, seat, economy)
                 if "payment" in info or any(c["type"] == "REALLOCATE" for c in commands) else None)
-        source_values = {}
-        if "sources" in info:
-            for source, definition, _ in acquisitions(self.rules, view, seat):
+        source_values, target_values = {}, {}
+        if "sources" in info or "targets" in info:
+            choices, _, _ = self.reallocation_choices(view, seat, economy)
+            for source, definition, target in choices:
                 value = self.play_card_value(self.rules.cards[definition], seat, economy)
                 source_values[source] = max(value, source_values.get(source, float("-inf")))
+                target_values[target] = value
 
         def score(command):
             kind = command["type"]
@@ -567,9 +580,11 @@ class RulePolicy:
                 if option in retention:
                     return -retention[option]["net"]
                 if option in info.get("targets", {}):
+                    if target_values:
+                        return target_values.get(option, min(target_values.values()) - 1)
                     return self.play_card_value(self.rules.cards[info["targets"][option]], seat, economy)
                 if option in info.get("sources", {}):
-                    return source_values.get(info["sources"][option], -10)
+                    return source_values.get(info["sources"][option], min(source_values.values(), default=-9) - 1)
                 return self.choice_value(view, command, region_scores, economy)
             if kind == "END_PHASE":
                 if retain and phase in ("Play", "Air", "Discard"):
@@ -857,8 +872,9 @@ class SeatPolicy:
         ranked = self.rule.rank(view, commands, recruitment_deadline=started + min(2.1, self.budget_ms * 0.00075),
                                 verify_recruitment=not compare_exchange)
         mandatory = bool(phase == "Play" and self.rule.rules.settings.get("mandatory_turn_play"))
-        preferred = paper_play_choices(ranked, mandatory)
-        shortlist = ranked if shared else preferred
+        available = [row for row in ranked if row["command"]["type"] != "REALLOCATE" or "reallocation" in row] or ranked
+        preferred = paper_play_choices(available, mandatory)
+        shortlist = available if shared else preferred
         manual = next((row["command"] for row in ranked if row.get("immediate_response")), None)
         response_choice = any(row.get("response_forecast") and row["command"]["type"] == "CHOOSE" for row in ranked)
         chosen = preferred[0]["command"]
