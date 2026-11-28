@@ -696,8 +696,9 @@ def acceptable_play(row, *, mandatory=False):
 
 
 class OneStepPlanner:
-    def __init__(self, rules, weights):
+    def __init__(self, rules, weights, *, incremental=True):
         self.evaluator = ScoreEvaluator(rules, weights)
+        self.incremental = incremental
 
     def rank(self, client, country):
         return sorted(self.iter_rank(client, country), key=candidate_key, reverse=True)
@@ -711,7 +712,7 @@ class OneStepPlanner:
         view = client.observe()
         root = simulation_from_observation(self.evaluator.rules, view, search_projection=True)
         if self.evaluator.unified_scoring:
-            root.rules.search_cache = SearchCache()
+            root.rules.search_cache = SearchCache(incremental=self.incremental)
         root_state = root.state
         baseline = root_state
         if self.evaluator.unified_scoring and not baseline.winner:

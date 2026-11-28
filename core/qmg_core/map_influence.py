@@ -1,6 +1,5 @@
 """Value the nearest scoring sites using current, visible board routes."""
 from collections import Counter, defaultdict, deque
-from dataclasses import replace
 from functools import cached_property
 import json
 
@@ -273,11 +272,7 @@ class ScoringRoutes:
         return self.stability_changes[token_id]
 
     def move_projection(self, token_id, destination):
-        source = self.state.tokens[token_id].position_id
-        moved = replace(self.state, tokens=dict(self.state.tokens), positions={**self.state.positions,
-                        source: list(self.state.positions[source]), destination: list(self.state.positions[destination])})
-        ZoneRegistry.transfer(moved, token_id, destination)
-        return moved
+        return ZoneRegistry.projected_transfer(self.state, token_id, destination)
 
     def unit_position_value(self, token, destination=None):
         return sum(self.unit_position_terms(token, destination).values())
@@ -291,21 +286,13 @@ class ScoringRoutes:
         position = self.position
         if token.position_id in self.rules.regions:
             if token.token_id not in self.unit_projections:
-                # Removing the piece also removes its port, strait and presence effects.
-                reserve = zone(force, "RESERVE_" + kind)
-                state = self.move_projection(token.token_id, reserve)
-                pieces = [piece for piece in self.pieces if piece.token_id != token.token_id]
-                self.unit_projections[token.token_id] = ActionDistanceScoring(
-                    self.rules, state, pieces, self.locations, self.units, self.config["nearest_sites"],
-                    include_connections=self.include_connections, construction_rules=position.construction_rules,
-                    stacked_sites=position.stacked_sites, regional_defense=position.regional_defense)
+                # Resolve actual rule changes on the new occupancy even when scores reuse inputs.
+                cache = self.rules.search_cache
+                self.unit_projections[token.token_id] = position.after_unit_removal(
+                    token.token_id, incremental=cache is not None and cache.incremental)
             position = self.unit_projections[token.token_id]
-        air = kind == "AIR"
-        sites = position.site_values(force, region, construction=not air, distance_offset=distance_offset, air=air,
-                                     enemy_attraction=enemy_attraction)
-        homes = position.home_values(force, region, construction=not air, distance_offset=distance_offset)
-        return {**{site: value for site, (_, value) in sites.items()},
-                **{"home:" + owner: value for owner, value in homes.items()}}
+        return position.position_terms(force, region, air=kind == "AIR", distance_offset=distance_offset,
+                                       enemy_attraction=enemy_attraction)
 
     def source_movement_value(self, seat, token, region):
         value = self.position.source_move(seat, token, region)

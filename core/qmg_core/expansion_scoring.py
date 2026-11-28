@@ -1,6 +1,5 @@
 """Construction routes and reachable scoring sites on a single visible position."""
 from collections import Counter, defaultdict, deque
-from dataclasses import replace
 from functools import cached_property
 from heapq import heappop, heappush
 
@@ -20,11 +19,8 @@ def project_placement(rules, state, force, region):
     stored = state.positions[reserve]
     if not stored:
         return None
-    projected = replace(state, tokens=dict(state.tokens), positions={
-        **state.positions, reserve: list(stored), region: list(state.positions[region])})
     token = stored[0]
-    ZoneRegistry.transfer(projected, token, region)
-    return projected, token
+    return ZoneRegistry.projected_transfer(state, token, region), token
 
 
 def construction_cards(rules, state, force, *, spent=None, discarded=()):

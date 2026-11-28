@@ -1,4 +1,4 @@
-from collections import deque
+from collections import Counter, deque
 from copy import deepcopy
 
 from .definitions import BATTLES, CONNECTION_USES, CONSTRUCTION, FORCE_OPERATIONS, TARGETED_OPERATIONS
@@ -165,30 +165,46 @@ def home_regions(rules, state, force, *, modifiers=None):
     return homes
 
 
-def occupied_home_forces(rules, state, pieces):
+def home_occupier(rules, piece):
+    if rules.units[piece.definition_id]["kind"] == "ARMY":
+        return rules.team(piece.owner_country), piece.position_id
+    return None
+
+
+def home_occupation(rules, pieces):
+    return Counter(marker for piece in pieces if (marker := home_occupier(rules, piece)) is not None)
+
+
+def occupied_home_forces(rules, state, pieces, *, homes=None, occupation=None):
     if not rules.settings.get("occupied_home_blocks_scoring"):
         return set()
-    armies = {team: set() for team in ("axis", "allies")}
-    for piece in pieces:
-        if rules.units[piece.definition_id]["kind"] == "ARMY":
-            armies[rules.team(piece.owner_country)].add(piece.position_id)
-    return {force for force in rules.force_controllers
-            if home_regions(rules, state, force) & armies["allies" if rules.team(force) == "axis" else "axis"]}
+    if homes is None:
+        homes = {force: home_regions(rules, state, force) for force in rules.force_controllers}
+    if occupation is None:
+        occupation = home_occupation(rules, pieces)
+    return {force for force, regions in homes.items()
+            if any(occupation["allies" if rules.team(force) == "axis" else "axis", region] > 0
+                   for region in regions)}
 
 
-def active_unit_rule(state, token_id, definition):
-    return any(t.token_type == "RULE" and t.source_token_id == token_id and t.definition_id == definition
-               and t.position_id in (zone(t.owner_country, "RESPONSE"), "RESOLUTION")
-               for t in state.tokens.values())
+def active_unit_rules(state):
+    return tuple(t for t in state.tokens.values() if t.token_type == "RULE" and
+                 t.position_id in (zone(t.owner_country, "RESPONSE"), "RESOLUTION"))
 
 
-def unit_rule_matches(rules, state, token, mode):
-    if active_unit_rule(state, token.token_id, "unit-" + mode):
+def active_unit_rule(state, token_id, definition, *, active=None):
+    if active is None:
+        active = active_unit_rules(state)
+    return any(t.source_token_id == token_id and t.definition_id == definition for t in active)
+
+
+def unit_rule_matches(rules, state, token, mode, *, active=None):
+    if active is None:
+        active = active_unit_rules(state)
+    if active_unit_rule(state, token.token_id, "unit-" + mode, active=active):
         return True
     from .content_effects import unit_matches
-    for response in state.tokens.values():
-        if response.token_type != "RULE" or response.position_id not in (zone(response.owner_country, "RESPONSE"), "RESOLUTION"):
-            continue
+    for response in active:
         area = rules.abilities[response.definition_id].get("area_rule")
         if area and area["mode"] == mode and unit_matches(rules, state, response.owner_country, token, area["filter"]):
             return True
@@ -230,12 +246,15 @@ class SupplyResolver:
     def supplied(self, state, country, *, units=None, assume_supplied=()):
         if units is None:
             units = board_units(self.rules, state)
-        modifiers = RuleModifierResolver(self.rules).resolve(state, country)
+        resolver = RuleModifierResolver(self.rules)
+        modifiers = resolver.resolve(state, country)
+        local_rules = active_unit_rules(state)
         always = {t.token_id for t in units if t.owner_country == country and any(
             m["kind"] == "always_supplied" and self.rules.units[t.definition_id]["kind"].lower()
             in m.get("kinds", ("army", "navy", "air")) for m in modifiers)}
         always.update(t.token_id for t in units if t.owner_country == country
-                      and (t.token_id in assume_supplied or unit_rule_matches(self.rules, state, t, "supply")))
+                      and (t.token_id in assume_supplied or
+                           unit_rule_matches(self.rules, state, t, "supply", active=local_rules)))
         share = self.rules.settings["allied_supply"]
         groups = [m["forces"] for m in modifiers if m["kind"] == "supply_sharing"]
         revised = self.rules.settings.get("supply_revision", 1) == 2
@@ -251,13 +270,17 @@ class SupplyResolver:
                         adjacency[t.position_id].isdisjoint(ports)}
             scoring_regions = self.scoring_sources(state)
             army_sources = {}
+            by_force = {country: modifiers}
             for token in pieces:
                 has_port = token.token_id not in unported
                 if revised and not has_port:
                     continue
                 force = token.owner_country
-                token_modifiers = modifiers if force == country else RuleModifierResolver(self.rules).resolve(state, force)
-                automatic = token.token_id in assume_supplied or unit_rule_matches(self.rules, state, token, "supply") or any(
+                if force not in by_force:
+                    by_force[force] = resolver.resolve(state, force)
+                token_modifiers = by_force[force]
+                automatic = token.token_id in assume_supplied or unit_rule_matches(
+                    self.rules, state, token, "supply", active=local_rules) or any(
                     m["kind"] == "always_supplied" and self.rules.units[token.definition_id]["kind"].lower()
                     in m.get("kinds", ("army", "navy", "air")) for m in token_modifiers)
                 if automatic or has_port:
@@ -269,12 +292,7 @@ class SupplyResolver:
                         army_sources[force] = self.army_sources(state, force, token_modifiers, scoring_regions)
                     if token.position_id in army_sources[force]:
                         seeded.add(token.position_id)
-            reached, queue = seeded.copy(), deque(sorted(seeded))
-            while queue:
-                for region in adjacency[queue.popleft()]:
-                    if region in occupied and region not in reached:
-                        reached.add(region)
-                        queue.append(region)
+            reached = self.reached_regions(adjacency, occupied, seeded)
             supplied = always | {t.token_id for t in units if t.owner_country == country and t.position_id in reached}
             return supplied - unported if revised else supplied
         pieces = [t for t in units if t.owner_country == country or
@@ -287,15 +305,27 @@ class SupplyResolver:
             sources.update(home_regions(self.rules, state, country))
         sources.update(m["region"] for m in modifiers if m["kind"] == "supply_source")
         sources.difference_update(m["region"] for m in modifiers if m["kind"] == "deny_supply_source")
-        reached = sources & occupied
-        queue = deque(sorted(reached))
         adjacency = self.graph.adjacency(state, country, "supply")
+        reached = self.reached_regions(adjacency, occupied, sources & occupied)
+        return always | {t.token_id for t in pieces if t.owner_country == country and t.position_id in reached}
+
+    def reached_regions(self, adjacency, occupied, seeds):
+        """Supply connectivity is determined by these three effective inputs."""
+        cache = self.rules.search_cache
+        key = None
+        if cache is not None and cache.incremental:
+            key = id(adjacency), frozenset(occupied), frozenset(seeds)
+            if key in cache.supply_reach:
+                return cache.supply_reach[key]
+        reached, queue = set(seeds), deque(sorted(seeds))
         while queue:
             for n in adjacency[queue.popleft()]:
                 if n in occupied and n not in reached:
                     reached.add(n)
                     queue.append(n)
-        return always | {t.token_id for t in pieces if t.owner_country == country and t.position_id in reached}
+        if key is not None:
+            cache.supply_reach[key] = frozenset(reached)
+        return reached
 
     def supplied_for_seat(self, state, country, units):
         return {token_id for force in self.rules.controlled_forces(country)
@@ -382,14 +412,18 @@ class LegalActionGenerator:
             homes = home_regions(self.rules, state, force)
             modifiers = RuleModifierResolver(self.rules).resolve(state, force)
             extra = {m["region"] for m in modifiers if m["kind"] == "build_region" and m["unit_kind"] == unit_kind}
+            if unit_kind == "ARMY":
+                extra.update(m["region"] for m in modifiers if m["kind"] == "recruit_region")
             adjacency = self.graph.adjacency(state, country, "build")
+            team = self.rules.team(country)
+            occupied = {t.position_id for t in units if self.rules.team(t.owner_country) != team or
+                        (t.owner_country == force and self.rules.units[t.definition_id]["kind"] == unit_kind)}
+            needs_port = self.rules.settings.get("naval_army_base") and unit_kind == "NAVY"
+            ports = {t.position_id for t in units if needs_port and self.rules.team(t.owner_country) == team and
+                     self.rules.units[t.definition_id]["kind"] == "ARMY"}
             result = []
             for region, definition in self.rules.regions.items():
-                if definition["type"] != expected_terrain:
-                    continue
-                present = [t for t in units if t.position_id == region]
-                if any(self.rules.team(t.owner_country) != self.rules.team(country) or
-                       (t.owner_country == force and self.rules.units[t.definition_id]["kind"] == unit_kind) for t in present):
+                if definition["type"] != expected_terrain or region in occupied:
                     continue
                 neighbors = adjacency[region]
                 has_adjacent_origin = bool(neighbors & origins)
@@ -397,15 +431,11 @@ class LegalActionGenerator:
                 if needs_adjacent_origin and not has_adjacent_origin:
                     continue
                 reachable = region in homes or has_adjacent_origin or region in extra
-                if unit_kind == "ARMY" and any(m["kind"] == "recruit_region" and m["region"] == region for m in modifiers):
-                    reachable = True
                 if kind == "RECRUIT":
                     reachable = (needs_adjacent_origin or self.rules.settings.get("free_recruit", False) or
                                  region in homes or bool(neighbors & homes))
-                elif self.rules.settings.get("naval_army_base") and unit_kind == "NAVY":
-                    reachable = reachable and any(t.position_id in neighbors and
-                        self.rules.units[t.definition_id]["kind"] == "ARMY" and
-                        self.rules.team(t.owner_country) == self.rules.team(country) for t in units)
+                elif needs_port:
+                    reachable = reachable and bool(neighbors & ports)
                 if reachable:
                     result.append(region)
             return sorted(result)
