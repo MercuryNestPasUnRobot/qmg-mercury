@@ -4,34 +4,43 @@ from math import inf
 
 from .definitions import PER_UNIT_SITE
 from .expansion_scoring import ConstructionNetwork
-from .model import TURN_ORDER, zone
+from .model import TURN_ORDER, ZoneRegistry, zone
 from .regional_sites import active_hidden_sites
-from .rules import MapGraph, RuleModifierResolver, home_regions, occupied_home_forces
+from .rules import MapGraph, RuleModifierResolver, home_occupation, home_occupier, home_regions, occupied_home_forces
 from .score_units import STANDARD_SITE_VP
 
 
 class ActionDistanceScoring:
     def __init__(self, rules, state, pieces, locations, units, nearest_sites, *,
-                 include_connections=True, construction_rules=False, stacked_sites=False, regional_defense=False):
+                 include_connections=True, construction_rules=False, stacked_sites=False, regional_defense=False,
+                 _removal=None):
         self.rules = rules
         self.state = state
         self.units = units
         self.stacked_sites = stacked_sites
         self.regional_defense = regional_defense
+        self.printed_locations = locations
+        previous, removed = _removal if _removal is not None else (None, None)
         self.layers = {layer.key: layer for layer in active_hidden_sites(rules, state)
                        if layer.award.mode != "absence" and layer.active(rules, state)}
-        self.locations = {**locations, **{key: set(layer.spaces) for key, layer in self.layers.items()}}
-        self.sites_by_region = defaultdict(list)
-        for site, places in self.locations.items():
-            for place in places:
-                self.sites_by_region[place].append(site)
-        self.unit_definitions = {unit["kind"]: key for key, unit in rules.units.items()}
+        if previous is not None and self.layers == previous.layers:
+            self.locations, self.sites_by_region = previous.locations, previous.sites_by_region
+        else:
+            self.locations = {**locations, **{key: set(layer.spaces) for key, layer in self.layers.items()}}
+            self.sites_by_region = defaultdict(list)
+            for site, places in self.locations.items():
+                for place in places:
+                    self.sites_by_region[place].append(site)
+        self.unit_definitions = (previous.unit_definitions if previous is not None else
+                                 {unit["kind"]: key for key, unit in rules.units.items()})
         self.nearest_sites = nearest_sites
         self.pieces = tuple(t for t in pieces if rules.units[t.definition_id]["kind"] != "AIR")
-        self.blocked = occupied_home_forces(rules, state, self.pieces)
-        self.homes = {}
-        if rules.settings.get("occupied_home_blocks_scoring") and (units.home_importance or units.auxiliary_home_importance):
-            self.homes = {owner: home_regions(rules, state, owner) for owner in rules.force_controllers}
+        self.home_locations = ({owner: home_regions(rules, state, owner) for owner in rules.force_controllers}
+                               if rules.settings.get("occupied_home_blocks_scoring") else {})
+        self.homes = self.home_locations if units.home_importance or units.auxiliary_home_importance else {}
+        self.home_occupation = self.occupation_after_removal(previous, removed) if self.home_locations else None
+        self.blocked = occupied_home_forces(rules, state, self.pieces, homes=self.home_locations,
+                                            occupation=self.home_occupation)
         self.remaining = 0 if state.winner else max(0, rules.settings["max_rounds"] - state.turn.round_id + 1)
         self.include_connections = include_connections
         self.construction_rules = construction_rules
@@ -39,14 +48,50 @@ class ActionDistanceScoring:
         self.graphs, self.paths, self.bases, self.sites_by_position = {}, {}, {}, {}
         self.enemy_fronts = {}
         self.income_changes = {}
-        self.source_owners = defaultdict(set)
-        for token in state.tokens.values():
-            if token.token_type == "SCORE_SOURCE" and token.position_id in rules.regions:
-                self.source_owners[token.definition_id, token.position_id].add(token.owner_country)
-        self.has_income_changes = include_connections and any(
-            m["kind"] == "score_bonus"
-            for seat in TURN_ORDER for token in state.positions.get(zone(seat, "STATUS"), ())
-            for m in rules.cards[state.tokens[token].definition_id].get("modifiers", ()))
+        if previous is not None:
+            # The unit transfer only changes its map and reserve zones.
+            self.source_owners = previous.source_owners
+            self.has_income_changes = previous.has_income_changes
+        else:
+            self.source_owners = defaultdict(set)
+            for token in state.tokens.values():
+                if token.token_type == "SCORE_SOURCE" and token.position_id in rules.regions:
+                    self.source_owners[token.definition_id, token.position_id].add(token.owner_country)
+            self.has_income_changes = include_connections and any(
+                m["kind"] == "score_bonus"
+                for seat in TURN_ORDER for token in state.positions.get(zone(seat, "STATUS"), ())
+                for m in rules.cards[state.tokens[token].definition_id].get("modifiers", ()))
+
+    def occupation_after_removal(self, previous, removed):
+        if previous is None:
+            return home_occupation(self.rules, self.pieces)
+        marker = home_occupier(self.rules, removed)
+        if marker is None or removed not in previous.pieces:
+            return previous.home_occupation
+        occupation = previous.home_occupation.copy()
+        occupation[marker] -= 1
+        return occupation
+
+    def after_unit_removal(self, token_id, *, incremental):
+        """Map one projected transfer into a view evaluated by the regular score formulas."""
+        token = self.state.tokens[token_id]
+        reserve = zone(token.owner_country, "RESERVE_" + self.rules.units[token.definition_id]["kind"])
+        state = ZoneRegistry.projected_transfer(self.state, token_id, reserve)
+        # A quiescent single-zone transfer has a known set of changed inputs. An
+        # unsettled frame gets the independent projection and context instead.
+        delta = (self, token) if incremental and not self.state.stack and self.state.decision is None else None
+        return ActionDistanceScoring(
+            self.rules, state, (piece for piece in self.pieces if piece.token_id != token.token_id),
+            self.printed_locations, self.units, self.nearest_sites, include_connections=self.include_connections,
+            construction_rules=self.construction_rules, stacked_sites=self.stacked_sites,
+            regional_defense=self.regional_defense, _removal=delta)
+
+    def position_terms(self, force, region, *, air, distance_offset, enemy_attraction):
+        sites = self.site_values(force, region, construction=not air, distance_offset=distance_offset, air=air,
+                                 enemy_attraction=enemy_attraction)
+        homes = self.home_values(force, region, construction=not air, distance_offset=distance_offset)
+        return {**{site: value for site, (_, value) in sites.items()},
+                **{"home:" + owner: value for owner, value in homes.items()}}
 
     def adjacency(self, force):
         if force not in self.graphs:
@@ -120,7 +165,7 @@ class ActionDistanceScoring:
             return self.proportional_base(layer.owner, region, layer.award.amount, distance_offset=distance_offset)
         definition = self.rules.sites[site]
         seat = self.rules.force_controllers[force]
-        owners = self.source_owners[site, region] if definition.get("dynamic") else {None}
+        owners = self.source_owners.get((site, region), ()) if definition.get("dynamic") else {None}
         if seat not in definition["countries"] or (None not in owners and seat not in owners):
             return 0
         printed = definition["vp"]

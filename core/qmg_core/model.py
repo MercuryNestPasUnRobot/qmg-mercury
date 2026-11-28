@@ -115,6 +115,15 @@ class GameState:
 
 class ZoneRegistry:
     @staticmethod
+    def projected_transfer(state, token_id, destination):
+        """Project one transfer for read-only evaluation, with no other state changes."""
+        source = state.tokens[token_id].position_id
+        projected = replace(state, tokens=dict(state.tokens), positions={
+            **state.positions, source: list(state.positions[source]), destination: list(state.positions[destination])})
+        ZoneRegistry.transfer(projected, token_id, destination)
+        return projected
+
+    @staticmethod
     def transfer(state, token_id, destination, index=None):
         if destination not in state.positions or token_id not in state.tokens:
             raise CoreError("Unknown token or position")

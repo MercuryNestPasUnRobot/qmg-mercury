@@ -3,12 +3,14 @@ from .model import TURN_ORDER, canonical, zone
 
 
 class SearchCache:
-    def __init__(self):
+    def __init__(self, *, incremental=True):
+        self.incremental = incremental
         self.adjacencies = {}
         self.distances = {}
         self.enemy_distances = {}
         self.construction_distances = {}
         self.side_ports = {}
+        self.supply_reach = {}
         self.map_scores = {}
         self.supply_scores = {}
         self.card_scores = {}
