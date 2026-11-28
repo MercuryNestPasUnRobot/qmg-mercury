@@ -6,8 +6,11 @@ from conftest import card, choose, finish_choices, make, move_initial
 from test_air_and_content_actions import end_phase, marker
 from qmg_core import CoreAPI
 from qmg_core.ai_match_policy import CandidateView, RulePolicy, SeatPolicy
+from qmg_core.api import observed_position
+from qmg_core.content_effects import instruction
 from qmg_core.evaluation import OneStepPlanner
 from qmg_core.model import TURN_ORDER, shuffle, zone
+from qmg_core.reallocation_scoring import discard_sources
 
 
 def add_card(data, seat, suffix, position, *, kind="other", effects=()):
@@ -196,7 +199,7 @@ def test_projected_payment_retires_a_listener_bound_to_a_paid_hand_card(data, we
     assert all(p.state.tokens[key].position_id == "germany:DISCARD" for key in payment)
 
 
-def test_exchange_compares_all_basics_and_rebinds_the_actual_play_after_payment(data):
+def test_exchange_uses_only_the_best_basic_and_rebinds_the_actual_play_after_payment(data):
     from test_ai_match import profile
 
     enable(data, ("germany",))
@@ -232,7 +235,7 @@ def test_exchange_compares_all_basics_and_rebinds_the_actual_play_after_payment(
     b = SeatPolicy(p.rules, evaluator=planner.evaluator, search=InProcessSearch())
     command, log = b.decide(client, "germany")
     assert command["type"] == "REALLOCATE"
-    assert set(alternatives) == {"build-army", "build-navy", "land-battle", "sea-battle"}
+    assert set(alternatives) == {"land-battle"}
     assert all(r["complete"] for r in alternatives.values())
     assert log["selected_reallocation"]["kind"] == "land-battle"
     battle = alternatives["land-battle"]
@@ -267,3 +270,88 @@ def test_exchange_compares_all_basics_and_rebinds_the_actual_play_after_payment(
     assert response["option"] == "use"
     client.apply(response)
     assert p.state.scores["axis"] == 8
+
+
+@pytest.mark.parametrize("required_kind", ["build-navy", "land-battle"])
+def test_exchange_can_save_the_fetched_basic_to_pay_a_condition(data, required_kind):
+    from test_ai_match import profile
+
+    enable(data, ("germany",))
+    data["settings"]["mandatory_turn_play"] = True
+    for token in data["initial_tokens"]:
+        if token["position_id"] == "germany:HAND":
+            token["position_id"] = "germany:DECK"
+    for n in range(3):
+        add_card(data, "germany", f"exchange-payment-{n}", "HAND", effects=[
+            instruction({"type": "discard-hand", "count": 1, "strict": True}), {"type": "GAIN_VP", "amount": 0}])
+    card(data, "g-battle")["legacy_kind"] = "land-battle"
+    card(data, "g-build")["legacy_kind"] = "build-army"
+    add_card(data, "germany", "exchange-navy", "DECK", kind="build-navy")
+    add_card(data, "germany", "exchange-sea", "DECK", kind="sea-battle")
+    move_initial(data, "united-kingdom-army-0", "B")
+    source = add_card(data, "germany", "payoff", "HAND", effects=[
+        instruction({"type": "discard-hand", "count": 1, "kinds": [required_kind], "strict": True}),
+        {"type": "GAIN_VP", "amount": 20},
+    ])
+    add_card(data, "germany", "hidden-cost", "DECK", effects=[
+        instruction({"type": "discard-hand", "count": 1, "kinds": ["sea-battle"], "strict": True}),
+        {"type": "GAIN_VP", "amount": 10},
+    ])
+    p = make(data)
+    seat = CoreAPI(p, ("germany",))
+    view = seat.observe(include_history=False)
+    planner = OneStepPlanner(p.rules, profile())
+    paper = RulePolicy(p.rules, planner.evaluator)
+    choices, best, costs = paper.reallocation_choices(view, "germany", paper.evaluator.economic_from_view(view))
+    assert best == "land-battle"
+    assert costs == {required_kind: {source}}
+    assert {p.rules.cards[definition]["legacy_kind"] for _, definition, _ in choices} == {best, required_kind}
+    exchange = next(c for c in seat.legal_commands() if c["type"] == "REALLOCATE")
+    assert not any(c.get("card") == source for c in seat.legal_commands())
+    rows = planner.rank(CandidateView(view, [exchange]), "germany")
+    assert len(rows) == len({best, required_kind})
+    winner = rows[0]
+    assert winner["complete"] and winner["reallocation"]["kind"] == required_kind
+    assert winner["reallocation"]["payment_for"] == [source]
+    assert source not in winner["reallocation"]["payment"]
+    assert winner["exchange_followup"]["play"]["card"] == source
+    assert winner["actual_vp_delta"] == 20
+
+    class InProcessSearch:
+        def run(self, view, commands, country, deadline):
+            return planner.rank(CandidateView(view, commands), country), "finished"
+
+    policy = SeatPolicy(p.rules, evaluator=planner.evaluator, search=InProcessSearch())
+    command, _ = policy.decide(seat, "germany")
+    assert command == exchange
+    seat.apply(command)
+    while p.state.decision:
+        step, log = policy.decide(seat, "germany")
+        assert log["search_status"] == "matched-exchange"
+        seat.apply(step)
+    acquired = next(key for key in p.state.positions["germany:HAND"] if key != source)
+    play, log = policy.decide(seat, "germany")
+    assert log["search_status"] == "matched-exchange-play"
+    assert play["card"] == source
+    seat.apply(play)
+    if p.state.decision:
+        payment, log = policy.decide(seat, "germany")
+        assert log["search_status"] == "matched-continuation" and payment["option"] == acquired
+        seat.apply(payment)
+    assert p.state.scores["axis"] == 20 and p.state.tokens[acquired].position_id == "germany:DISCARD"
+
+
+def test_exchange_reads_typed_costs_from_live_listeners_only(data):
+    ability = next(a for a in data["abilities"] if a["id"] == "g-extra")
+    ability["effects"] = [
+        instruction({"type": "choose-one", "options": [{"label": "fund",
+                     "effects": [{"type": "discard-hand", "count": 1, "kinds": ["build-army"], "strict": True}]}]})
+    ]
+    move_initial(data, "g-status", "germany:STATUS")
+    p = make(data)
+    rules, state = observed_position(p.rules, CoreAPI(p, ("germany",)).observe())
+    assert discard_sources(rules, state, "germany") == {"build-army": {"g-status"}}
+    move_initial(data, "g-status", "germany:DISCARD")
+    p = make(data)
+    rules, state = observed_position(p.rules, CoreAPI(p, ("germany",)).observe())
+    assert not discard_sources(rules, state, "germany")
